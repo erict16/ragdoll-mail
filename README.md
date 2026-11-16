@@ -1,6 +1,6 @@
-# hmail
+# ragdoll-mail
 
-A mail command line for one IMAP/SMTP mailbox, made to be driven by an AI agent (Claude Code) and checked by a person. One Python file, standard library only, Windows and macOS.
+`hmail`: a mail command line for one IMAP/SMTP mailbox, made to be driven by an AI agent (Claude Code) and checked by a person. One Python file, standard library only, Windows and macOS.
 
 Why it exists: Tencent Exmail ignores IMAP text search (every `SEARCH SUBJECT/FROM/BODY` returns the whole mailbox), and API-based clients ran out of quota. hmail keeps its own SQLite index with trigram full-text search, so Chinese and English both work, and does drafts the way a person would: signature, quoted history with its images, attachments, then a check before anything is sent.
 
