@@ -68,6 +68,9 @@ QUOTE_RE = re.compile(
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|aw|wg|tr|trả lời|chuyển tiếp|bls|回复|答复|转发)\s*[:：]\s*)+", re.I)
 INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+$")   # Exmail inline-image names
 WEEK = "一二三四五六日"
+# No line-length limit when writing: folding long Message-IDs makes Python encode them as
+# =?utf-8?q?...?=, which breaks threading (sent:1431, 16th Nov 2026).
+OUT_POLICY = policy.SMTP.clone(max_line_length=None)
 
 
 # ------------------------------------------------------------------ config
@@ -1041,7 +1044,7 @@ def cmd_draft(a):
         if not subject:
             die("give --subject")
         msg = build_message(body, to, cc, subject, orig, mode, split_list(a.bcc), a.attach or [], sig, a.high)
-        new_uid = append_draft(m, msg.as_bytes(policy=policy.SMTP))
+        new_uid = append_draft(m, msg.as_bytes(policy=OUT_POLICY))
         if a.replace:
             f2, u2 = parse_id(a.replace)
             delete_uid(m, f2, u2)
@@ -1163,7 +1166,7 @@ def cmd_send(a):
         if not rcpts:
             die("the draft has no recipients")
         del msg["Bcc"]
-        out = msg.as_bytes(policy=policy.SMTP)
+        out = msg.as_bytes(policy=OUT_POLICY)
         s = smtplib.SMTP_SSL(CFG.smtp["host"], CFG.smtp["port"], timeout=120)
         try:
             s.login(CFG.user, password())

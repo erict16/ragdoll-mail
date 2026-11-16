@@ -75,7 +75,7 @@ class Drafts(unittest.TestCase):
         to, cc = hmail.reply_recipients(o, True, "me@example.com")
         msg = hmail.build_message(body, to, cc, hmail.reply_subject(hmail.hdr(o, "Subject")), o, "reply",
                                   signature_html=SIG, **kw)
-        return email.message_from_bytes(msg.as_bytes(policy=policy.SMTP), policy=policy.default)
+        return email.message_from_bytes(msg.as_bytes(policy=hmail.OUT_POLICY), policy=policy.default)
 
     def test_reply_has_signature_quote_image_and_headers(self):
         m = self.build()
@@ -87,11 +87,19 @@ class Drafts(unittest.TestCase):
         self.assertIn("cid:logo1", html)
         self.assertEqual(hmail.check_message(m, reply=True), [])
 
+    def test_long_message_ids_stay_raw(self):
+        long_id = "<d0425af1094366e3ae8f29d3fde9e1d11ec2bdcf.b4c078c5aa1b2c3d4e5f60718293a4b5c6d7e8f9@larksuite.com>"
+        o = email.message_from_bytes(ORIG.replace(b"<abc@cust.vn>", long_id.encode()), policy=policy.default)
+        msg = hmail.build_message("<div>x</div>", [("", "linh@cust.vn")], [], "Re: x", o, "reply", signature_html=SIG)
+        raw = msg.as_bytes(policy=hmail.OUT_POLICY)
+        self.assertIn(b"In-Reply-To: " + long_id.encode(), raw)
+        self.assertNotIn(b"=?utf-8?q?=3C", raw)
+
     def test_check_catches_missing_cc_and_bad_table(self):
         o = orig()
         msg = hmail.build_message("<table><tr><td>a</td><td>b</td><td>—</td></tr></table>",
                                   [("", "linh@cust.vn")], [], "Re: x", o, "reply", signature_html=SIG)
-        m = email.message_from_bytes(msg.as_bytes(policy=policy.SMTP), policy=policy.default)
+        m = email.message_from_bytes(msg.as_bytes(policy=hmail.OUT_POLICY), policy=policy.default)
         problems = " ".join(hmail.check_message(m, reply=True))
         self.assertIn("boss@example.com", problems)
         self.assertIn("word-break", problems)
@@ -102,7 +110,7 @@ class Drafts(unittest.TestCase):
         o = orig()
         msg = hmail.build_message("<div>x</div>", [("", "linh@cust.vn")], [("", "boss@example.com")], "Re: x",
                                   o, "reply", signature_html="")
-        m = email.message_from_bytes(msg.as_bytes(policy=policy.SMTP), policy=policy.default)
+        m = email.message_from_bytes(msg.as_bytes(policy=hmail.OUT_POLICY), policy=policy.default)
         self.assertIn("no signature", hmail.check_message(m, reply=True))
 
     def test_forward_keeps_attachments(self):
