@@ -66,7 +66,7 @@ QUOTE_RE = re.compile(
     r"^\s*(-{3,}\s*(原始邮件|Original Message|Forwarded message)|发件人[:：]|From:\s|Từ:\s|"
     r"On .{5,120} wrote:|在 .{5,80}写道[:：])", re.M | re.I)
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|aw|wg|tr|trả lời|chuyển tiếp|bls|回复|答复|转发)\s*[:：]\s*)+", re.I)
-INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+$")   # Exmail inline-image names
+INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+(\.(png|jpe?g|gif|bmp|webp))?$", re.I)   # Exmail inline-image names
 WEEK = "一二三四五六日"
 # No line-length limit when writing: folding long Message-IDs makes Python encode them as
 # =?utf-8?q?...?=, which breaks threading (sent:1431, 16th Nov 2026).

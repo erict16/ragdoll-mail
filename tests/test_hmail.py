@@ -30,6 +30,7 @@ class Basics(unittest.TestCase):
     def test_bodystructure_names(self):
         blob = (b'("APPLICATION" "OCTET-STREAM" ("NAME" "=?utf-8?b?5LiK5rW3LmR3Zw==?=") NIL NIL "BASE64" 10) '
                 b'("IMAGE" "PNG" ("NAME" "61C78120@0F57F725.A1C871690000") NIL) '
+                b'("IMAGE" "PNG" ("NAME" "A71D6834@7680436B.0A0FF86A00000000.png") NIL) '
                 b'("APPLICATION" "PDF" ("NAME" {9}\r\nplain.pdf) NIL)')
         self.assertEqual(hmail.bs_names(blob), ["上海.dwg", "plain.pdf"])
 
