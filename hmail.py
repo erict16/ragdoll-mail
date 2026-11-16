@@ -719,9 +719,18 @@ def cmd_sync(a):
     with file_lock("headers", wait=True):
         with session() as m:
             folders = all_folders(m) if a.all_folders else CFG.sync_folders
-            for f in folders:
-                n = sync_headers(m, c, f, full_flags=True, workers=a.workers)
-                print("%s: %d new" % (f, n))
+        for f in folders:
+            # a fresh connection per folder: the server drops one left idle during a long parallel fetch
+            for attempt in (1, 2):
+                try:
+                    with session() as m:
+                        n = sync_headers(m, c, f, full_flags=True, workers=a.workers)
+                    print("%s: %d new" % (f, n))
+                    break
+                except (imaplib.IMAP4.abort, OSError) as e:
+                    if attempt == 2:
+                        raise
+                    print("  %s: connection dropped (%s), retrying" % (f, e), file=sys.stderr)
         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
         c.commit()
     if a.bodies:
