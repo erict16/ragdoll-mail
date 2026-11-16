@@ -53,7 +53,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
