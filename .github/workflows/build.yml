@@ -8,22 +8,38 @@ on:
 permissions:
   contents: write
 
+# Tag builds go straight to the GitHub release, so they use no artifact storage.
+# Manual runs keep the files as short-lived artifacts (1 day).
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests
 
-  mac:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: test
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Make the release
+        run: gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+
+  mac:
+    needs: [test, release]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.release.result != 'failure' }}
+    runs-on: macos-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install pywebview pyinstaller pillow
@@ -32,38 +48,37 @@ jobs:
         run: |
           mkdir -p dmg && cp -R dist/ragdoll-mail.app dmg/ && ln -s /Applications dmg/Applications
           hdiutil create -volname ragdoll-mail -srcfolder dmg -ov -format UDZO ragdoll-mail-mac.dmg
-      - uses: actions/upload-artifact@v4
+      - name: Add to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" ragdoll-mail-mac.dmg --clobber -R "$GITHUB_REPOSITORY"
+      - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
         with:
           name: mac
           path: ragdoll-mail-mac.dmg
+          retention-days: 1
 
   windows:
-    needs: test
+    needs: [test, release]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.release.result != 'failure' }}
     runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install pywebview pyinstaller pillow
       - run: pyinstaller --noconfirm ragdoll-mail.spec
       - run: Compress-Archive -Path dist/ragdoll-mail.exe -DestinationPath ragdoll-mail-windows.zip
-      - uses: actions/upload-artifact@v4
+      - name: Add to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: gh release upload "$GITHUB_REF_NAME" ragdoll-mail-windows.zip --clobber -R "$GITHUB_REPOSITORY"
+      - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
         with:
           name: windows
           path: ragdoll-mail-windows.zip
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [mac, windows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ragdoll-mail-mac.dmg
-            ragdoll-mail-windows.zip
-          generate_release_notes: true
+          retention-days: 1
