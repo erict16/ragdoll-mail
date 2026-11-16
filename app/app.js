@@ -1,5 +1,6 @@
 // ragdoll-mail desktop app. Talks to ragdoll_app.py over /api/<name> (JSON, X-Token header).
 import { ICONS } from "./icons.js";
+import { LANGS, LANG_NAMES } from "./i18n.js";
 
 // ---------------------------------------------------------------- basics
 
@@ -12,63 +13,55 @@ const TOKEN = (() => {
 })();
 if (location.hash) history.replaceState(null, "", location.pathname);
 
-const ZH = (navigator.language || "").toLowerCase().startsWith("zh");
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? "⌘" : "Ctrl+";
 
-const EN = {
-  inbox: "Inbox", drafts: "Drafts", sent: "Sent", archive: "Archive", trash: "Trash",
-  compose: "New mail", search: "Search", reply: "Reply", replyall: "Reply all", forward: "Forward",
-  archive_it: "Archive", trash_it: "Move to Trash", restore: "Move to Inbox", unread: "Mark as unread",
-  read: "Mark as read", send: "Send", attach: "Attach files", discard: "Delete draft",
-  to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", write: "Write your message…",
-  no_mail: "No mail here", no_results: "Nothing found", syncing: "Getting your mail…",
-  loading: "Loading…", me: "me", to_x: "To: %s", draft: "Draft", no_subject: "(no subject)",
-  saved: "Saved", saving: "Saving…", draft_saved: "Draft saved", draft_deleted: "Draft deleted",
-  sending: "Sending…", sent_ok: "Sent", undo: "Undo", archived: "Archived", trashed: "Moved to Trash",
-  restored: "Moved to Inbox", saved_to: "Saved to Downloads", show: "Show", images_hidden: "Images from the web are hidden.",
-  show_images: "Show images", problems: "Check before sending", send_anyway: "Send anyway",
-  keep_editing: "Keep editing", settings: "Settings", sync_now: "Sync now", demo: "Demo mailbox",
-  account: "Account", signature: "Signature", appearance: "Appearance", name: "Your name",
-  email: "Email address", password: "Password", pw_saved: "Saved in the system keychain",
-  incoming: "Incoming server (IMAP)", outgoing: "Outgoing server (SMTP)", port: "Port",
-  require_cc: "Always Cc", test: "Test connection", testing: "Testing…", test_ok: "Signed in to both servers.",
-  save: "Save", cancel: "Cancel", system: "System", light: "Light", dark: "Dark",
-  setup_title: "Add your mail account", servers: "Server settings", sign_in: "Sign in", signing_in: "Signing in…",
-  update_to: "Update to %s", run_update: "Run in a terminal: ragdoll update", yesterday: "Yesterday",
-  pw_env: "The password comes from the %s environment variable. A password saved here is used only when that variable is not set.",
-  remove: "Remove", open: "Open", download: "Save to Downloads", drop_files: "Drop files to attach",
-  sig_none: "No signature", remove_sig: "Leave out the signature", conn_lost: "Can't reach the server",
-  error: "Something went wrong", recipients_more: "and %s more", version: "Version %s", uploading: "Uploading…",
-  show_quote: "Show quoted text", copy: "Copy",
-};
-const ZHS = {
-  inbox: "收件箱", drafts: "草稿箱", sent: "已发送", archive: "归档", trash: "已删除",
-  compose: "写邮件", search: "搜索", reply: "回复", replyall: "回复全部", forward: "转发",
-  archive_it: "归档", trash_it: "删除", restore: "移回收件箱", unread: "标为未读", read: "标为已读",
-  send: "发送", attach: "添加附件", discard: "删除草稿", to: "收件人", cc: "抄送", bcc: "密送",
-  subject: "主题", write: "写点什么…", no_mail: "这里没有邮件", no_results: "没有找到",
-  syncing: "正在收取邮件…", loading: "加载中…", me: "我", to_x: "致：%s", draft: "草稿",
-  no_subject: "（无主题）", saved: "已保存", saving: "保存中…", draft_saved: "草稿已保存",
-  draft_deleted: "草稿已删除", sending: "正在发送…", sent_ok: "已发送", undo: "撤销", archived: "已归档",
-  trashed: "已删除", restored: "已移回收件箱", saved_to: "已存到“下载”", show: "显示",
-  images_hidden: "已隐藏网络图片。", show_images: "显示图片", problems: "发送前请检查",
-  send_anyway: "仍然发送", keep_editing: "继续编辑", settings: "设置", sync_now: "立即同步",
-  demo: "演示邮箱", account: "账户", signature: "签名", appearance: "外观", name: "你的名字",
-  email: "邮箱地址", password: "密码", pw_saved: "已存在系统钥匙串", incoming: "收信服务器（IMAP）",
-  outgoing: "发信服务器（SMTP）", port: "端口", require_cc: "总是抄送", test: "测试连接",
-  testing: "测试中…", test_ok: "两个服务器都登录成功。", save: "保存", cancel: "取消", system: "跟随系统",
-  light: "浅色", dark: "深色", setup_title: "添加邮箱账户", servers: "服务器设置", sign_in: "登录",
-  signing_in: "登录中…", update_to: "更新到 %s", run_update: "在终端运行：ragdoll update",
-  yesterday: "昨天", pw_env: "密码来自环境变量 %s。只有这个变量没设置时，才会用这里保存的密码。",
-  remove: "移除", open: "打开", download: "存到“下载”", drop_files: "松开即可添加附件",
-  sig_none: "没有签名", remove_sig: "这封不带签名", conn_lost: "连不上服务器", error: "出错了",
-  recipients_more: "等 %s 人", version: "版本 %s", uploading: "上传中…", show_quote: "显示引用内容",
-  copy: "复制",
-};
-const STR = ZH ? { ...EN, ...ZHS } : EN;
+// language: a saved choice, or the system's when it is one of ours
+let LANG = "en", LOCALE = undefined, TZ = undefined, STR = LANGS.en;
+const SYS_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } })();
+function systemLang() {
+  for (const l of navigator.languages?.length ? navigator.languages : [navigator.language || "en"]) {
+    const x = l.toLowerCase();
+    if (x.startsWith("zh")) return /hant|-tw|-hk|-mo/.test(x) ? "zh-Hant" : "zh-Hans";
+    const base = x.split("-")[0];
+    if (LANGS[base]) return base;
+  }
+  return "en";
+}
+function setLocale(prefs = {}) {
+  const pick = prefs.lang && prefs.lang !== "system" && LANGS[prefs.lang] ? prefs.lang : systemLang();
+  LANG = pick;
+  STR = { ...LANGS.en, ...LANGS[pick] };
+  // the system's own regional format when it speaks this language (en-GB, es-MX); else the language itself
+  const sys = navigator.language || "";
+  LOCALE = sys.toLowerCase().startsWith(pick.split("-")[0].toLowerCase()) && !pick.startsWith("zh") ? sys : pick;
+  TZ = prefs.tz && prefs.tz !== "system" ? prefs.tz : undefined;
+  try { new Intl.DateTimeFormat(LOCALE, { timeZone: TZ }); } catch { TZ = undefined; }
+  FMT.clear();
+  document.documentElement.lang = pick;
+}
 const t = (k, ...a) => { let s = STR[k] ?? k; for (const x of a) s = s.replace("%s", x); return s; };
+
+// a sentence from the server or the send check, in the chosen language when we know it
+const MSGS = [
+  [/^The app's background service/, "err_bg"],
+  [/^Sign-in failed\./, "err_signin"], [/^No password saved\./, "err_no_pw"], [/^No account yet\./, "err_no_account"],
+  [/^Can't find the mail server\./, "err_dns"], [/^The mail server did not answer in time\./, "err_timeout"],
+  [/^Secure connection failed \((.*)\)\. Check/, "err_ssl"], [/^The mail server refused the connection\./, "err_refused"],
+  [/^Can't reach the mail server \((.*)\)\.$/, "err_reach"], [/^The mail server said: (.*)$/s, "err_server"],
+  [/^This mail is no longer here/, "err_gone"], [/^The draft is gone\./, "err_draft_gone"],
+  [/^An attachment is missing: (.*)$/, "err_att_missing"], [/^That time has already passed\./, "err_past"],
+  [/^To is empty/, "p_to_empty"], [/^the sender is also a recipient/, "p_self"], [/^(.*) is not in To or Cc/, "p_not_cc"],
+  [/^the subject is empty/, "p_no_subject"], [/^garbled characters \(.\) in: (.*)$/, "p_garbled"],
+  [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
+  [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
+];
+function tr(msg) {
+  msg = String(msg ?? "");
+  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1)); }
+  return msg;
+}
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -98,11 +91,11 @@ async function api(name, args = {}) {
   try {
     r = await fetch("/api/" + name, { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(args) });
   } catch {
-    throw new Error(ZH ? "app 的后台没有响应。请重新打开 ragdoll-mail。" : "The app's background service is not answering. Reopen ragdoll-mail.");
+    throw new Error(t("err_bg"));
   }
   let j;
   try { j = await r.json(); } catch { throw new Error(t("error")); }
-  if (!j.ok) throw new Error(j.error || t("error"));
+  if (!j.ok) throw new Error(tr(j.error) || t("error"));
   return j.data;
 }
 
@@ -111,9 +104,29 @@ async function api(name, args = {}) {
 const S = {
   boot: null, folder: "inbox", rows: [], more: false, query: "", loadingMore: false,
   sel: null, thread: null, focus: null, compose: null, rev: 0, update: null, error: null,
-  theme: "system", showImages: new Set(), syncing: false,
+  theme: "system", showImages: new Set(), syncing: false, sched: null, multi: new Set(), anchor: null,
 };
-const FOLDER_ICON = { inbox: "inbox", drafts: "file", sent: "send", archive: "archive", trash: "trash-2" };
+let PREFS = {};
+const undoSeconds = () => (Number.isInteger(PREFS.undo) ? PREFS.undo : 5);
+// reading text size and the default font for new mail
+const TEXT_SIZES = [12, 13, 14, 15, 16, 18, 20];
+const textSize = () => (TEXT_SIZES.includes(PREFS.text_size) ? PREFS.text_size : 14);
+const FONT_SIZES = [12, 13, 14, 16, 18];
+const FONTS = [
+  ["system", ""], ["arial", "Arial, Helvetica, sans-serif"], ["helvetica", "Helvetica, Arial, sans-serif"],
+  ["georgia", "Georgia, serif"], ["times", "'Times New Roman', Times, serif"], ["verdana", "Verdana, Geneva, sans-serif"],
+  ["courier", "'Courier New', Courier, monospace"], ["yahei", "'Microsoft YaHei', 微软雅黑, sans-serif"],
+  ["pingfang", "'PingFang SC', 苹方, sans-serif"], ["simsun", "SimSun, 宋体, serif"],
+];
+const FONT_NAMES = { arial: "Arial", helvetica: "Helvetica", georgia: "Georgia", times: "Times New Roman", verdana: "Verdana",
+  courier: "Courier New", yahei: "Microsoft YaHei", pingfang: "PingFang SC", simsun: "SimSun" };
+const SAFE_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif";
+const fontStack = (k) => FONTS.find(([x]) => x === k)?.[1] || SAFE_FONT;
+const fontLabel = (k) => FONT_NAMES[k] || t("system");
+const mailFont = () => fontStack(PREFS.font || "system");
+const mailSize = () => (FONT_SIZES.includes(PREFS.font_size) ? PREFS.font_size : 14);
+const savePref = (patch) => { Object.assign(PREFS, patch); api("prefs", patch).catch(() => {}); };
+const FOLDER_ICON = { inbox: "inbox", flagged: "flag", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", trash: "trash-2" };
 
 // ---------------------------------------------------------------- theme
 
@@ -146,20 +159,56 @@ darkMQ.addEventListener("change", () => applyTheme(S.theme));
 
 // ---------------------------------------------------------------- time and size
 
-const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+const FMT = new Map();
+function fmt(ts, opts) {
+  const key = JSON.stringify(opts);
+  let f = FMT.get(key);
+  if (!f) {
+    try { f = new Intl.DateTimeFormat(LOCALE, { ...opts, timeZone: TZ }); } catch { f = new Intl.DateTimeFormat(undefined, opts); }
+    FMT.set(key, f);
+  }
+  return f.format(new Date(ts * 1000));
+}
+// the wall clock in the chosen time zone: {y, m, d, h, mi, wd (0 = Sunday)}
+function zparts(ms) {
+  const key = "parts";
+  let f = FMT.get(key);
+  if (!f) { f = new Intl.DateTimeFormat("en-US", { timeZone: TZ || SYS_TZ, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", weekday: "short" }); FMT.set(key, f); }
+  const p = Object.fromEntries(f.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { y: +p.year, m: +p.month, d: +p.day, h: +p.hour % 24, mi: +p.minute, wd: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday) };
+}
+// Unix seconds for a wall-clock time in the chosen time zone
+function zepoch(y, m, d, h, mi) {
+  const want = Date.UTC(y, m - 1, d, h, mi);
+  let guess = want;
+  for (let k = 0; k < 3; k++) {
+    const p = zparts(guess);
+    guess = want - (Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi) - guess);
+  }
+  return Math.round(guess / 1000);
+}
+const dayKey = (ms) => { const p = zparts(ms); return p.y * 10000 + p.m * 100 + p.d; };
+const HM = { hour: "2-digit", minute: "2-digit" };
 function shortTime(ts) {
   if (!ts) return "";
-  const d = new Date(ts * 1000), now = new Date();
-  if (sameDay(d, now)) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const y = new Date(now); y.setDate(now.getDate() - 1);
-  if (sameDay(d, y)) return t("yesterday");
-  if (now - d < 6 * 86400e3 && d < now) return d.toLocaleDateString([], { weekday: "short" });
-  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  return d.toLocaleDateString([], { year: "numeric", month: "numeric", day: "numeric" });
+  const ms = ts * 1000, now = Date.now(), k = dayKey(ms);
+  if (k === dayKey(now)) return fmt(ts, HM);
+  if (k === dayKey(now - 86400e3)) return t("yesterday");
+  if (now - ms < 6 * 86400e3 && ms < now) return fmt(ts, { weekday: "short" });
+  if (zparts(ms).y === zparts(now).y) return fmt(ts, { month: "short", day: "numeric" });
+  return fmt(ts, { year: "numeric", month: "numeric", day: "numeric" });
+}
+// a time to come (a scheduled send): "18:00", "Tomorrow 08:00", "Mon 08:00", "12 Dec 08:00"
+function laterTime(ts) {
+  const ms = ts * 1000, now = Date.now(), k = dayKey(ms);
+  if (k === dayKey(now)) return fmt(ts, HM);
+  if (k === dayKey(now + 86400e3)) return t("tomorrow") + " " + fmt(ts, HM);
+  if (ms - now < 6 * 86400e3) return fmt(ts, { weekday: "short", ...HM });
+  return fmt(ts, { month: "short", day: "numeric", ...HM });
 }
 function longTime(ts) {
   if (!ts) return "";
-  return new Date(ts * 1000).toLocaleString([], { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return fmt(ts, { weekday: "short", year: "numeric", month: "short", day: "numeric", ...HM });
 }
 function size(n) {
   if (n < 1024) return n + " B";
@@ -197,12 +246,19 @@ function leave(node, ms = 150) {
 
 function toast(text, opts = {}) {
   const box = $("#toasts");
-  const node = el("div", { class: "toast" + (opts.error ? " err" : ""), role: "status" },
+  // a toast with an id takes the place of the one before it (text size steps, for one)
+  if (opts.id) for (const old of $$(`.toast[data-id="${opts.id}"]`, box)) old.replaceWith();
+  const node = el("div", { "data-id": opts.id, class: "toast" + (opts.error ? " err" : ""), role: "status" },
     opts.error ? el("span", { class: "toast-ic", html: icon("triangle-alert") }) : null,
     el("span", { class: "toast-text" }, text));
   let done = false;
   const close = () => { if (done) return; done = true; leave(node, 180); };
   if (opts.action) node.append(el("button", { class: "toast-act", onclick: () => { close(); opts.action.run(); } }, opts.action.label));
+  if (opts.bar) {
+    const bar = el("span", { class: "toast-bar" });
+    node.append(bar);
+    if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: opts.bar, easing: "linear", fill: "forwards" });
+  }
   box.append(node);
   const ms = opts.ms ?? (opts.error ? 7000 : 3200);
   if (ms) setTimeout(close, ms);
@@ -211,11 +267,15 @@ function toast(text, opts = {}) {
 const fail = (e) => toast(e?.message || String(e), { error: true });
 
 let tipEl = null, tipTimer = null;
+// narrow windows: the sidebar turns into an icon rail (see style.css)
+const RAIL = matchMedia("(max-width: 860px)");
 document.addEventListener("mouseover", (e) => {
   const b = e.target.closest?.("[data-tip]");
   clearTimeout(tipTimer);
   if (tipEl) { tipEl.remove(); tipEl = null; }
   if (!b || b.disabled) return;
+  const side = b.dataset.rail != null;
+  if (side && !RAIL.matches) return;
   tipTimer = setTimeout(() => {
     const r = b.getBoundingClientRect();
     tipEl = el("div", { class: "tip", html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
@@ -223,7 +283,8 @@ document.addEventListener("mouseover", (e) => {
     const w = tipEl.offsetWidth;
     tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
     tipEl.style.top = (r.bottom + 6 + 24 > innerHeight ? r.top - 30 : r.bottom + 6) + "px";
-  }, 550);
+    if (side) { tipEl.style.left = r.right + 8 + "px"; tipEl.style.top = r.top + r.height / 2 - tipEl.offsetHeight / 2 + "px"; }
+  }, side ? 250 : 550);
 });
 document.addEventListener("mousedown", () => { clearTimeout(tipTimer); if (tipEl) { tipEl.remove(); tipEl = null; } }, true);
 
@@ -234,12 +295,13 @@ function menu(anchor, items, { above = false } = {}) {
   for (const it of items) {
     if (it === "-") m.append(el("hr"));
     else if (it.note) m.append(el("div", { class: "menu-note" }, it.note));
-    else m.append(el("button", { onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + esc(it.label) + (it.key ? `<span class="grow"></span><kbd>${esc(it.key)}</kbd>` : "") }));
+    else m.append(el("button", { onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + esc(it.label) +
+      (it.key ? `<span class="grow"></span><kbd>${esc(it.key)}</kbd>` : it.hint ? `<span class="grow"></span><span class="hint">${esc(it.hint)}</span>` : "") }));
   }
   const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
   $("#layer").append(catcher, m);
   const r = anchor.getBoundingClientRect();
-  m.style.left = Math.min(r.left, innerWidth - m.offsetWidth - 8) + "px";
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
   m.style.top = (above ? r.top - m.offsetHeight - 6 : r.bottom + 6) + "px";
 }
 function sheet(node, { wide = false, onclose } = {}) {
@@ -256,9 +318,13 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 function renderNav() {
   const nav = $("#nav");
   nav.replaceChildren();
-  for (const f of S.boot.folders) {
-    const n = f.key === "inbox" ? f.unread : f.key === "drafts" ? f.total : 0;
-    const b = el("button", { class: "nav-item" + (f.key === S.folder && !S.query ? " on" : ""), "data-folder": f.key, onclick: () => openFolder(f.key),
+  const folders = [...S.boot.folders];
+  for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
+    if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
+  }
+  for (const f of folders) {
+    const n = f.key === "inbox" ? f.unread : ["drafts", "scheduled", "flagged"].includes(f.key) ? f.total : 0;
+    const b = el("button", { class: "nav-item" + (f.key === S.folder && !S.query ? " on" : ""), "data-folder": f.key, "data-tip": t(f.key), "data-rail": "", onclick: () => openFolder(f.key),
       html: icon(FOLDER_ICON[f.key] || "folder-open") + `<span class="label">${esc(t(f.key))}</span>` + (n ? `<span class="count">${n}</span>` : "") });
     if (f.key === "archive" || f.key === "trash" || f.key === "inbox") {
       b.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("x-ragdoll/ids")) { e.preventDefault(); b.classList.add("drop"); } });
@@ -278,6 +344,7 @@ function accountMenu() {
     { note: S.boot.demo ? t("demo") : S.boot.user },
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
     { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
+    { icon: "keyboard", label: t("shortcuts"), key: "?", run: shortcutsSheet },
     "-",
     { note: t("version", S.boot.version) },
   ], { above: true });
@@ -293,16 +360,20 @@ function rowTemplate(r) {
     name = names.length ? t("to_x", names.slice(0, 3).join(", ") + (names.length > 3 ? " " + t("recipients_more", names.length - 3) : "")) : (r.folder === "drafts" ? t("draft") : "");
   } else name = who(r.from);
   const clip = r.atts.length ? icon("paperclip", "small") : "";
-  const tag = S.query && r.folder !== "inbox" ? `<span class="tag">${esc(t(r.folder) || r.folder)}</span>` : "";
-  const acts = S.folder === "trash" && !S.query
+  const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
+  const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(t(r.folder) || r.folder)}</span>` : "";
+  const flag = r.flagged ? `<span class="flag-ic">${icon("flag", "small")}</span>` : "";
+  const acts = r.sched
+    ? `<button class="icon-btn tiny" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
+    : S.folder === "trash" && !S.query
     ? `<button class="icon-btn tiny" data-act="inbox" data-tip="${esc(t("restore"))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${r.id === S.sel ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span><span class="who">${esc(name)}</span>` +
-    `<span class="meta">${tag}${clip}${esc(shortTime(r.ts))}</span>` +
-    `<span class="subj">${esc(r.subject || t("no_subject"))}</span>` +
-    `<span class="snip">${esc(r.snippet) || "&nbsp;"}</span>` +
+  return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span><span class="who" dir="auto">${esc(name)}</span>` +
+    `<span class="meta">${tag}${flag}${clip}${when}</span>` +
+    `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
+    `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
     `<span class="hover-acts">${acts}</span></div>`;
 }
 
@@ -397,8 +468,96 @@ async function loadMore() {
 function markRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
   if (r) Object.assign(r, patch);
+  const tr = S.thread?.rows.find((x) => x.id === id);
+  if (tr) Object.assign(tr, patch);
   const node = $(`.row[data-id="${CSS.escape(id)}"]`);
-  if (node && "unread" in patch) node.classList.toggle("unread", patch.unread);
+  if (!node || !r) return;
+  if ("flagged" in patch) { const n = el("div", { html: rowTemplate(r) }).firstChild; node.replaceWith(n); }
+  else if ("unread" in patch) node.classList.toggle("unread", patch.unread);
+}
+
+// ---------------------------------------------------------------- several mails at once
+
+const isSel = (id) => (S.multi.size > 1 ? S.multi.has(id) : id === S.sel);
+function syncSel() { for (const n of $$("#rows .row")) n.classList.toggle("on", isSel(n.dataset.id)); }
+// the mails the next action works on: the selection, or the open mail
+function targets() {
+  if (S.multi.size > 1) return [...S.multi];
+  const id = S.focus || S.sel;
+  return id ? [id] : [];
+}
+const rowOf = (id) => S.rows.find((x) => x.id === id) || S.thread?.rows.find((x) => x.id === id);
+async function pickRow(id, e) {
+  if (!(e.metaKey || e.ctrlKey || e.shiftKey)) return selectRow(id);
+  if (S.compose && !(await leaveCompose())) return;
+  if (e.shiftKey && (S.anchor || S.sel)) {
+    const ids = S.rows.map((x) => x.id);
+    let a = ids.indexOf(S.anchor || S.sel), b = ids.indexOf(id);
+    if (a < 0) a = b;
+    const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+    S.multi = new Set(e.metaKey || e.ctrlKey ? [...S.multi, ...range] : range);
+  } else {
+    if (!S.multi.size && S.sel) S.multi.add(S.sel);
+    if (S.multi.has(id)) S.multi.delete(id); else S.multi.add(id);
+    S.anchor = id;
+  }
+  if (S.multi.size === 1) return selectRow([...S.multi][0]);
+  if (!S.multi.size) { S.sel = null; syncSel(); return showEmpty(); }
+  showMulti();
+}
+function selectAll() {
+  if (!S.rows.length || S.folder === "scheduled") return;
+  S.multi = new Set(S.rows.map((x) => x.id));
+  if (S.multi.size === 1) return selectRow(S.rows[0].id);
+  showMulti();
+}
+function clearMulti() {
+  if (S.multi.size < 2) return false;
+  const keep = S.sel && S.multi.has(S.sel) ? S.sel : [...S.multi][0];
+  S.multi.clear();
+  selectRow(keep);
+  return true;
+}
+function showMulti() {
+  S.thread = null; S.focus = null; S.sched = null;
+  threadSeq++; schedSeq++;
+  syncSel();
+  const ids = [...S.multi], rows = ids.map(rowOf).filter(Boolean);
+  const anyUnread = rows.some((r) => r.unread), allFlagged = rows.length && rows.every((r) => r.flagged);
+  const inTrash = rows.length && rows.every((r) => r.folder === "trash");
+  const b = (ic, label, run) => el("button", { class: "btn", onclick: run, html: icon(ic, "small") + esc(label) });
+  const stack = el("div", { class: "multi-stack" });
+  for (let k = Math.min(3, ids.length) - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
+  $("#pane").replaceChildren(el("div", { class: "multi" }, stack,
+    el("h2", {}, t("n_selected", ids.length)),
+    el("div", { class: "multi-acts" },
+      inTrash ? b("inbox", t("restore"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
+      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
+      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
+      b(allFlagged ? "flag-off" : "flag", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
+  renderToolbar();
+}
+
+// read / unread and flags, for one mail or many
+async function markMail(ids, flag, on) {
+  if (!ids.length) return;
+  const key = flag === "seen" ? "unread" : "flagged", val = flag === "seen" ? !on : on;
+  const before = ids.map((id) => [id, rowOf(id)?.[key]]);
+  ids.forEach((id) => markRow(id, { [key]: val }));
+  if (S.multi.size > 1) showMulti(); else renderToolbar();
+  try {
+    await api("mark", { ids, flag, on });
+    refreshCounts();
+    if (S.folder === "flagged" && flag === "flagged" && !on) loadList({ quiet: true });
+  } catch (e) {
+    before.forEach(([id, v]) => markRow(id, { [key]: v }));
+    if (S.multi.size > 1) showMulti(); else renderToolbar();
+    fail(e);
+  }
+}
+function toggleFlag() {
+  const ids = targets(), rows = ids.map(rowOf).filter(Boolean);
+  if (rows.length) markMail(ids, "flagged", !rows.every((r) => r.flagged));
 }
 
 async function openFolder(key) {
@@ -413,9 +572,16 @@ $("#rows").addEventListener("click", async (e) => {
   const row = e.target.closest(".row");
   if (!row) return;
   const act = e.target.closest("[data-act]");
-  if (act) { e.stopPropagation(); return moveMail([row.dataset.id], act.dataset.act); }
-  selectRow(row.dataset.id);
+  if (act) {
+    e.stopPropagation();
+    if (act.dataset.act === "unschedule") return dontSend(S.rows.find((x) => x.id === row.dataset.id));
+    const id = row.dataset.id;
+    return moveMail(S.multi.size > 1 && S.multi.has(id) ? [...S.multi] : [id], act.dataset.act);
+  }
+  pickRow(row.dataset.id, e);
 });
+// a Shift-click picks a range, not text
+$("#rows").addEventListener("mousedown", (e) => { if (e.shiftKey && e.target.closest(".row")) e.preventDefault(); });
 $("#rows").addEventListener("scroll", () => {
   const b = $("#rows");
   if (b.scrollTop + b.clientHeight > b.scrollHeight - 400) loadMore();
@@ -423,19 +589,20 @@ $("#rows").addEventListener("scroll", () => {
 $("#rows").addEventListener("dragstart", (e) => {
   const row = e.target.closest(".row");
   if (!row) return;
-  e.dataTransfer.setData("x-ragdoll/ids", JSON.stringify([row.dataset.id]));
+  const id = row.dataset.id;
+  e.dataTransfer.setData("x-ragdoll/ids", JSON.stringify(S.multi.size > 1 && S.multi.has(id) ? [...S.multi] : [id]));
   e.dataTransfer.effectAllowed = "move";
 });
 
 async function selectRow(id, { keepFocus = false } = {}) {
   if (S.compose && !(await leaveCompose())) return;
-  S.sel = id;
-  $$(".row.on").forEach((n) => n.classList.remove("on"));
+  S.sel = id; S.anchor = id; S.multi.clear();
+  syncSel();
   const node = $(`.row[data-id="${CSS.escape(id)}"]`);
-  node?.classList.add("on");
   node?.scrollIntoView({ block: "nearest" });
   if (!keepFocus) $("#rows").focus({ preventScroll: true });
   const r = S.rows.find((x) => x.id === id);
+  if (r && r.sched) return openScheduled(r);
   if (r && r.folder === "drafts") return openCompose({ mode: "draft", id });
   openThread(id);
 }
@@ -451,7 +618,9 @@ function step(d) {
 const hidden = new Set();
 const pendingMoves = new Set();
 function moveMail(ids, to) {
-  const k = S.rows.findIndex((x) => x.id === ids[0]);
+  if (!ids.length) return;
+  S.multi.clear();
+  const k = Math.max(...ids.map((i) => S.rows.findIndex((x) => x.id === i)));
   const next = S.rows.slice(k + 1).find((x) => !ids.includes(x.id)) || S.rows.slice(0, k).reverse().find((x) => !ids.includes(x.id));
   const wasSel = ids.includes(S.sel) || (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i)));
   const sel = S.sel;
@@ -490,18 +659,9 @@ window.addEventListener("pagehide", () => {
   }
 });
 
-async function toggleUnread() {
-  const id = S.focus || S.sel;
-  const r = S.rows.find((x) => x.id === id) || S.thread?.rows.find((x) => x.id === id);
-  if (!r) return;
-  const unread = !r.unread;
-  try {
-    await api("mark", { ids: [id], flag: "seen", on: !unread });
-    markRow(id, { unread });
-    if (S.thread) { const tr = S.thread.rows.find((x) => x.id === id); if (tr) tr.unread = unread; }
-    renderToolbar();
-    refreshCounts();
-  } catch (e) { fail(e); }
+function toggleUnread() {
+  const ids = targets(), rows = ids.map(rowOf).filter(Boolean);
+  if (rows.length) markMail(ids, "seen", rows.some((r) => r.unread));
 }
 
 // ---------------------------------------------------------------- search
@@ -534,8 +694,13 @@ function onSearch(now = false) {
 
 // ---------------------------------------------------------------- reader
 
+function goBack() {
+  if (S.compose) closeCompose();
+  else { S.sel = null; syncSel(); showEmpty(); $("#rows").focus({ preventScroll: true }); }
+}
+
 function showEmpty() {
-  S.thread = null; S.focus = null;
+  S.thread = null; S.focus = null; S.sched = null; S.multi.clear();
   $("#pane").innerHTML = `<div class="pane-empty"><img src="logo.png" alt=""></div>`;
   renderToolbar();
 }
@@ -544,14 +709,39 @@ function renderToolbar() {
   const tools = $("#tools"), end = $("#tools-end");
   tools.replaceChildren(); end.replaceChildren();
   $("#toolbar").classList.toggle("lined", $("#pane").scrollTop > 0);
+  $("#app").classList.toggle("reading", !!(S.compose || S.sched || S.thread || S.multi.size > 1));
+  tools.append(iconBtn("arrow-left", t("back"), goBack, { key: "Esc", cls: "back-btn" }));
   if (S.compose) {
     tools.append(
       iconBtn("send", t("send"), () => sendCompose(), { key: MOD + "↩", disabled: !!S.compose.busy, cls: "accent" }),
+      iconBtn("calendar-clock", t("send_later"), (e) => laterMenu(e.currentTarget), { disabled: !!S.compose.busy }),
       el("span", { class: "sep" }),
       iconBtn("paperclip", t("attach"), () => pickFiles()),
+      iconBtn("type", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
       iconBtn("trash-2", t("discard"), () => discardCompose()));
+    return;
+  }
+  if (S.sched) {
+    const r = S.sched;
+    tools.append(
+      iconBtn("send", t("send_now"), () => sendNow(r), { cls: "accent" }),
+      iconBtn("square-pen", t("edit"), () => editScheduled(r)),
+    );
+    end.append(iconBtn("calendar-x", t("dont_send"), () => dontSend(r)));
+    return;
+  }
+  if (S.multi.size > 1) {
+    const ids = [...S.multi], rows = ids.map(rowOf).filter(Boolean);
+    const inTrash = rows.every((x) => x.folder === "trash"), anyUnread = rows.some((x) => x.unread), allFlagged = rows.every((x) => x.flagged);
+    tools.append(
+      inTrash ? iconBtn("inbox", t("restore"), () => moveMail(ids, "inbox"))
+        : iconBtn("archive", t("archive_it"), () => moveMail(ids, "archive"), { key: "E" }),
+      iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
+      iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U" }),
+      iconBtn(allFlagged ? "flag-off" : "flag", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S" }),
+    );
     return;
   }
   const has = !!S.thread;
@@ -564,6 +754,7 @@ function renderToolbar() {
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
+    iconBtn(r?.flagged ? "flag-off" : "flag", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
   );
   end.append(
     iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id }), { key: "R", disabled: !has }),
@@ -575,12 +766,12 @@ function renderToolbar() {
 let threadSeq = 0;
 async function openThread(id) {
   const seq = ++threadSeq;
-  S.focus = id;
+  S.focus = id; S.sched = null;
   let th;
   try { th = await api("thread", { id }); } catch (e) { if (seq === threadSeq) { fail(e); showEmpty(); } return; }
   if (seq !== threadSeq) return;
   S.thread = th;
-  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject" }, th.subject || t("no_subject")));
+  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto" }, th.subject || t("no_subject")));
   // newest on top; the reply buttons sit right under the open message, older mail below
   const rows = [...th.rows].reverse();
   const openId = rows.some((r) => r.id === id) ? id : rows[0]?.id;
@@ -594,6 +785,59 @@ async function openThread(id) {
   renderToolbar();
   const open = $(`.msg[data-id="${CSS.escape(id)}"]`);
   if (open && openId !== rows[0].id) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
+}
+
+// a draft waiting to go out: when, and what can still be done with it
+let schedSeq = 0;
+async function openScheduled(r) {
+  const seq = ++schedSeq;
+  S.thread = null; S.focus = r.id; S.sched = r;
+  const zone = TZ || SYS_TZ;
+  const card = el("div", { class: "sched-card" + (r.sched_error ? " err" : "") },
+    el("span", { class: "sched-ic", html: icon(r.sched_error ? "triangle-alert" : "calendar-clock") }),
+    el("div", { class: "sched-text" },
+      el("div", { class: "sched-when" }, t("sends_at", longTime(r.sched))),
+      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
+    el("div", { class: "sched-acts" },
+      el("button", { class: "btn", onclick: () => editScheduled(r), html: icon("square-pen", "small") + esc(t("edit")) }),
+      el("button", { class: "btn primary", onclick: () => sendNow(r), html: icon("send", "small") + esc(t("send_now")) })));
+  const to = [...r.to, ...(r.cc || [])];
+  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto" }, r.subject || t("no_subject")), card,
+    el("div", { class: "sched-to" }, t("to") + " " + to.map(who).join(", ")));
+  const body = el("div", { class: "msg-body" }, el("div", { class: "rows-more" }, el("span", { html: icon("loader-circle", "spin") })));
+  doc.append(body);
+  $("#pane").replaceChildren(doc);
+  $("#pane").scrollTop = 0;
+  renderToolbar();
+  try {
+    const m = await api("message", { id: r.id });
+    if (seq === schedSeq && body.isConnected) renderBody(body, m);
+  } catch (e) { if (seq === schedSeq) body.replaceChildren(el("div", { class: "form" }, el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) }))); }
+}
+
+async function afterSchedule() {
+  refreshCounts();
+  if (["drafts", "scheduled"].includes(S.folder) || S.query) await loadList({ quiet: true });
+}
+
+async function dontSend(r) {
+  if (!r) return;
+  try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
+  if (S.sched?.id === r.id || S.sel === r.id) { S.sel = null; showEmpty(); }
+  toast(t("moved_to_drafts"), { action: { label: t("undo"), run: () => api("schedule", { id: r.id, at: r.sched }).then(afterSchedule).catch(fail) } });
+  afterSchedule();
+}
+
+async function editScheduled(r) {
+  try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
+  afterSchedule();
+  openCompose({ mode: "draft", id: r.id });
+}
+
+async function sendNow(r) {
+  if (S.sched?.id === r.id) { S.sel = null; showEmpty(); }
+  const back = () => { const row = S.rows.find((x) => x.id === r.id); if (row) selectRow(row.id); };
+  await sendWithUndo(r.id, back);
 }
 
 function msgNode(r, expanded) {
@@ -621,10 +865,12 @@ function msgNode(r, expanded) {
       loadBody(node, r);
       S.focus = r.id; renderToolbar();
     } else if (e.target.closest(".msg-to")) {
-      toLine.classList.toggle("open");
-      if (toLine.classList.contains("open")) toLine.textContent = [t("to") + " " + r.to.map((p) => p.name ? `${p.name} <${p.addr}>` : p.addr).join(", "), r.cc.length ? t("cc") + " " + r.cc.map((p) => p.name ? `${p.name} <${p.addr}>` : p.addr).join(", ") : ""].filter(Boolean).join("\n");
-      else toLine.textContent = t("to") + " " + to.map(who).join(", ");
-      toLine.style.whiteSpace = toLine.classList.contains("open") ? "pre-wrap" : "";
+      if (toLine.classList.toggle("open")) {
+        // one person per chip, so a name and its address never break apart
+        const line = (lab, list) => list.length ? `<span class="pl">${esc(lab)}</span><span>` +
+          list.map((p) => `<span class="pp">${esc(p.name || p.addr)}${p.name ? ` <span class="addr">${esc(p.addr)}</span>` : ""}</span>`).join("") + "</span>" : "";
+        toLine.innerHTML = line(t("to"), r.to) + line(t("cc"), r.cc);
+      } else toLine.textContent = t("to") + " " + to.map(who).join(", ");
     } else { S.focus = r.id; renderToolbar(); }
   });
   if (expanded) loadBody(node, r);
@@ -692,10 +938,10 @@ const frames = new Set();
 function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
-  let css = `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:14px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
+  let css = `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
 img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:${dark ? "#8fb8ff" : "#1a5fb4"}}
 blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}
-.rd-plain{white-space:pre-wrap;font-size:14px}.rd-quote{color:${dark ? "#9a9a9a" : "#6e6e73"};margin-top:14px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}`;
+.rd-plain{white-space:pre-wrap;font-size:${textSize()}px}.rd-quote{color:${dark ? "#9a9a9a" : "#6e6e73"};margin-top:14px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}`;
   if (dark && !plain) {
     css += `html,body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
@@ -724,7 +970,15 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d) return;
     if (quote) collapseQuote(st);
     fit();
-    try { new ResizeObserver(fit).observe(d.body); } catch { /* old engine */ }
+    // the frame's own observer: it goes away with the frame; one fit per frame at most
+    try {
+      let q = 0;
+      const ro = new d.defaultView.ResizeObserver(() => {
+        if (!frame.isConnected) { ro.disconnect(); return; }
+        if (!q) q = requestAnimationFrame(() => { q = 0; fit(); });
+      });
+      ro.observe(d.body);
+    } catch { /* old engine */ }
     for (const img of d.images) if (!img.complete) img.addEventListener("load", fit);
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
@@ -814,7 +1068,13 @@ async function openCompose(opts) {
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;
-  S.compose = c;
+  // a draft we wrote before comes back inside our own font wrapper: take it off
+  if (c.html) {
+    const d = el("div", { html: c.html });
+    const w = d.firstElementChild;
+    if (w && w.dataset.rdBody && d.childElementCount === 1 && !d.textContent.replace(w.textContent, "").trim()) c.html = w.innerHTML;
+  }
+  S.compose = c; S.sched = null;
   renderCompose();
 }
 
@@ -828,11 +1088,19 @@ function renderCompose() {
   const subj = el("input", { class: "subject-input", type: "text", placeholder: t("subject"), value: c.subject, spellcheck: "true" });
   subj.addEventListener("input", () => { c.subject = subj.value; touched(); });
   subj.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ed.focus(); } });
-  const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true" });
+  const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
+    style: `font-family:${mailFont()};font-size:${mailSize()}px` });
   ed.innerHTML = c.html || "";
-  ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); });
+  ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
-  box.append(subj, ed);
+  ed.addEventListener("keydown", (e) => {
+    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    if (!mod || e.altKey) return;
+    if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
+    else if (k === "b" || k === "i" || k === "u") { e.preventDefault(); edCmd({ b: "bold", i: "italic", u: "underline" }[k]); }
+    else if (e.shiftKey && (k === "7" || k === "8")) { e.preventDefault(); edCmd(k === "7" ? "insertOrderedList" : "insertUnorderedList"); }
+  });
+  box.append(subj, fmtBar(), ed);
   if (c.signature && c.use_signature) {
     const sig = el("div", { class: "sig" });
     sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), () => { c.use_signature = false; touched(); sig.remove(); }, { cls: "tiny" }));
@@ -857,6 +1125,116 @@ function renderCompose() {
     else if (c.mode === "forward" || c.mode === "new") (c.subject ? ed : subj).focus();
     else ed.focus();
   });
+}
+
+// ---------------------------------------------------------------- formatting
+
+const fmtBarOn = () => PREFS.fmt_bar !== false;
+function toggleFmtBar() {
+  savePref({ fmt_bar: !fmtBarOn() });
+  const bar = $(".fmt-bar");
+  if (bar) bar.classList.toggle("shut", !fmtBarOn());
+  renderToolbar();
+}
+// the editor loses its caret when a select or the link sheet takes focus: keep the last one
+let edRange = null;
+document.addEventListener("selectionchange", () => {
+  const ed = $(".compose .editor"), sel = getSelection();
+  if (ed && sel.rangeCount && ed.contains(sel.anchorNode)) { edRange = sel.getRangeAt(0).cloneRange(); fmtSync(); }
+});
+function edFocus() {
+  const ed = $(".compose .editor");
+  if (!ed) return null;
+  const sel = getSelection();
+  const inside = document.activeElement === ed && sel.rangeCount && ed.contains(sel.anchorNode);
+  ed.focus();
+  if (!inside && edRange && ed.contains(edRange.startContainer)) { sel.removeAllRanges(); sel.addRange(edRange); }
+  return ed;
+}
+function edChanged() {
+  const ed = $(".compose .editor");
+  if (!ed || !S.compose) return;
+  S.compose.html = ed.innerHTML; touched(); fmtSync();
+}
+function edCmd(cmd, val = null) {
+  if (!edFocus()) return;
+  document.execCommand("styleWithCSS", false, cmd === "fontName" || cmd === "foreColor");
+  if (cmd === "blockquote") {
+    const inQuote = getSelection().anchorNode?.parentElement?.closest(".editor blockquote");
+    document.execCommand("formatBlock", false, inQuote ? "div" : "blockquote");
+  } else if (cmd === "clear") {
+    document.execCommand("removeFormat"); document.execCommand("unlink");
+  } else document.execCommand(cmd, false, val);
+  edChanged();
+}
+function fmtSize(px) {
+  if (!edFocus()) return;
+  document.execCommand("styleWithCSS", false, false);
+  document.execCommand("fontSize", false, "7");
+  for (const f of $$(".compose .editor font[size='7']")) {
+    const sp = el("span", { style: `font-size:${px}px` });
+    sp.append(...f.childNodes); f.replaceWith(sp);
+  }
+  edChanged();
+}
+const FMT_SIZES = [["12", "size_small"], ["14", "size_normal"], ["18", "size_large"], ["24", "size_huge"]];
+function fmtBar() {
+  const b = (ic, tip, cmd, key) => {
+    const n = iconBtn(ic, tip, () => (cmd === "link" ? linkSheet() : edCmd(cmd)), { key, cls: "tiny" });
+    n.dataset.cmd = cmd;
+    n.addEventListener("mousedown", (e) => e.preventDefault());
+    return n;
+  };
+  const font = selectBox([["", t("font")], ...FONTS.map(([k]) => [k, fontLabel(k)])], "", (v) => { if (v) edCmd("fontName", fontStack(v)); font.firstChild.value = ""; });
+  const size = selectBox([["", t("font_size")], ...FMT_SIZES.map(([px, k]) => [px, t(k)])], "", (v) => { if (v) fmtSize(+v); size.firstChild.value = ""; });
+  font.classList.add("mini"); size.classList.add("mini");
+  return el("div", { class: "fmt-bar" + (fmtBarOn() ? "" : " shut") }, el("div", { class: "fmt-in" },
+    font, size, el("span", { class: "sep" }),
+    b("bold", t("bold"), "bold", MOD + "B"), b("italic", t("italic"), "italic", MOD + "I"),
+    b("underline", t("underline"), "underline", MOD + "U"), b("strikethrough", t("strike"), "strikeThrough"),
+    el("span", { class: "sep" }),
+    b("list", t("bullets"), "insertUnorderedList"), b("list-ordered", t("numbers"), "insertOrderedList"),
+    b("text-quote", t("quote_block"), "blockquote"),
+    el("span", { class: "sep" }),
+    b("link", t("link"), "link", MOD + "K"), b("remove-formatting", t("clear_fmt"), "clear")));
+}
+function fmtSync() {
+  for (const n of $$(".fmt-bar [data-cmd]")) {
+    const c = n.dataset.cmd;
+    let on = false;
+    try {
+      if (c === "blockquote") on = !!getSelection().anchorNode?.parentElement?.closest(".editor blockquote");
+      else if (!["link", "clear"].includes(c)) on = document.queryCommandState(c);
+    } catch { /* not supported */ }
+    n.classList.toggle("on", on);
+  }
+}
+function linkSheet() {
+  const ed = $(".compose .editor");
+  if (!ed) return;
+  const range = edRange && ed.contains(edRange.startContainer) ? edRange.cloneRange() : null;
+  const text = range ? range.toString() : "";
+  const url = el("input", { type: "text", placeholder: "https://", spellcheck: "false", autocomplete: "off" });
+  const label = el("input", { type: "text", value: text, placeholder: t("link"), spellcheck: "false" });
+  const go = () => {
+    let href = url.value.trim();
+    if (!href) return closeLayer();
+    if (!/^(https?:|mailto:)/i.test(href)) href = (/^[^\s/]+@[^\s/]+\.[^\s/]+$/.test(href) ? "mailto:" : "https://") + href;
+    closeLayer();
+    edRange = range;
+    if (!edFocus()) return;
+    const words = label.value.trim() || href.replace(/^mailto:/, "");
+    if (range && !range.collapsed && words === text) document.execCommand("createLink", false, href);
+    else document.execCommand("insertHTML", false, `<a href="${esc(href)}">${esc(words)}</a>`);
+    edChanged();
+  };
+  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  sheet(el("div", {}, el("h2", {}, t("link")), el("div", { class: "form" },
+    el("label", {}, el("span", { class: "lab" }, t("link_url")), url),
+    el("label", {}, el("span", { class: "lab" }, t("link")), label)),
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: () => { closeLayer(); edFocus(); } }, t("cancel")),
+      el("button", { class: "btn primary", onclick: go }, t("ok")))), { onclose: () => edFocus() });
+  requestAnimationFrame(() => url.focus());
 }
 
 function touched() {
@@ -980,7 +1358,7 @@ async function uploadFiles(files) {
     try {
       const r = await fetch("/upload", { method: "POST", headers: { "X-Token": TOKEN, "X-Name": encodeURIComponent(f.name) }, body: f });
       const j = await r.json();
-      if (!j.ok) throw new Error(j.error || t("error"));
+      if (!j.ok) throw new Error(tr(j.error) || t("error"));
       Object.assign(a, j.data, { uploading: false });
       touched();
     } catch (e) {
@@ -1037,9 +1415,15 @@ function composeState() {
   });
   return {
     mode: c.mode, orig: c.orig, replace: c.replace, to: c.to, cc: c.cc, bcc: c.bcc, subject: c.subject,
-    html: c.html, atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
+    html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
     use_signature: c.use_signature, irt: c.irt, refs: c.refs,
   };
+}
+
+// Outlook shows unstyled mail in Times: always say which font the body is in
+function wrapBody(html) {
+  if (!html || !html.replace(/<br\s*\/?>|<\/?div>|&nbsp;|\s/gi, "")) return html || "";
+  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${html}</div>`;
 }
 
 let saving = Promise.resolve();
@@ -1080,7 +1464,10 @@ async function leaveCompose() {
 }
 
 async function closeCompose() {
-  if (await leaveCompose()) { if (S.sel && S.rows.find((x) => x.id === S.sel)?.folder !== "drafts") openThread(S.sel); else showEmpty(); }
+  if (!(await leaveCompose())) return;
+  // a draft gets a new id each time it is saved: never reopen the old one
+  if (S.sel && S.folder !== "drafts" && S.rows.some((x) => x.id === S.sel && x.folder !== "drafts")) openThread(S.sel);
+  else { S.sel = null; syncSel(); showEmpty(); }
 }
 
 async function discardCompose() {
@@ -1097,7 +1484,7 @@ async function discardCompose() {
   if (S.sel && S.folder !== "drafts") openThread(S.sel); else showEmpty();
 }
 
-async function sendCompose(force = false) {
+async function sendCompose(force = false, at = null) {
   const c = S.compose;
   if (!c || c.busy) return;
   clearTimeout(c.autosave);
@@ -1111,44 +1498,103 @@ async function sendCompose(force = false) {
   c.busy = false;
   if (r.problems && r.problems.length) {
     renderToolbar();
-    return problemsSheet(r.problems);
+    return problemsSheet(r.problems, at);
   }
   c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
-  // out of the way while the undo pause runs
+  const reopen = async () => { if (S.compose && !(await leaveCompose())) return; S.compose = c; renderCompose(); };
+  // out of the way while it waits
   S.compose = null;
-  if (S.sel && S.folder !== "drafts") openThread(S.sel); else showEmpty();
-  let undone = false;
-  const tt = toast(t("sending"), { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0 });
-  for (let k = 0; k < 40 && !undone; k++) await sleep(100);
-  if (undone) {
-    if (S.compose && !(await leaveCompose())) return;
-    S.compose = c; renderCompose(); return;
+  if (S.sel && S.folder !== "drafts" && S.folder !== "scheduled") openThread(S.sel); else showEmpty();
+  if (at) {
+    try { await api("schedule", { id: r.id, at }); }
+    catch (e) { fail(e); return reopen(); }
+    toast(t("scheduled_for", laterTime(at)), { ms: 6000, action: { label: t("undo"), run: async () => {
+      try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
+      afterSchedule(); reopen();
+    } } });
+    afterSchedule();
+    return;
   }
-  tt.node.querySelector("button")?.remove();
+  await sendWithUndo(r.id, reopen);
+}
+
+// the pause after Send: Undo stops the mail before it leaves; after that it can't be called back
+async function sendWithUndo(id, onUndo) {
+  const wait = undoSeconds() * 1000;
+  let undone = false;
+  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
+  for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
+  if (undone) { tt.close(); return onUndo?.(); }
+  tt.node.querySelector(".toast-act")?.remove();
+  tt.node.querySelector(".toast-bar")?.remove();
   try {
-    const res = await api("send", { id: r.id });
+    const res = await api("send", { id });
     tt.close();
     const after = res.problems_after_sending || [];
-    if (after.length) toast(after.join(" "), { error: true, ms: 12000 });
+    if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
     else toast(t("sent_ok"));
     refreshCounts();
-    if (S.folder === "sent" || S.folder === "drafts") loadList({ quiet: true });
+    if (["sent", "drafts", "scheduled"].includes(S.folder)) loadList({ quiet: true });
     if (S.thread) openThread(S.focus || S.sel);
   } catch (e) {
     tt.close();
     fail(e);
-    if (!S.compose) { S.compose = c; renderCompose(); }
+    onUndo?.();
   }
 }
 
-function problemsSheet(problems) {
+function problemsSheet(problems, at = null) {
+  const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
   const box = sheet(el("div", {},
     el("h2", { html: icon("triangle-alert") + esc(t("problems")) }),
-    el("ul", {}, problems.map((p) => el("li", {}, p.charAt(0).toUpperCase() + p.slice(1)))),
+    el("ul", {}, problems.map((p) => el("li", {}, cap(tr(p))))),
     el("div", { class: "sheet-acts" },
       el("button", { class: "btn", onclick: () => { closeLayer(); $(".compose .editor")?.focus(); } }, t("keep_editing")),
-      el("button", { class: "btn primary", onclick: () => { closeLayer(); sendCompose(true); } }, t("send_anyway")))));
+      el("button", { class: "btn primary", onclick: () => { closeLayer(); sendCompose(true, at); } }, t(at ? "schedule" : "send_anyway")))));
   box.querySelector(".btn").focus();
+}
+
+// ---------------------------------------------------------------- send later
+
+const addDays = (p, n) => { const d = new Date(Date.UTC(p.y, p.m - 1, p.d + n)); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() }; };
+function laterMenu(anchor) {
+  const now = zparts(Date.now());
+  const at = (p, h) => zepoch(p.y, p.m, p.d, h, 0);
+  const items = [];
+  const pick = (ic, label, ts, hint) => items.push({ icon: ic, label, hint, run: () => sendCompose(false, ts) });
+  if (now.h < 17) pick("sunset", t("this_evening"), at(now, 18), fmt(at(now, 18), HM));
+  const tom = addDays(now, 1);
+  pick("sunrise", t("tomorrow_morning"), at(tom, 8), fmt(at(tom, 8), HM));
+  pick("sun", t("tomorrow_afternoon"), at(tom, 13), fmt(at(tom, 13), HM));
+  const toMon = ((8 - now.wd) % 7) || 7;
+  if (toMon > 1) { const mon = addDays(now, toMon); pick("calendar", t("monday_morning"), at(mon, 8), fmt(at(mon, 8), { month: "short", day: "numeric", ...HM })); }
+  items.push("-", { icon: "calendar-clock", label: t("pick_time"), run: pickTimeSheet });
+  menu(anchor, items);
+}
+
+function pickTimeSheet() {
+  const tom = addDays(zparts(Date.now()), 1);
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = el("input", { type: "date", value: `${tom.y}-${pad(tom.m)}-${pad(tom.d)}` });
+  const time = el("input", { type: "time", value: "08:00", step: 300 });
+  const err = el("div");
+  const go = () => {
+    const [y, m, d] = date.value.split("-").map(Number), [h, mi] = time.value.split(":").map(Number);
+    const ts = y && h != null && !isNaN(mi) ? zepoch(y, m, d, h, mi) : 0;
+    if (!ts || ts * 1000 < Date.now() + 30e3) { err.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(t("pick_future")) })); return; }
+    closeLayer();
+    sendCompose(false, ts);
+  };
+  const box = sheet(el("div", { class: "pick-time" },
+    el("h2", { html: icon("calendar-clock") + esc(t("send_later")) }),
+    el("div", { class: "form" },
+      el("div", { class: "two-even" }, el("label", {}, el("span", { class: "lab" }, t("date")), date), el("label", {}, el("span", { class: "lab" }, t("time")), time)),
+      el("div", { class: "note", html: icon("globe", "small") + esc((TZ || SYS_TZ).replace(/_/g, " ")) }), err),
+    el("div", { class: "sheet-acts" },
+      el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
+      el("button", { class: "btn primary", onclick: go }, t("schedule")))));
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  date.focus();
 }
 
 // drop files on the reader: attach (opens a new mail when none is open)
@@ -1182,12 +1628,17 @@ async function openSettings() {
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
   const saveBtn = el("button", { class: "btn primary", onclick: save }, t("save"));
-  const foot = el("div", { class: "settings-foot" }, msg, el("button", { class: "btn", onclick: closeLayer }, t("cancel")), saveBtn);
-  const tabs = [["account", "circle-user-round"], ["signature", "square-pen"], ["appearance", "sun"]];
+  const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
+  const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
+  const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
+    ["appearance", "sun", "appearance"], ["region", "languages", "region"]];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
-    for (const [k, ic] of tabs) nav.append(el("button", { class: "nav-item" + (k === tab ? " on" : ""), onclick: () => { grab(); tab = k; drawNav(); draw(); }, html: icon(ic) + `<span class="label">${esc(t(k))}</span>` }));
+    for (const [k, ic, lab] of tabs) nav.append(el("button", { class: "nav-item" + (k === tab ? " on" : ""), onclick: () => { grab(); tab = k; drawNav(); draw(); }, html: icon(ic) + `<span class="label">${esc(t(lab))}</span>` }));
   };
+  const setPref = (patch) => { Object.assign(PREFS, patch); api("prefs", patch).catch(fail); };
+  // the whole window speaks the new language at once, this sheet too
+  const relabelSheet = () => { saveBtn.textContent = t("save"); cancelBtn.textContent = t("cancel"); drawNav(); draw(); };
   let sigEd = null;
   const grab = () => {
     for (const inp of $$("input[data-k]", body)) v[inp.dataset.k] = inp.value;
@@ -1220,12 +1671,38 @@ async function openSettings() {
       sigEd.innerHTML = v.signature || "";
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
+    } else if (tab === "sending") {
+      const seg = el("div", { class: "seg" });
+      for (const n of UNDO_CHOICES) {
+        seg.append(el("button", { class: undoSeconds() === n ? "on" : "", onclick: () => { setPref({ undo: n }); draw(); } }, n ? t("seconds", n) : t("undo_off")));
+      }
+      const font = selectBox(FONTS.map(([k]) => [k, fontLabel(k)]), PREFS.font || "system", (val) => { setPref({ font: val }); draw(); });
+      const sizes = el("div", { class: "seg" });
+      for (const n of FONT_SIZES) sizes.append(el("button", { class: mailSize() === n ? "on" : "", onclick: () => { setPref({ font_size: n }); draw(); } }, String(n)));
+      const sample = el("div", { class: "font-sample", style: `font-family:${mailFont()};font-size:${mailSize()}px` }, t("font_sample"));
+      body.append(el("h2", {}, t("composing")), el("div", { class: "form" },
+        el("label", {}, el("span", { class: "lab" }, t("default_font")), font),
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("default_size")), sizes), sample,
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("undo_send")), seg), el("div", { class: "note" }, t("undo_note"))));
+    } else if (tab === "region") {
+      const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
+        setPref({ lang: val }); setLocale(PREFS); relabel(); relabelSheet();
+      });
+      const tz = selectBox([["system", t("system_x", SYS_TZ.replace(/_/g, " "))], ...zoneChoices()], PREFS.tz && PREFS.tz !== "system" ? PREFS.tz : "system", (val) => {
+        setPref({ tz: val }); setLocale(PREFS); relabel(); draw();
+      });
+      body.append(el("h2", {}, t("region")), el("div", { class: "form" },
+        el("label", {}, el("span", { class: "lab" }, t("language")), lang),
+        el("label", {}, el("span", { class: "lab" }, t("time_zone")), tz)));
     } else {
       const seg = el("div", { class: "seg" });
       for (const [k, ic] of [["system", "monitor"], ["light", "sun"], ["dark", "moon"]]) {
         seg.append(el("button", { class: v.theme === k ? "on" : "", onclick: () => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); draw(); }, html: icon(ic, "small") + esc(t(k)) }));
       }
-      body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg));
+      const ts = el("div", { class: "seg" });
+      for (const n of [13, 14, 16, 18]) ts.append(el("button", { class: textSize() === n ? "on" : "", onclick: () => { setTextSize(n); draw(); } }, String(n)));
+      body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg,
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts)));
     }
   };
   async function save() {
@@ -1247,6 +1724,50 @@ async function openSettings() {
   }
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
+}
+
+const UNDO_CHOICES = [0, 5, 10, 20, 30];
+
+// a native select in our own frame, with a chevron
+function selectBox(options, value, onchange) {
+  const sel = el("select", {});
+  for (const [k, label] of options) sel.append(el("option", { value: k, selected: k === value }, label));
+  sel.addEventListener("change", () => onchange(sel.value));
+  return el("span", { class: "select" }, sel, el("span", { class: "select-ic", html: icon("chevron-down", "small") }));
+}
+
+// every IANA time zone, by UTC offset now, labelled "UTC+08:00  Asia / Shanghai"
+let ZONES = null;
+function zoneChoices() {
+  if (ZONES) return ZONES;
+  let names = [];
+  try { names = Intl.supportedValuesOf("timeZone"); } catch { names = [SYS_TZ, "UTC"]; }
+  if (!names.includes("UTC")) names.push("UTC");
+  const now = new Date();
+  ZONES = names.map((z) => {
+    let off = "GMT";
+    try { off = new Intl.DateTimeFormat("en-US", { timeZone: z, timeZoneName: "longOffset" }).formatToParts(now).find((x) => x.type === "timeZoneName")?.value || "GMT"; } catch { /* old engine */ }
+    const m = off.match(/GMT([+-])(\d{2}):?(\d{2})?/);
+    const mins = m ? (m[1] === "-" ? -1 : 1) * (+m[2] * 60 + +(m[3] || 0)) : 0;
+    const label = "UTC" + (m ? m[1] + m[2] + ":" + (m[3] || "00") : "±00:00");
+    return { z, mins, text: label + "  " + z.replace(/_/g, " ").replace(/\//g, " / ") };
+  }).sort((a, b) => a.mins - b.mins || a.z.localeCompare(b.z)).map((x) => [x.z, x.text]);
+  return ZONES;
+}
+
+// a new language or time zone: draw everything again in place
+function relabel() {
+  if (!S.boot) return;
+  $("#compose-btn").dataset.tip = t("compose");
+  $("#search").placeholder = t("search");
+  $("#banner-btn").textContent = t("settings");
+  renderNav();
+  renderRows();
+  if (S.compose) { composeState(); renderCompose(); }
+  else if (S.sched) openScheduled(S.sched);
+  else if (S.thread) openThread(S.focus || S.sel);
+  else renderToolbar();
+  refreshCounts();
 }
 
 // ---------------------------------------------------------------- setup (no account yet)
@@ -1282,7 +1803,12 @@ function showSetup() {
     const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
     f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
-    box.replaceChildren(el("div", { class: "setup-drag pywebview-drag-region" }),
+    const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
+      PREFS.lang = val; api("prefs", { lang: val }).catch(() => {}); setLocale(PREFS); draw();
+    });
+    lang.classList.add("setup-lang");
+    lang.prepend(el("span", { class: "select-lead", html: icon("languages", "small") }));
+    box.replaceChildren(el("div", { class: "setup-drag pywebview-drag-region" }), lang,
       el("div", { class: "setup-card" }, el("img", { class: "logo", src: "logo.png", alt: "" }), el("h1", {}, t("setup_title")), f));
   };
   async function signIn() {
@@ -1303,6 +1829,36 @@ function showSetup() {
 
 // ---------------------------------------------------------------- keys
 
+function setTextSize(n) {
+  if (!TEXT_SIZES.includes(n) || n === textSize()) return;
+  savePref({ text_size: n });
+  refreshFrames();
+}
+function stepTextSize(d) {
+  if (!d) return setTextSize(14);
+  const k = TEXT_SIZES.indexOf(textSize());
+  const n = TEXT_SIZES[Math.max(0, Math.min(TEXT_SIZES.length - 1, k + d))];
+  if (n !== textSize()) { setTextSize(n); toast(t("text_size") + " " + n, { id: "zoom", ms: 1400 }); }
+}
+
+function shortcutsSheet() {
+  const groups = [
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
+    ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
+  ];
+  const grid = el("div", { class: "keys-grid" });
+  for (const [g, rows] of groups) {
+    const col = el("div", { class: "keys-col" }, el("h3", {}, t(g)));
+    for (const [keys, label] of rows) {
+      col.append(el("div", { class: "keys-row" }, el("span", {}, t(label)),
+        el("span", { class: "keys" }, ...keys.split(/\s{2}/).map((k) => el("kbd", {}, k)))));
+    }
+    grid.append(col);
+  }
+  sheet(el("div", {}, el("h2", {}, t("shortcuts")), grid)).classList.add("keys-sheet");
+}
+
 function typing(e) {
   const n = e.target;
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
@@ -1311,15 +1867,32 @@ function onKey(e) {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); $("#search").focus(); $("#search").select(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
+  if (mod && !e.altKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
+    e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
+  }
   if (layerOpen()) { if (e.key === "Escape") { closeLayer(); } return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
     if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeCompose(); return; }
   }
+  if (mod && e.key.toLowerCase() === "a" && !typing(e) && !S.compose) { e.preventDefault(); selectAll(); return; }
   if (typing(e) || mod || e.altKey) return;
   const id = S.focus || S.sel;
   const k = e.key;
+  if (k === "?") { e.preventDefault(); shortcutsSheet(); return; }
+  if (S.multi.size > 1) {
+    const ids = [...S.multi];
+    if (k === "Escape") { e.preventDefault(); clearMulti(); }
+    else if (k === "e") { e.preventDefault(); moveMail(ids, "archive"); }
+    else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (!ids.map(rowOf).every((r) => r?.folder === "trash")) moveMail(ids, "trash"); }
+    else if (k === "u") { e.preventDefault(); toggleUnread(); }
+    else if (k === "s") { e.preventDefault(); toggleFlag(); }
+    else if (k === "j" || k === "ArrowDown" || k === "k" || k === "ArrowUp") { e.preventDefault(); S.multi.clear(); step(k === "j" || k === "ArrowDown" ? 1 : -1); }
+    else if (k === "c") { e.preventDefault(); openCompose({ mode: "new" }); }
+    else if (k === "/") { e.preventDefault(); $("#search").focus(); }
+    return;
+  }
   if (k === "j" || k === "ArrowDown") { e.preventDefault(); step(1); }
   else if (k === "k" || k === "ArrowUp") { e.preventDefault(); step(-1); }
   else if (k === "c") { e.preventDefault(); openCompose({ mode: "new" }); }
@@ -1331,6 +1904,7 @@ function onKey(e) {
   else if (k === "e") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "archive") moveMail([id], "archive"); }
   else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "trash") moveMail([id], "trash"); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
+  else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
 }
 document.addEventListener("keydown", onKey);
@@ -1366,7 +1940,7 @@ function applyStatus(st) {
   const b = $("#banner");
   if (st.error && !S.boot.demo) {
     b.hidden = false;
-    $("#banner-text").textContent = st.error;
+    $("#banner-text").textContent = tr(st.error);
     $("#banner-btn").textContent = t("settings");
   } else b.hidden = true;
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
@@ -1404,6 +1978,8 @@ function start(boot) {
   $("#compose-btn").onclick = () => openCompose({ mode: "new" });
   $("#account").onclick = accountMenu;
   $("#search-kbd").textContent = MAC ? "⌘K" : "Ctrl K";
+  $("#search").placeholder = t("search");
+  $("#banner-btn").textContent = t("settings");
   document.querySelectorAll("[data-i]").forEach((n) => { n.innerHTML = svg(n.dataset.i); });
   renderNav();
   showEmpty();
@@ -1419,6 +1995,9 @@ function start(boot) {
     catch (e) { if (k > 20) { document.body.textContent = e.message; return; } await sleep(300); }
   }
   applyTheme(b.theme);
-  try { const p = await api("prefs", {}); if (p.list_width) document.documentElement.style.setProperty("--list-w", p.list_width + "px"); } catch { /* defaults */ }
+  PREFS = b.prefs || {};
+  if (!b.prefs) try { PREFS = await api("prefs", {}); } catch { /* defaults */ }
+  setLocale(PREFS);
+  if (PREFS.list_width) document.documentElement.style.setProperty("--list-w", PREFS.list_width + "px");
   if (!b.configured) showSetup(); else start(b);
 })();

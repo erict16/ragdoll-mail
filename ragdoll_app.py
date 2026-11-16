@@ -9,6 +9,7 @@ The page (app/) talks to a small HTTP server on 127.0.0.1. The server answers on
 that carry this run's random token, and only for the 127.0.0.1 host name (no DNS rebinding).
 """
 import argparse
+import atexit
 import base64
 import contextlib
 import datetime as dt
@@ -21,6 +22,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import smtplib
 import socket
 import ssl
@@ -29,6 +31,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -81,6 +84,13 @@ class ApiError(Exception):
 
 def fail(msg):
     raise ApiError(msg)
+
+
+LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
+UNDO_SECONDS = (0, 5, 10, 20, 30)
+FONTS = ("system", "arial", "helvetica", "georgia", "times", "verdana", "courier", "yahei", "pingfang", "simsun")
+FONT_SIZES = (12, 13, 14, 16, 18)
+TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 
 def friendly(e):
@@ -300,6 +310,7 @@ def demo_pdf(title):
 
 
 ME = ("Alex Morgan", "you@example.com")
+DEMO_FLAGGED = ("Quote for PO-1234",)
 DEMO = [
     # (folder, minutes ago, from, to, cc, subject, body, attachments, seen, thread key, reply-to key)
     ("inbox", 14, ("Jane Doe", "jane.doe@acme-industrial.com"), [ME], [("Tom Becker", "tom.becker@acme-industrial.com")],
@@ -427,6 +438,8 @@ class Backend:
         self.made = set()                       # files the app wrote (only these may be revealed)
         self.demo_raw = {}
         self.thread = None
+        self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
+        self.sched_wake = threading.Event()
         if demo:
             self.make_demo()
         self.c = R.db()
@@ -434,6 +447,7 @@ class Backend:
             self.prune_cache()
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
+        threading.Thread(target=self.sched_loop, daemon=True).start()
 
     # ---- plumbing
 
@@ -441,6 +455,8 @@ class Backend:
         fn = getattr(self, "api_" + name, None)
         if fn is None:
             return 404, {"ok": False, "error": "unknown call %s" % name}
+        if args is not None and not isinstance(args, dict):
+            return 400, {"ok": False, "error": "bad request"}
         try:
             return 200, {"ok": True, "data": fn(args or {})}
         except ApiError as e:
@@ -449,6 +465,9 @@ class Backend:
             return 200, {"ok": False, "error": friendly(e)}
         except (imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
             return 200, {"ok": False, "error": friendly(e)}
+        except Exception as e:      # noqa: BLE001 - a bug must not take the page down with it
+            traceback.print_exc(file=sys.stderr)
+            return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
 
     def q(self, sql, params=()):
         with self.dblock:
@@ -649,11 +668,29 @@ class Backend:
     def api_boot(self, a):
         return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
-                "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system")}
+                "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
+                "prefs": self.prefs()}
+
+    def flag_folders(self):
+        """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
+        return [R.CFG.folders[k] for k in ("inbox", "sent", "archive", "drafts") if R.CFG.folders.get(k)]
 
     def folder_counts(self):
         out = []
-        for k in ("inbox", "drafts", "sent", "archive", "trash"):
+        for k in ("inbox", "flagged", "drafts", "scheduled", "sent", "archive", "trash"):
+            if k == "flagged":
+                fs = self.flag_folders()
+                if fs:
+                    r = self.q("select count(*) n, coalesce(sum(seen=0),0) u from msgs where flagged=1 and folder in (%s)"
+                               % ",".join("?" * len(fs)), fs)[0]
+                    if r["n"]:
+                        out.append({"key": k, "total": r["n"], "unread": r["u"]})
+                continue
+            if k == "scheduled":
+                n = len(self.scheduled_rows())
+                if n:
+                    out.append({"key": k, "total": n, "unread": 0})
+                continue
             f = R.CFG.folders.get(k)
             if not f:
                 continue
@@ -680,6 +717,20 @@ class Backend:
     def api_prefs(self, a):
         p = self.prefs()
         p.update({k: v for k, v in a.items() if k in ("theme", "list_width", "sidebar")})
+        if a.get("lang") in LANGS:
+            p["lang"] = a["lang"]
+        if isinstance(a.get("tz"), str) and re.fullmatch(r"system|[A-Za-z][A-Za-z0-9_+\-/]{0,63}", a["tz"]):
+            p["tz"] = a["tz"]
+        if a.get("undo") in UNDO_SECONDS:
+            p["undo"] = a["undo"]
+        if a.get("font") in FONTS:
+            p["font"] = a["font"]
+        if a.get("font_size") in FONT_SIZES:
+            p["font_size"] = a["font_size"]
+        if a.get("text_size") in TEXT_SIZES:
+            p["text_size"] = a["text_size"]
+        if isinstance(a.get("fmt_bar"), bool):
+            p["fmt_bar"] = a["fmt_bar"]
         os.makedirs(R.CFG.home, exist_ok=True)
         with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
             json.dump(p, f)
@@ -689,15 +740,29 @@ class Backend:
 
     def api_list(self, a):
         key = a.get("folder") or "inbox"
+        if key == "scheduled":
+            return {"rows": self.scheduled_rows(), "more": False}
+        limit = max(1, min(int_in(a, "limit", 100), 500))
+        offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
+        if key == "flagged":
+            fs = self.flag_folders()
+            rows = self.q("select * from msgs where flagged=1 and folder in (%s) order by ts desc, uid desc limit ? offset ?"
+                          % ",".join("?" * len(fs)), (*fs, limit, offset)) if fs else []
+            return {"rows": [self.row_json(r) for r in rows], "more": len(rows) == limit}
         folder = R.CFG.folders.get(key, key)
-        limit = max(1, min(int(a.get("limit") or 100), 500))
-        offset = max(0, int(a.get("offset") or 0))
         rows = self.q("select * from msgs where folder=? order by ts desc, uid desc limit ? offset ?",
                       (folder, limit, offset))
-        return {"rows": [self.row_json(r) for r in rows], "more": len(rows) == limit}
+        out = [self.row_json(r) for r in rows]
+        if key == "drafts":
+            sched = {x["id"]: x for x in self.sched_list()}
+            for r in out:
+                if r["id"] in sched:
+                    r["sched"] = sched[r["id"]]["at"]
+                    r["sched_error"] = sched[r["id"]].get("error")
+        return {"rows": out, "more": len(rows) == limit}
 
     def api_search(self, a):
-        text = (a.get("q") or "").strip()
+        text = text_in(a, "q").strip()[:500]
         ns = SimpleNamespace(limit=200, folder=None, from_=None, to=None, since=None, until=None,
                              unread=False, att=False)
         words = []
@@ -771,7 +836,7 @@ class Backend:
         self.bump()
 
     def api_mark(self, a):
-        self.set_flag(a["ids"], a.get("flag", "seen"), bool(a.get("on", True)))
+        self.set_flag(ids_in(a), a.get("flag", "seen"), bool(a.get("on", True)))
         return {}
 
     def api_move(self, a):
@@ -783,17 +848,19 @@ class Backend:
         if not dest:
             fail("No %s folder is set." % dest_key)
         by = {}
-        for i in a["ids"]:
+        for i in ids_in(a):
             f, u = self.parse(i)
             if f != dest:
                 by.setdefault(f, []).append(u)
+                # a moved draft is no longer the one that was scheduled
+                self.sched_drop(i)
         if self.demo:
             for f, uids in by.items():
                 for u in uids:
                     r = self.q("select * from msgs where folder=? and uid=?", (f, u))
                     raw = self.demo_raw.pop((f, u), None)
                     if r and raw:
-                        self.demo_insert(dest, raw, r[0]["ts"], r[0]["seen"], r[0]["answered"])
+                        self.demo_insert(dest, raw, r[0]["ts"], r[0]["seen"], r[0]["answered"], r[0]["flagged"])
         else:
             def go(m):
                 if dest not in self.folders(m):
@@ -867,7 +934,7 @@ class Backend:
         return {}
 
     def api_contacts(self, a):
-        q = (a.get("q") or "").strip().lower()
+        q = text_in(a, "q").strip().lower()
         if time.time() - self.contacts[0] > 300:
             seen = {}
             sent = R.CFG.folders.get("sent")
@@ -959,6 +1026,12 @@ class Backend:
     def state_path(self, mid):
         return os.path.join(R.CFG.home, "compose", hashlib.sha1((mid or "").strip().encode()).hexdigest() + ".json")
 
+    def drop_state(self, i):
+        f, u = self.parse(i)
+        for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
+            with contextlib.suppress(OSError):
+                os.remove(self.state_path(r["msgid"]))
+
     def compose_state(self, mid):
         with contextlib.suppress(OSError, ValueError):
             with open(self.state_path(mid), encoding="utf-8") as f:
@@ -1004,6 +1077,10 @@ class Backend:
             f, u = self.parse(old)
             if f != drafts:
                 old = None
+            else:
+                with self.schedlock:
+                    self.sched_drop(old)
+                self.drop_state(old)
         if self.demo:
             uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
             if old:
@@ -1047,9 +1124,15 @@ class Backend:
         return {"id": i, "problems": []}
 
     def api_send(self, a):
+        with self.schedlock:
+            self.sched_drop(a["id"])
+            return self.send_now(a)
+
+    def send_now(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
+        self.drop_state(a["id"])
         if self.demo:
             raw = self.demo_raw.get((folder, uid))
             if raw is None:
@@ -1070,10 +1153,119 @@ class Backend:
         self.wake.set()
         return r
 
+    # ---- scheduled send
+    # A scheduled mail is a saved draft plus an entry in scheduled.json. The app sends it when it is
+    # due, while the app is running (the next start sends anything that came due while it was closed).
+
+    def sched_path(self):
+        return os.path.join(R.CFG.home, "scheduled.json")
+
+    def sched_list(self):
+        with self.schedlock:
+            try:
+                with open(self.sched_path(), encoding="utf-8") as f:
+                    d = json.load(f)
+                return [x for x in d if isinstance(x, dict) and x.get("id") and isinstance(x.get("at"), (int, float))]
+            except (OSError, ValueError):
+                return []
+
+    def sched_save(self, items):
+        with self.schedlock:
+            os.makedirs(R.CFG.home, exist_ok=True)
+            tmp = self.sched_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False)
+            os.replace(tmp, self.sched_path())
+
+    def sched_drop(self, i):
+        with self.schedlock:
+            items = self.sched_list()
+            keep = [x for x in items if x["id"] != i]
+            if len(keep) != len(items):
+                self.sched_save(keep)
+                self.bump()
+                return True
+            return False
+
+    def api_schedule(self, a):
+        """Send the saved draft a["id"] at a["at"] (Unix seconds)."""
+        i = a["id"]
+        folder, uid = self.parse(i)
+        if folder != R.CFG.folders["drafts"]:
+            fail("Only drafts can be scheduled.")
+        try:
+            at = int(a["at"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            fail("Pick a time to send.")
+        if at < time.time() - 60:
+            fail("That time has already passed.")
+        if at > time.time() + 5 * 366 * 86400:
+            fail("Pick a time within the next five years.")
+        with self.schedlock:
+            self.row(i)
+            items = [x for x in self.sched_list() if x["id"] != i]
+            items.append({"id": i, "at": at})
+            self.sched_save(items)
+        self.bump()
+        self.sched_wake.set()
+        return {"id": i, "at": at}
+
+    def api_unschedule(self, a):
+        """Keep the mail as a draft and do not send it."""
+        self.sched_drop(a["id"])
+        return {}
+
+    def scheduled_rows(self):
+        out = []
+        for x in sorted(self.sched_list(), key=lambda x: x["at"]):
+            try:
+                r = self.row_json(self.row(x["id"]))
+            except ApiError:
+                continue
+            r["sched"] = x["at"]
+            r["sched_error"] = x.get("error")
+            out.append(r)
+        return out
+
+    def sched_loop(self):
+        while not self.stopping.is_set():
+            self.sched_wake.wait(15)
+            self.sched_wake.clear()
+            if self.stopping.is_set():
+                break
+            with contextlib.suppress(Exception):
+                self.send_due()
+
+    def send_due(self, now=None):
+        """Send every scheduled mail that is due. A failure stays in the list with its reason and is not
+        tried again by itself: a send that failed half way could otherwise go out twice."""
+        now = time.time() if now is None else now
+        sent = 0
+        with self.schedlock:
+            for x in self.sched_list():
+                if x["at"] > now or x.get("error"):
+                    continue
+                try:
+                    self.send_now({"id": x["id"]})
+                    self.sched_drop(x["id"])
+                    sent += 1
+                except Exception as e:       # noqa: BLE001 - every reason is shown to the person
+                    msg = str(e) if isinstance(e, ApiError) else friendly(e)
+                    items = self.sched_list()
+                    for y in items:
+                        if y["id"] == x["id"]:
+                            y["error"] = msg
+                    self.sched_save(items)
+                    self.bump()
+        return sent
+
     def api_delete_draft(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be deleted this way.")
+        with self.schedlock:
+            self.sched_drop(a["id"])
+        self.drop_state(a["id"])
         if self.demo:
             self.demo_delete(a["id"])
         else:
@@ -1119,7 +1311,7 @@ class Backend:
 
     def api_test(self, a):
         """Sign in to IMAP and SMTP with these settings; find the special folders."""
-        user = (a.get("user") or "").strip().lower()
+        user = text_in(a, "user").strip().lower()
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", user):
             fail("Enter a full email address.")
         pw = a.get("password") or (os.environ.get(R.CFG.password_env) if user == R.CFG.user else None) \
@@ -1128,8 +1320,8 @@ class Backend:
             fail("Enter the password.")
         if self.demo:
             return {"folders": dict(R.CFG.folders)}
-        ihost, iport = (a.get("imap_host") or "").strip(), int(a.get("imap_port") or 993)
-        shost, sport = (a.get("smtp_host") or "").strip(), int(a.get("smtp_port") or 465)
+        ihost, iport = text_in(a, "imap_host").strip(), int_in(a, "imap_port", 993)
+        shost, sport = text_in(a, "smtp_host").strip(), int_in(a, "smtp_port", 465)
         try:
             m = imaplib.IMAP4_SSL(ihost, iport, timeout=20)
         except Exception as e:
@@ -1218,6 +1410,8 @@ class Backend:
 
     def make_demo(self):
         home = tempfile.mkdtemp(prefix="ragdoll-demo-")
+        self.demo_uids = {}
+        atexit.register(shutil.rmtree, home, True)
         d = json.loads(json.dumps(R.DEFAULTS))
         d.update({"user": ME[1], "name": ME[0], "data_dir": home, "imap": {"host": "demo", "port": 993},
                   "smtp": {"host": "demo", "port": 465}})
@@ -1241,18 +1435,20 @@ class Backend:
                 mids[thread] = mid
             raw = demo_message(fk, ts, frm, to, cc, subj, body, atts, mid, irt, refs,
                                inline=subj.startswith("Re: Site visit"))
-            self.demo_insert(R.CFG.folders[fk], raw, ts, int(seen), int(fk == "inbox" and thread == "lunch"))
+            self.demo_insert(R.CFG.folders[fk], raw, ts, int(seen), int(fk == "inbox" and thread == "lunch"),
+                             int(subj in DEMO_FLAGGED))
         self.demo_order_threads()
 
     def demo_order_threads(self):
         # the demo list is made oldest-thread-first above; nothing else to do, kept for clarity
         return
 
-    def demo_insert(self, folder, raw, ts, seen, answered):
+    def demo_insert(self, folder, raw, ts, seen, answered, flagged=0):
         with self.dblock:
             r = self.c.execute("select coalesce(max(uid),0)+1 from msgs where folder=?", (folder,)).fetchone()
-            uid = r[0]
-            index_raw(self.c, folder, 1, uid, raw, ts, seen, answered)
+            uid = max(r[0], self.demo_uids.get(folder, 0) + 1)
+            self.demo_uids[folder] = uid
+            index_raw(self.c, folder, 1, uid, raw, ts, seen, answered, flagged)
         self.demo_raw[(folder, uid)] = raw
         return uid
 
@@ -1265,7 +1461,29 @@ class Backend:
     def close(self):
         self.stopping.set()
         self.wake.set()
+        self.sched_wake.set()
         self.drop()
+
+
+def ids_in(a):
+    ids = a.get("ids")
+    if isinstance(ids, str):
+        ids = [ids]
+    if not isinstance(ids, list) or not all(isinstance(x, str) for x in ids):
+        fail("bad request")
+    return ids
+
+
+def text_in(a, k):
+    v = a.get(k)
+    return v if isinstance(v, str) else ""
+
+
+def int_in(a, k, default):
+    try:
+        return int(a.get(k) or default)
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def app_problems(msg, reply):
@@ -1278,17 +1496,17 @@ def app_problems(msg, reply):
     return out
 
 
-def index_raw(c, folder, uidv, uid, raw, ts, seen, answered):
+def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
     msg = R.to_msg(raw)
     names = [R.fname(p) or "" for p in file_parts(msg)]
     body = R.body_text(msg)[:R.CFG.body_chars]
     c.execute("insert or ignore into state values(?,?)", (folder, uidv))
     cur = c.execute(
         "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
-        "answered,size,has_body) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1)",
+        "answered,size,has_body) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
         (folder, uidv, uid, R.hdr(msg, "Message-ID").strip(), R.hdr(msg, "In-Reply-To").strip(),
          R.hdr(msg, "References"), ts, R.hdr(msg, "From"), R.hdr(msg, "To"), R.hdr(msg, "Cc"),
-         R.hdr(msg, "Subject"), " | ".join(names), body, seen, answered, len(raw)))
+         R.hdr(msg, "Subject"), " | ".join(names), body, seen, int(flagged), answered, len(raw)))
     if cur.rowcount:
         c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,?)",
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
@@ -1586,6 +1804,9 @@ def main(argv=None):
     ap.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version="ragdoll-mail " + __version__)
     a = ap.parse_args(argv)
+    # a plain kill still closes the mailbox and removes the demo's temp folder
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     backend = Backend(demo=a.demo)
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))

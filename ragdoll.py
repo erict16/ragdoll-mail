@@ -53,7 +53,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -562,15 +562,20 @@ def addrs(value):
     return [(n, a.lower()) for n, a in getaddresses([value or ""]) if a and "@" in a]
 
 
+def one_line(s):
+    """A header value never holds a line break (EmailMessage refuses one; it could also add a header)."""
+    return re.sub(r"\s*[\r\n]+\s*", " ", s) if s else s
+
+
 def fmt_addrs(lst):
-    return ", ".join(formataddr((n, a)) if n else a for n, a in lst)
+    return ", ".join(formataddr((one_line(n), one_line(a))) if n else one_line(a) for n, a in lst)
 
 
 def html_to_text(h):
     h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", " ", h or "")
     h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>|</blockquote>", "\n", h)
     h = re.sub(r"(?i)</t[dh]>", "\t", h)
-    h = htmlmod.unescape(re.sub(r"<[^>]+>", "", h))
+    h = htmlmod.unescape(re.sub(r"<[^<>]+>", "", h))      # [^<>]: a stray "<" must not make it quadratic
     h = re.sub(r"[ \t ​]+", " ", h)
     return re.sub(r"\n\s*\n+", "\n\n", h).strip()
 
@@ -632,8 +637,10 @@ def is_inline(p):
 def attachments(msg, inline=False):
     out = []
     for p in leaf_parts(msg):
-        if p is msg:
-            continue
+        if p is msg and (msg.is_multipart() or not (
+                p.get_content_disposition() == "attachment" or p.get_filename()
+                or p.get_content_maintype() not in ("text", "multipart", "message"))):
+            continue     # a mail that is only a file (a scanner's PDF) still shows that file
         is_file = (p.get_content_disposition() == "attachment" or p.get_filename()
                    or p.get_content_type() == "message/rfc822"
                    or (p.get("Content-ID") and not is_inline(p)))
@@ -665,18 +672,28 @@ def make_id(folder, uid):
 
 
 def parse_id(i):
-    if ":" not in i:
-        die("id must look like inbox:9255 or drafts:3, got %r" % i)
+    if not isinstance(i, str) or ":" not in i:
+        die("id must look like inbox:9255 or drafts:3, got %r" % (i,))
     f, uid = i.rsplit(":", 1)
+    uid = uid.strip()
+    if not (f.strip() and uid.isascii() and uid.isdigit() and 0 < int(uid) < 2 ** 32):
+        die("id must look like inbox:9255 or drafts:3, got %r" % i)
     return CFG.folder(f), int(uid)
 
 
 def local_time(ts):
-    return dt.datetime.fromtimestamp(ts, CFG.tz).strftime("%Y-%m-%d %H:%M")
+    try:
+        return dt.datetime.fromtimestamp(ts, CFG.tz).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, OverflowError, OSError, TypeError):    # a broken Date header far out of range
+        return "?"
 
 
 def day_start(s, add_days=0):
-    return int((dt.datetime.fromisoformat(s) + dt.timedelta(days=add_days)).replace(tzinfo=CFG.tz).timestamp())
+    try:
+        d = dt.datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        die("date must look like 2026-11-16, got %r" % (s,))
+    return int((d + dt.timedelta(days=add_days)).replace(tzinfo=CFG.tz).timestamp())
 
 
 # ------------------------------------------------------------------ index
@@ -689,6 +706,7 @@ create table if not exists msgs(id integer primary key, folder text, uidv intege
 create index if not exists msgs_ts on msgs(ts);
 create index if not exists msgs_msgid on msgs(msgid);
 create index if not exists msgs_irt on msgs(irt);
+create index if not exists msgs_folder_ts on msgs(folder, ts, uid);
 create virtual table if not exists fts using fts5(subject, frm, to_, atts, body, tokenize='trigram');
 create table if not exists state(folder text primary key, uidv integer);
 create table if not exists meta(k text primary key, v text);
@@ -1021,16 +1039,25 @@ def print_rows(rows, as_json, empty="(nothing found)"):
         print(empty)
 
 
+MAX_TERM = 200     # a longer search word is cut: a 1 MB word kept the index busy for minutes
+MAX_TERMS = 30
+
+
+def like_arg(t, cap=MAX_TERM):
+    """A LIKE pattern that finds t literally: % and _ in what was typed are not wildcards."""
+    return "%" + re.sub(r"([\\%_])", r"\\\1", t[:cap]) + "%"
+
+
 def add_filters(a, where, params):
     if getattr(a, "folder", None):
         where.append("m.folder=?")
         params.append(CFG.folder(a.folder))
     if getattr(a, "from_", None):
-        where.append("m.frm like ?")
-        params.append("%" + a.from_ + "%")
+        where.append("m.frm like ? escape '\\'")
+        params.append(like_arg(a.from_))
     if getattr(a, "to", None):
-        where.append("(m.to_ like ? or m.cc like ?)")
-        params += ["%" + a.to + "%"] * 2
+        where.append("(m.to_ like ? escape '\\' or m.cc like ? escape '\\')")
+        params += [like_arg(a.to)] * 2
     if getattr(a, "since", None):
         where.append("m.ts>=?")
         params.append(day_start(a.since))
@@ -1046,13 +1073,15 @@ def add_filters(a, where, params):
 def search_rows(c, words, a):
     where, params = [], []
     long_terms = []
-    for t in (nfc(w) for w in words):
+    for t in (nfc(w)[:MAX_TERM] for w in words[:MAX_TERMS]):
+        if not t:
+            continue
         if len(t) >= 3:
             long_terms.append('"%s"' % t.replace('"', '""'))
         else:
-            where.append("(m.subject like ? or m.frm like ? or m.to_ like ? or m.cc like ? "
-                         "or m.atts like ? or m.body like ?)")
-            params += ["%" + t + "%"] * 6
+            where.append("(" + " or ".join("m.%s like ? escape '\\'" % k
+                                           for k in ("subject", "frm", "to_", "cc", "atts", "body")) + ")")
+            params += [like_arg(t)] * 6
     if long_terms:
         where.insert(0, "m.id in (select rowid from fts where fts match ?)")
         params.insert(0, " AND ".join(long_terms))
@@ -1127,31 +1156,40 @@ def cmd_list(a):
 
 
 def thread_rows(c, row):
-    ids = {row["msgid"]} | set(re.findall(r"<[^>]+>", (row["refs"] or "") + " " + (row["irt"] or "")))
+    ids = {row["msgid"]} | set(re.findall(r"<[^<>]+>", (row["refs"] or "") + " " + (row["irt"] or "")))
     ids.discard("")
+    ids.discard(None)
     seen = {}
+    new = set(ids)
     for _ in range(6):
-        marks = ",".join("?" * len(ids)) or "''"
-        rows = c.execute("select * from msgs where msgid in (%s) or irt in (%s)" % (marks, marks),
-                         list(ids) * 2).fetchall()
-        like = c.execute("select * from msgs where " + " or ".join(["refs like ?"] * len(ids)),
-                         ["%" + i + "%" for i in ids]).fetchall() if ids else []
-        grew = False
-        for r in rows + like:
+        if not new:      # with no ids, "msgid in ('') or irt in ('')" matched every mail that is not a reply
+            break
+        found = []
+        new = sorted(new)
+        for k in range(0, len(new), 200):
+            q = new[k:k + 200]
+            marks = ",".join("?" * len(q))
+            found += c.execute("select * from msgs where msgid in (%s) or irt in (%s)" % (marks, marks),
+                               q * 2).fetchall()
+            found += c.execute("select * from msgs where " + " or ".join(["refs like ? escape '\\'"] * len(q)),
+                               [like_arg(i, None) for i in q]).fetchall()
+        new = set()
+        for r in found:
             if r["id"] not in seen:
                 seen[r["id"]] = r
-                for x in [r["msgid"]] + re.findall(r"<[^>]+>", (r["refs"] or "") + " " + (r["irt"] or "")):
+                for x in [r["msgid"]] + re.findall(r"<[^<>]+>", (r["refs"] or "") + " " + (r["irt"] or "")):
                     if x and x not in ids:
                         ids.add(x)
-                        grew = True
-        if not grew:
-            break
+                        new.add(x)
     # same bare subject within 180 days catches clients that drop References
     bs = bare_subject(row["subject"])
     if bs:
-        for r in c.execute("select * from msgs where ts between ? and ?",
-                           (row["ts"] - 180 * 86400, row["ts"] + 180 * 86400)).fetchall():
-            if r["id"] not in seen and bare_subject(r["subject"]) == bs:
+        hits = [r["id"] for r in c.execute("select id, subject from msgs where ts between ? and ?",
+                                           (row["ts"] - 180 * 86400, row["ts"] + 180 * 86400))
+                if r["id"] not in seen and bare_subject(r["subject"]) == bs]
+        for k in range(0, len(hits), 500):
+            part = hits[k:k + 500]
+            for r in c.execute("select * from msgs where id in (%s)" % ",".join("?" * len(part)), part):
                 seen[r["id"]] = r
     seen[row["id"]] = row
     return sorted(seen.values(), key=lambda r: r["ts"])
@@ -1214,10 +1252,15 @@ def cmd_read(a):
 RESERVED = {"con", "prn", "aux", "nul", *("com%d" % i for i in range(1, 10)), *("lpt%d" % i for i in range(1, 10))}
 
 
-def safe_name(n):
+def safe_name(n, max_bytes=200):
     n = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", n or "").strip().rstrip(". ") or "attachment"
     if os.path.splitext(n)[0].lower() in RESERVED:
         n = "_" + n
+    if len(n.encode()) > max_bytes:      # most file systems stop at 255 bytes; keep room for " (2)"
+        stem, ext = os.path.splitext(n)
+        ext = ext if len(ext.encode()) <= 20 else ""
+        stem = stem.encode()[:max_bytes - len(ext.encode())].decode("utf-8", "ignore").rstrip(". ")
+        n = (stem or "attachment") + ext
     return n
 
 
@@ -1372,7 +1415,7 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
         msg["Cc"] = fmt_addrs(cc)
     if bcc:
         msg["Bcc"] = fmt_addrs(bcc)
-    msg["Subject"] = subject
+    msg["Subject"] = one_line(subject)
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=(CFG.user.split("@")[-1] or None))
     if high:
@@ -1402,17 +1445,17 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
         if mode == "forward":
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
-                    msg.add_attachment(part_bytes(p), "application", "octet-stream", filename=fname(p))
+                    msg.add_attachment(part_bytes(p), "application", "octet-stream", filename=one_line(fname(p)))
                     continue
                 mt, st = p.get_content_type().split("/", 1)
-                msg.add_attachment(part_bytes(p), mt, st, filename=fname(p))
+                msg.add_attachment(part_bytes(p), mt, st, filename=one_line(fname(p)))
     for f in attach:
         ctype = mimetypes.guess_type(f)[0] or "application/octet-stream"
         if ctype.startswith("message/"):     # a .eml file: add_attachment wants a Message object for these
             ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
-            msg.add_attachment(fh.read(), mt, st, filename=os.path.basename(f))
+            msg.add_attachment(fh.read(), mt, st, filename=one_line(os.path.basename(f)))
     return msg
 
 
@@ -1517,17 +1560,32 @@ def cmd_drafts(a):
 def table_problems(html, sig_at, blanks_ok):
     new = html[:sig_at] if sig_at >= 0 else html
     problems = []
-    tables = re.findall(r"<table\b[^>]*>", new, re.I)
+    # [^<>] and str.find instead of [^>] and .*? : broken or unclosed tags made these regexes quadratic
+    tables = re.findall(r"<table\b[^<>]*>", new, re.I)
     if any("word-break:normal" not in t.replace(" ", "") for t in tables):
         problems.append("a table does not reset word-break:normal, so cells can split letter by letter")
-    for t, body in re.findall(r"(<table\b[^>]*>)(.*?)</tr>", new, re.I | re.S):
-        first = re.sub(r"<colgroup.*?</colgroup>", "", body, flags=re.I | re.S)
-        ncols = sum(int(s or 1) for s in re.findall(r"<t[dh]\b(?:[^>]*colspan=\"?(\d+))?[^>]*>", first, re.I))
+    low = new.lower()
+    pos, table_re = 0, re.compile(r"<table\b[^<>]*>", re.I)
+    while True:
+        mo = table_re.search(new, pos)
+        end = low.find("</tr>", mo.end()) if mo else -1
+        if end < 0:
+            break
+        t, body, pos = mo.group(0), new[mo.end():end], end + 5
+        first = re.sub(r"<colgroup.*?</colgroup>", "", body, flags=re.I | re.S) if "</colgroup>" in body.lower() else body
+        ncols = sum(int(s or 1) for s in re.findall(r"<t[dh]\b(?:[^<>]*colspan=\"?(\d+))?[^<>]*>", first, re.I))
         if ncols >= 3 and not re.search(r"(?<![-\w])width:\d+px", t.replace(" ", "")):
             problems.append("a %d-column table has no fixed pixel width" % ncols)
             break
-    cells = [re.sub(r"<[^>]+>|&nbsp;|\s", "", c).lower()
-             for attrs, c in re.findall(r"<td\b([^>]*)>(.*?)</td>", new, re.I | re.S) if "colspan" not in attrs]
+    cells, pos, td_re = [], 0, re.compile(r"<td\b([^<>]*)>", re.I)
+    while True:
+        mo = td_re.search(new, pos)
+        end = low.find("</td>", mo.end()) if mo else -1
+        if end < 0:
+            break
+        if "colspan" not in mo.group(1):
+            cells.append(re.sub(r"<[^<>]+>|&nbsp;|\s", "", new[mo.end():end]).lower())
+        pos = end + 5
     blanks = sum(c in ("", "-", "—", "–", "tbc", "?") for c in cells) + new.count("TBC")
     if tables and blanks and not blanks_ok:
         problems.append("%d blank/—/TBC value(s) in the table; say which rows miss what, then use --blanks-ok"
