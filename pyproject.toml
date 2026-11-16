@@ -1,6 +1,6 @@
 [project]
 name = "ragdoll-mail"
-version = "0.5.1"
+version = "0.5.2"
 description = "Mail CLI for one IMAP/SMTP mailbox with a local search index, built for AI agents"
 requires-python = ">=3.10"
 license = {text = "MIT"}

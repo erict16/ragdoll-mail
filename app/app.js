@@ -581,14 +581,19 @@ async function openThread(id) {
   if (seq !== threadSeq) return;
   S.thread = th;
   const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject" }, th.subject || t("no_subject")));
-  for (const r of th.rows) doc.append(msgNode(r, r.id === id));
+  // newest on top; the reply buttons sit right under the open message, older mail below
+  const rows = [...th.rows].reverse();
+  const openId = rows.some((r) => r.id === id) ? id : rows[0]?.id;
   const act = (ic, label, mode) => el("button", { class: "btn", onclick: () => openCompose({ mode, id: S.focus || id }), html: icon(ic, "small") + esc(label) });
-  doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
+  for (const r of rows) {
+    doc.append(msgNode(r, r.id === openId));
+    if (r.id === openId) doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
+  }
   $("#pane").replaceChildren(doc);
   $("#pane").scrollTop = 0;
   renderToolbar();
   const open = $(`.msg[data-id="${CSS.escape(id)}"]`);
-  if (open && th.rows.length > 1) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
+  if (open && openId !== rows[0].id) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
 }
 
 function msgNode(r, expanded) {
