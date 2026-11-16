@@ -1189,6 +1189,63 @@ def cmd_send(a):
                       "copy_in_sent": "server" if saved else "added by hmail"}, ensure_ascii=False, indent=1))
 
 
+def move_uids(m, folder, uids, dest):
+    """Move UIDs within the mailbox (MOVE when the server has it, else COPY + delete)."""
+    select(m, folder, readonly=False)
+    caps = " ".join(x.decode() if isinstance(x, bytes) else x for x in m.capabilities).upper()
+    moved = 0
+    for i in range(0, len(uids), 200):
+        batch = ",".join(map(str, uids[i:i + 200]))
+        if "MOVE" in caps.split():
+            typ, data = m.uid("MOVE", batch, q(dest))
+        else:
+            typ, data = m.uid("COPY", batch, q(dest))
+            if typ == "OK":
+                m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
+                if "UIDPLUS" in caps.split():
+                    m.uid("EXPUNGE", batch)
+                else:
+                    m.expunge()
+        if typ != "OK":
+            die("the server refused the move after %d mails: %s" % (moved, data))
+        moved += len(uids[i:i + 200])
+    return moved
+
+
+def cmd_trash(a):
+    """Move mails to the trash folder (recoverable from there)."""
+    ids = list(a.ids)
+    if a.from_file:
+        with open(a.from_file, encoding="utf-8") as f:
+            ids += [x.strip() for x in f if x.strip()]
+    if not ids:
+        die("no ids given")
+    by_folder = {}
+    for i in ids:
+        f, u = parse_id(i)
+        by_folder.setdefault(f, []).append(u)
+    if not a.yes:
+        print("would move %d mails to %s: %s" % (len(ids), CFG.folders["trash"],
+                                                 {CFG.short(f): len(u) for f, u in by_folder.items()}))
+        print("rerun with --yes, only after the owner approved this list")
+        return
+    total = 0
+    with session() as m:
+        for f, uids in by_folder.items():
+            if f == CFG.folders["trash"]:
+                continue
+            total += move_uids(m, f, sorted(set(uids)), CFG.folders["trash"])
+    c = db()
+    for f, uids in by_folder.items():
+        for u in uids:
+            r = c.execute("select id from msgs where folder=? and uid=?", (f, u)).fetchone()
+            if r:
+                c.execute("delete from msgs where id=?", (r["id"],))
+                c.execute("delete from fts where rowid=?", (r["id"],))
+    c.commit()
+    print("moved %d mails to %s" % (total, CFG.folders["trash"]))
+
+
 def cmd_delete_draft(a):
     if not a.yes:
         die("delete-draft needs --yes")
@@ -1276,6 +1333,11 @@ def parser():
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_send)
+    p = sp.add_parser("trash")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(fn=cmd_trash)
     p = sp.add_parser("delete-draft")
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
