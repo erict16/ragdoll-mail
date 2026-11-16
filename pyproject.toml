@@ -1,6 +1,6 @@
 [project]
 name = "hmail"
-version = "0.2.0"
+version = "0.3.0"
 description = "Mail CLI for one IMAP/SMTP mailbox with a local search index, built for AI agents"
 requires-python = ">=3.10"
 license = {text = "MIT"}

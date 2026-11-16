@@ -36,6 +36,18 @@ python hmail.py send drafts:12 --yes
 
 Text in GB2312, GBK, GB18030 and Big5 is read with the superset codecs (GB18030, cp950), so names such as 赵珺 labelled GB2312 stay intact; raw 8-bit GBK headers and file names are repaired, unknown charsets never stop a sync, and an attached mail (message/rfc822) is kept as one .eml attachment.
 
+## Updates
+
+hmail updates itself the careful way (the model is S2Arm's updater):
+
+- **It looks, it does not touch.** At most every 6 hours a command starts a quiet background check (`git fetch` of `main`, never asks for a password, never slows the command). When a newer version is waiting, commands print one line on stderr: `hmail 0.3.1 is out (2 change(s); this is 0.3.0). Run: hmail update`. No network, no line. `status` shows `version` and `update_available`.
+- **It replaces only when asked:** `hmail update` (`--check` only says what is new). It refuses while another hmail command runs (a sync, a send), when the clone has changed files, is not on `main`, or has commits that are not on GitHub.
+- **It tests before it keeps.** After the fast-forward it runs `hmail.py --version` and the offline tests of the new version. If they fail, it puts the old version back by itself and says why.
+- **It says what changed** (the commit titles) and logs every step to `<data dir>/logs/update.log`.
+- **One step back:** `hmail update --rollback` returns to the version before the last update and stops offering the one you left.
+
+Off: `"update_check": false` in the config, or `HMAIL_NO_UPDATE_CHECK=1`. `HMAIL_UPDATE_REMOTE` points the check at another remote (for testing). Updating needs a git clone; a copied `hmail.py` only says so.
+
 ## Tests
 
 ```

@@ -1,5 +1,5 @@
 """Offline tests: python -m unittest discover -s tests"""
-import email, os, sqlite3, sys, unittest
+import email, os, shutil, sqlite3, subprocess, sys, tempfile, unittest
 from email import policy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -295,6 +295,120 @@ class Index(unittest.TestCase):
         c.execute("create virtual table fts using fts5(x, tokenize='trigram')")
         c.execute("insert into fts values('回复： Fw: E-W260084-088 越南MEE 夏洁平')")
         self.assertEqual(c.execute("select count(*) from fts where fts match '\"越南MEE\"'").fetchone()[0], 1)
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class Update(unittest.TestCase):
+    """update against a local remote: check, update, self-test rollback, gates, rollback."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.remote = os.path.join(self.tmp, "remote")
+        self.app = os.path.join(self.tmp, "app")
+        os.makedirs(self.remote)
+        self.git(self.remote, "init", "-q", "-b", "main")
+        self.write_version("0.3.0")
+        self.commit(self.remote, "First")
+        subprocess.run(["git", "clone", "-q", self.remote, self.app], check=True)
+        self.old = (hmail.CFG, os.environ.get("HMAIL_UPDATE_REMOTE"), hmail.self_test)
+        hmail.CFG = hmail.Cfg(dict(hmail.DEFAULTS, data_dir=os.path.join(self.tmp, "data")))
+        os.environ["HMAIL_UPDATE_REMOTE"] = self.remote
+        hmail.self_test = lambda repo: (True, "")
+
+    def tearDown(self):
+        hmail.CFG, remote, hmail.self_test = self.old
+        if remote is None:
+            os.environ.pop("HMAIL_UPDATE_REMOTE", None)
+        else:
+            os.environ["HMAIL_UPDATE_REMOTE"] = remote
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"] + list(args),
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def write_version(self, v):
+        with open(os.path.join(self.remote, "hmail.py"), "w") as f:
+            f.write('__version__ = "%s"\n' % v)
+
+    def commit(self, repo, msg):
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-q", "-m", msg)
+
+    def release(self, v, msg):
+        self.write_version(v)
+        self.commit(self.remote, msg)
+
+    def head(self):
+        return self.git(self.app, "rev-parse", "HEAD")
+
+    def test_current_then_available_then_updated(self):
+        self.assertEqual(hmail.do_update(self.app)["state"], "current")
+        self.release("0.3.1", "Faster search")
+        r = hmail.do_update(self.app, check_only=True)
+        self.assertEqual((r["state"], r["current"], r["version"], r["notes"]),
+                         ("available", "0.3.0", "0.3.1", ["Faster search"]))
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "updated")
+        self.assertEqual(self.head(), self.git(self.remote, "rev-parse", "HEAD"))
+        self.assertEqual(hmail.update_state()["previous"]["version"], "0.3.0")
+        with open(os.path.join(hmail.CFG.home, "logs", "update.log")) as f:
+            self.assertIn("updated to 0.3.1", f.read())
+
+    def test_failed_self_test_puts_old_version_back(self):
+        before = self.head()
+        self.release("0.3.1", "Broken")
+        hmail.self_test = lambda repo: (False, "SyntaxError")
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "failed")
+        self.assertIn("put back", r["reason"])
+        self.assertEqual(self.head(), before)
+        self.assertEqual(self.git(self.app, "status", "--porcelain"), "")
+
+    def test_refuses_local_changes_and_local_commits(self):
+        self.release("0.3.1", "New")
+        with open(os.path.join(self.app, "hmail.py"), "a") as f:
+            f.write("# mine\n")
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "refused")
+        self.assertIn("changed files", r["reason"])
+        self.commit(self.app, "Local")
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "refused")
+        self.assertIn("not on the remote", r["reason"])
+
+    def test_refuses_while_another_command_runs(self):
+        self.release("0.3.1", "New")
+        d = os.path.join(hmail.CFG.home, "run")
+        os.makedirs(d)
+        marker = os.path.join(d, "999999-send.lock")
+        f = open(marker, "a+")
+        self.assertTrue(hmail.try_lock(f))
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "refused")
+        self.assertIn("send", r["reason"])
+        hmail.unlock(f)
+        f.close()
+        self.assertEqual(hmail.busy_commands(), [])        # stale marker is cleaned up
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual(hmail.do_update(self.app)["state"], "updated")
+
+    def test_rollback_and_skip(self):
+        before = self.head()
+        self.release("0.3.1", "New")
+        self.assertEqual(hmail.do_update(self.app)["state"], "updated")
+        new = self.head()
+        r = hmail.do_rollback(self.app)
+        self.assertEqual((r["state"], r["current"], r["was"]), ("rolled_back", "0.3.0", "0.3.1"))
+        self.assertEqual(self.head(), before)
+        self.assertEqual(hmail.update_state()["skip"], new)
+        self.assertEqual(hmail.do_rollback(self.app)["state"], "refused")
+
+    def test_bad_remote_fails_quietly(self):
+        os.environ["HMAIL_UPDATE_REMOTE"] = os.path.join(self.tmp, "nowhere")
+        r = hmail.do_update(self.app)
+        self.assertEqual(r["state"], "failed")
+        self.assertIn("pull --ff-only", r["by_hand"])
 
 
 if __name__ == "__main__":

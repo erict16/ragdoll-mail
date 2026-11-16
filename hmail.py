@@ -25,6 +25,7 @@ is filled in two passes: headers and attachment names for every mail first
   check <draft id> [--reply] [--blanks-ok] [--no-required-cc] [--json]
   send <draft id> --yes
   delete-draft <draft id> --yes
+  update [--check] [--rollback] [--json]    get the newest hmail from GitHub (see below)
 
 Ids look like inbox:9255, sent:1420, drafts:3 (folder short name and IMAP UID).
 Dates are YYYY-MM-DD in the configured time zone.
@@ -32,14 +33,23 @@ Dates are YYYY-MM-DD in the configured time zone.
 Config: ~/.config/hmail/config.json (or $HMAIL_CONFIG); see config.example.json.
 The password is read from the environment variable named by "password_env"
 (on Windows also from that user variable in the registry). hmail never prints it.
+
+Updates: every few hours hmail looks for a newer version in the background and, when there
+is one, prints one line on stderr. It never replaces itself on its own: `update` does that,
+refuses while another hmail command runs or the clone has local changes, runs the offline
+tests on the new version and puts the old one back if they fail. `update --rollback` goes
+back one version. Steps are logged to <data dir>/logs/update.log. Off: "update_check": false
+in the config or HMAIL_NO_UPDATE_CHECK=1.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, html as htmlmod, imaplib
-import json, mimetypes, os, re, smtplib, sqlite3, sys, time
+import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
+
+__version__ = "0.3.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 珺 in 赵珺). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -70,6 +80,7 @@ DEFAULTS = {
     "require_cc": [],
     "body_bytes": 30000,
     "body_chars": 20000,
+    "update_check": True,
 }
 QUOTE_MARKS = ("发件人", "From:", "原始邮件", "wrote:", "Từ:")
 QUOTE_RE = re.compile(
@@ -511,6 +522,34 @@ def db():
     return c
 
 
+def try_lock(f):
+    """Non-blocking exclusive lock on an open file; True when we got it."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def unlock(f):
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 @contextlib.contextmanager
 def file_lock(name, wait):
     """Process lock in the data dir. Yields False when busy and wait is False."""
@@ -518,34 +557,12 @@ def file_lock(name, wait):
     f = open(os.path.join(CFG.home, name + ".lock"), "a+")
     got = False
     try:
-        while True:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    f.seek(0)
-                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                got = True
-                break
-            except OSError:
-                if not wait:
-                    break
-                time.sleep(1)
+        while not (got := try_lock(f)) and wait:
+            time.sleep(1)
         yield got
     finally:
         if got:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    f.seek(0)
-                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(f, fcntl.LOCK_UN)
-            except OSError:
-                pass
+            unlock(f)
         f.close()
 
 
@@ -855,7 +872,14 @@ def cmd_status(a):
     last = c.execute("select v from meta where k='last_sync'").fetchone()
     per = c.execute("select folder, count(*) n from msgs group by folder").fetchall()
     d = {"mails": total, "bodies_missing": missing, "last_sync": local_time(int(last[0])) if last else None,
-         "folders": {r["folder"]: r["n"] for r in per}, "index": os.path.join(CFG.home, "index.db")}
+         "folders": {r["folder"]: r["n"] for r in per}, "index": os.path.join(CFG.home, "index.db"),
+         "version": __version__}
+    st = update_state()
+    latest = st.get("latest") or {}
+    if latest.get("behind") and not latest.get("ahead"):
+        d["update_available"] = latest.get("version")
+    if st.get("check_error"):
+        d["update_check_error"] = st["check_error"]
     print(json.dumps(d, ensure_ascii=False, indent=1))
 
 
@@ -1554,9 +1578,327 @@ def cmd_delete_draft(a):
 
 # ------------------------------------------------------------------ main
 
+# ------------------------------------------------------------------ update
+# Modelled on S2Arm's updater: look in the background and only tell; replace only when asked
+# (`update`), never while another hmail command runs or the clone has local changes; test the
+# new version before keeping it and put the old one back by itself when the test fails; say
+# what changed; log every step. A failed check shows nothing (no network = no noise).
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+UPDATE_REF = "refs/hmail/update"
+UPDATE_EVERY = 6 * 3600
+
+
+def update_remote():
+    return os.environ.get("HMAIL_UPDATE_REMOTE") or "origin"     # a path or URL for tests
+
+
+def update_enabled():
+    return not os.environ.get("HMAIL_NO_UPDATE_CHECK") and CFG.d.get("update_check", True)
+
+
+def update_log(text):
+    try:
+        d = os.path.join(CFG.home, "logs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "update.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (dt.datetime.now(CFG.tz).isoformat(timespec="seconds"), text))
+    except OSError:
+        pass
+
+
+def update_state(new=None):
+    path = os.path.join(CFG.home, "update.json")
+    if new is None:
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+    try:
+        os.makedirs(CFG.home, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(new, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return new
+
+
+def patch_state(**kw):
+    st = update_state()
+    for k, v in kw.items():
+        if v is None:
+            st.pop(k, None)
+        else:
+            st[k] = v
+    return update_state(st)
+
+
+def git(repo, *args, timeout=60, quiet=False):
+    """(code, stdout, stderr). quiet: never ask for a password or passphrase (background)."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    if quiet and not env.get("GIT_SSH_COMMAND"):
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=15"
+    try:
+        r = subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return 127, "", "git is not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", "git %s took longer than %d s" % (args[0], timeout)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def last_line(text):
+    lines = [x for x in (text or "").splitlines() if x.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+def version_at(repo, rev):
+    code, out, _ = git(repo, "show", rev + ":hmail.py")
+    m = re.search(r'^__version__ = "([^"]+)"', out, re.M) if code == 0 else None
+    if m:
+        return m.group(1)
+    code, out, _ = git(repo, "rev-parse", "--short", rev)
+    return out if code == 0 else "?"
+
+
+def fetch_latest(repo, quiet=False):
+    """Fetch main from the remote into UPDATE_REF and compare it with HEAD."""
+    code, top, err = git(repo, "rev-parse", "--show-toplevel")
+    if code or os.path.realpath(top) != os.path.realpath(repo):
+        return {"error": "%s is not a git clone of hmail, so it cannot update itself" % repo}
+    code, _, err = git(repo, "fetch", "--quiet", "--no-tags", update_remote(), "+main:" + UPDATE_REF,
+                       timeout=90, quiet=quiet)
+    if code:
+        return {"error": "could not get the newest version from %s: %s" % (update_remote(), last_line(err))}
+    _, head, _ = git(repo, "rev-parse", "HEAD")
+    _, sha, _ = git(repo, "rev-parse", UPDATE_REF)
+    _, behind, _ = git(repo, "rev-list", "--count", "HEAD.." + UPDATE_REF)
+    _, ahead, _ = git(repo, "rev-list", "--count", UPDATE_REF + "..HEAD")
+    _, log, _ = git(repo, "log", "--no-merges", "--format=%s", "-n", "30", "HEAD.." + UPDATE_REF)
+    return {"head": head, "sha": sha, "behind": int(behind or 0), "ahead": int(ahead or 0),
+            "current": version_at(repo, "HEAD"), "version": version_at(repo, UPDATE_REF),
+            "notes": [x for x in log.splitlines() if x.strip()]}
+
+
+@contextlib.contextmanager
+def running(cmd):
+    """Mark this command as running, so `update` does not swap hmail under it."""
+    f = path = None
+    try:
+        d = os.path.join(CFG.home, "run")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "%d-%s.lock" % (os.getpid(), cmd))
+        f = open(path, "a+")
+        try_lock(f)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if f:
+            unlock(f)
+            f.close()
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
+def busy_commands():
+    """Other hmail commands running now (their run marker is still locked)."""
+    d = os.path.join(CFG.home, "run")
+    mine = "%d-" % os.getpid()
+    out = []
+    for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not name.endswith(".lock") or name.startswith(mine):
+            continue
+        path = os.path.join(d, name)
+        try:
+            f = open(path, "a+")
+        except OSError:
+            out.append(name[:-5].split("-", 1)[-1])
+            continue
+        free = try_lock(f)
+        if free:
+            unlock(f)
+        f.close()
+        if free:
+            with contextlib.suppress(OSError):
+                os.remove(path)          # left by a command that crashed
+        else:
+            out.append(name[:-5].split("-", 1)[-1])
+    return out
+
+
+def update_gate(repo):
+    """Why hmail must not be replaced right now, or None."""
+    code, branch, _ = git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+    if branch != "main":
+        return "this clone is on %s, not main" % (branch or "a detached commit")
+    code, dirty, _ = git(repo, "status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        return "this clone has changed files (%s); commit or undo them first" % ", ".join(
+            x[3:] for x in dirty.splitlines()[:5])
+    busy = busy_commands()
+    if busy:
+        return "another hmail command is running (%s); update when it is done" % ", ".join(busy)
+    return None
+
+
+def self_test(repo):
+    """Run the new version before keeping it: --version, then the offline tests."""
+    env = dict(os.environ, HMAIL_NO_UPDATE_CHECK="1")
+    steps = [[sys.executable, "-I", "-B", "hmail.py", "--version"]]
+    if os.path.isdir(os.path.join(repo, "tests")):
+        steps.append([sys.executable, "-I", "-B", "-m", "unittest", "discover", "-s", "tests"])
+    for cmd in steps:
+        try:
+            r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=600, env=env, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, str(e)
+        if r.returncode:
+            return False, last_line(r.stderr) or last_line(r.stdout) or "exit code %d" % r.returncode
+    return True, ""
+
+
+def do_update(repo, check_only=False):
+    """state: current | available | updated | refused | failed."""
+    info = fetch_latest(repo)
+    if "error" in info:
+        update_log("check failed: " + info["error"])
+        return {"state": "failed", "reason": info["error"], "by_hand": "git -C \"%s\" pull --ff-only" % repo}
+    patch_state(checked_at=int(time.time()), latest=info, check_error=None)
+    base = {"current": info["current"], "version": info["version"], "notes": info["notes"]}
+    if not info["behind"]:
+        return dict(base, state="current")
+    if info["ahead"]:
+        return dict(base, state="refused", reason="this clone has %d commit(s) that are not on the remote; "
+                                                   "push them first" % info["ahead"])
+    if check_only:
+        return dict(base, state="available")
+    why = update_gate(repo)
+    if why:
+        update_log("update to %s refused: %s" % (info["version"], why))
+        return dict(base, state="refused", reason=why)
+    with file_lock("update", wait=False) as got:
+        if not got:
+            return dict(base, state="refused", reason="another hmail update is running")
+        old = info["head"]
+        update_log("updating %s (%s) -> %s (%s)" % (info["current"], old[:8], info["version"], info["sha"][:8]))
+        code, _, err = git(repo, "merge", "--ff-only", "--quiet", info["sha"])
+        if code:
+            update_log("merge failed: " + last_line(err))
+            return dict(base, state="failed", reason="could not apply it: " + last_line(err),
+                        by_hand="git -C \"%s\" pull --ff-only" % repo)
+        ok, why = self_test(repo)
+        if not ok:
+            git(repo, "reset", "--hard", "--quiet", old)
+            update_log("self-test failed, put %s back: %s" % (old[:8], why))
+            return dict(base, state="failed", reason="the new version failed its self-test, so %s was put "
+                                                     "back: %s" % (info["current"], why))
+        patch_state(previous={"sha": old, "version": info["current"]}, skip=None,
+                    latest=dict(info, head=info["sha"], behind=0, current=info["version"], notes=[]))
+        update_log("updated to %s, self-test passed" % info["version"])
+        return dict(base, state="updated")
+
+
+def do_rollback(repo):
+    st = update_state()
+    prev = st.get("previous")
+    if not prev:
+        return {"state": "refused", "reason": "hmail has not been updated on this computer, nothing to go back to"}
+    why = update_gate(repo)
+    if why:
+        return {"state": "refused", "reason": why}
+    _, head, _ = git(repo, "rev-parse", "HEAD")
+    code, _, _ = git(repo, "merge-base", "--is-ancestor", prev["sha"], head)
+    if code:
+        return {"state": "refused", "reason": "the clone has moved on since the last update"}
+    now = version_at(repo, "HEAD")
+    code, _, err = git(repo, "reset", "--hard", "--quiet", prev["sha"])
+    if code:
+        return {"state": "failed", "reason": last_line(err)}
+    patch_state(previous=None, skip=head, latest=None)      # do not offer the version just left again
+    update_log("rolled back %s (%s) -> %s (%s)" % (now, head[:8], prev["version"], prev["sha"][:8]))
+    return {"state": "rolled_back", "current": prev["version"], "was": now}
+
+
+def update_check_background():
+    with file_lock("update-check", wait=False) as got:
+        if not got:
+            return
+        info = fetch_latest(APP_DIR, quiet=True)
+        if "error" in info:
+            patch_state(checked_at=int(time.time()), check_error=info["error"])
+            update_log("background check failed: " + info["error"])
+            return
+        patch_state(checked_at=int(time.time()), latest=info, check_error=None)
+        if info["behind"]:
+            update_log("found %s (%d change(s)); you have %s" % (info["version"], info["behind"], info["current"]))
+
+
+def maybe_check_later():
+    """Start a background check when the last one is old. Never waits for it."""
+    if not update_enabled() or not os.path.exists(os.path.join(APP_DIR, ".git")):
+        return
+    st = update_state()
+    now = time.time()
+    if now - st.get("checked_at", 0) < UPDATE_EVERY or now - st.get("check_started", 0) < 600:
+        return
+    patch_state(check_started=int(now))
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              close_fds=True, cwd=APP_DIR)
+    if sys.platform == "win32":
+        kw["creationflags"] = 0x08000000 | 0x00000200     # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True                     # no terminal: ssh cannot stop to ask
+    with contextlib.suppress(OSError):
+        subprocess.Popen([sys.executable, "-I", "-B", os.path.abspath(__file__), "update",
+                          "--background-check"], **kw)
+
+
+def update_notice():
+    """One line on stderr when a newer hmail is waiting (stdout stays clean for --json)."""
+    if not update_enabled():
+        return
+    st = update_state()
+    latest = st.get("latest") or {}
+    if not latest.get("behind") or latest.get("ahead") or latest.get("sha") == st.get("skip"):
+        return
+    code, head, _ = git(APP_DIR, "rev-parse", "HEAD", timeout=10)
+    if code == 0 and head == latest.get("head"):
+        print("hmail %s is out (%d change(s); this is %s). Run: hmail update"
+              % (latest.get("version"), latest["behind"], __version__), file=sys.stderr)
+
+
+def cmd_update(a):
+    if a.background_check:
+        return update_check_background()
+    r = do_rollback(APP_DIR) if a.rollback else do_update(APP_DIR, check_only=a.check)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=1))
+    else:
+        notes = "".join("\n  - " + x for x in r.get("notes") or [])
+        print({"current": "hmail %(current)s is the newest version.",
+               "available": "hmail %(version)s is out (this is %(current)s). What changed:" + notes
+                            + "\nRun: hmail update",
+               "updated": "Updated hmail %(current)s -> %(version)s; the self-test passed. What changed:" + notes,
+               "rolled_back": "Back on hmail %(current)s (was %(was)s). It will not offer %(was)s again.",
+               "refused": "NOT UPDATED: %(reason)s",
+               "failed": "NOT UPDATED: %(reason)s"}[r["state"]] % r)
+        if r.get("by_hand"):
+            print("By hand: " + r["by_hand"])
+    if r["state"] in ("refused", "failed"):
+        sys.exit(1)
+
+
 def parser():
     ap = argparse.ArgumentParser(prog="hmail", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version="hmail " + __version__)
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("status").set_defaults(fn=cmd_status)
     p = sp.add_parser("sync")
@@ -1638,17 +1980,30 @@ def parser():
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_delete_draft)
+    p = sp.add_parser("update", help="get the newest hmail from GitHub, test it, keep it")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--check", action="store_true", help="only say whether there is a newer version")
+    g.add_argument("--rollback", action="store_true", help="go back to the version before the last update")
+    g.add_argument("--background-check", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_update)
     return ap
 
 
 def main(argv=None):
     a = parser().parse_args(argv)
+    if a.cmd == "update":
+        return a.fn(a)
+    maybe_check_later()
     try:
-        a.fn(a)
+        with running(a.cmd):
+            a.fn(a)
     except imaplib.IMAP4.error as e:
         die("mail server refused: %s" % e)
     except LookupError as e:
         die(str(e))
+    finally:
+        update_notice()
 
 
 if __name__ == "__main__":

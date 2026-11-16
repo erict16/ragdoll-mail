@@ -12,5 +12,6 @@
   "signature_marks": ["a phone number or line that only appears in your signature"],
   "require_cc": [],
   "body_bytes": 30000,
-  "body_chars": 20000
+  "body_chars": 20000,
+  "update_check": true
 }
