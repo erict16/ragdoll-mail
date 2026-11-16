@@ -6,11 +6,20 @@
 
 Why it exists: some servers (Tencent Exmail among them) ignore IMAP text search, so every `SEARCH SUBJECT/FROM/BODY` returns the whole mailbox. ragdoll keeps its own SQLite index with trigram full-text search, so Chinese and English both work, and does drafts the way a person would: signature, quoted history with its images, attachments, then a check before anything is sent.
 
+## Desktop app
+
+A mail app on top of the same index: folders, a fast list with ⌘K / Ctrl+K search, a reader, and drafts that go through the same `check` before they are sent. Light and dark follow the system.
+
+- **Download:** [Releases](https://github.com/erict16/ragdoll-mail/releases/latest): `ragdoll-mail-mac.dmg` (Apple silicon) or `ragdoll-mail-windows.zip`. The builds are not signed: on macOS right-click the app and choose **Open** the first time; on Windows choose **More info → Run anyway**. Windows needs the WebView2 runtime (built into Windows 11).
+- **From a clone:** `pip install pywebview`, then `ragdoll app`. Without pywebview it opens in the browser. `ragdoll app --demo` shows a made-up mailbox with no account.
+- **Password:** the app signs in once and saves the password in the macOS Keychain or the Windows Credential Manager. The command line uses the same saved password when the environment variable is not set.
+- The app only listens on 127.0.0.1, and every call needs a random token made at start.
+
 ## Setup
 
 1. Python 3.10+ (SQLite 3.34+ for the trigram index; the python.org builds have it).
 2. Copy `config.example.json` to `~/.config/ragdoll-mail/config.json` and fill it in. Dates use the computer's time zone; add `"utc_offset_hours": 8` (for example) to use a fixed one.
-3. Put the IMAP app password in the environment variable named by `password_env`. Windows (stays set for new programs):
+3. Put the IMAP app password in the environment variable named by `password_env` (or sign in once in the desktop app, which saves it in the system keychain). Windows (stays set for new programs):
    ```powershell
    [Environment]::SetEnvironmentVariable('RAGDOLL_PASSWORD', '<password>', 'User')
    ```
