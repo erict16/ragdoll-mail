@@ -122,8 +122,13 @@ const isDark = () => document.documentElement.dataset.theme === "dark";
 function applyTheme(theme) {
   S.theme = theme || "system";
   const dark = S.theme === "dark" || (S.theme === "system" && darkMQ.matches);
-  const was = document.documentElement.dataset.theme;
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const root = document.documentElement, was = root.dataset.theme;
+  if (was && was !== (dark ? "dark" : "light") && !REDUCED.matches) {
+    root.classList.add("theming");
+    clearTimeout(applyTheme.timer);
+    applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  }
+  root.dataset.theme = dark ? "dark" : "light";
   if (was && was !== document.documentElement.dataset.theme) refreshFrames();
   syncWindowTheme();
 }
@@ -180,16 +185,28 @@ function initials(p) {
 
 // ---------------------------------------------------------------- toasts, tips, menus, sheets
 
+// motion: everything leaves with a short fade; nothing waits when the system asks for less motion
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)");
+const EASE = "cubic-bezier(.2, .8, .2, 1)";
+function leave(node, ms = 150) {
+  if (!node || !node.isConnected || node.classList.contains("out")) return;
+  if (REDUCED.matches) return node.remove();
+  node.classList.add("out");
+  setTimeout(() => node.remove(), ms);
+}
+
 function toast(text, opts = {}) {
   const box = $("#toasts");
-  const node = el("div", { class: "toast" + (opts.error ? " err" : "") + (opts.action ? "" : " solo"), role: "status" }, el("span", {}, text));
+  const node = el("div", { class: "toast" + (opts.error ? " err" : ""), role: "status" },
+    opts.error ? el("span", { class: "toast-ic", html: icon("triangle-alert") }) : null,
+    el("span", { class: "toast-text" }, text));
   let done = false;
-  const close = () => { if (done) return; done = true; node.remove(); };
-  if (opts.action) node.append(el("button", { onclick: () => { close(); opts.action.run(); } }, opts.action.label));
+  const close = () => { if (done) return; done = true; leave(node, 180); };
+  if (opts.action) node.append(el("button", { class: "toast-act", onclick: () => { close(); opts.action.run(); } }, opts.action.label));
   box.append(node);
   const ms = opts.ms ?? (opts.error ? 7000 : 3200);
   if (ms) setTimeout(close, ms);
-  return { close, node, set: (s) => { node.firstChild.textContent = s; } };
+  return { close, node, set: (s) => { node.querySelector(".toast-text").textContent = s; } };
 }
 const fail = (e) => toast(e?.message || String(e), { error: true });
 
@@ -210,10 +227,10 @@ document.addEventListener("mouseover", (e) => {
 });
 document.addEventListener("mousedown", () => { clearTimeout(tipTimer); if (tipEl) { tipEl.remove(); tipEl = null; } }, true);
 
-function closeLayer() { $("#layer").replaceChildren(); }
+function closeLayer() { for (const n of [...$("#layer").children]) leave(n, 160); }
 function menu(anchor, items, { above = false } = {}) {
   closeLayer();
-  const m = el("div", { class: "menu", role: "menu" });
+  const m = el("div", { class: "menu" + (above ? " above" : ""), role: "menu" });
   for (const it of items) {
     if (it === "-") m.append(el("hr"));
     else if (it.note) m.append(el("div", { class: "menu-note" }, it.note));
@@ -232,7 +249,7 @@ function sheet(node, { wide = false, onclose } = {}) {
   $("#layer").append(scrim);
   return box;
 }
-const layerOpen = () => $("#layer").children.length > 0;
+const layerOpen = () => !!$("#layer > :not(.out)");
 
 // ---------------------------------------------------------------- sidebar
 
@@ -289,19 +306,61 @@ function rowTemplate(r) {
     `<span class="hover-acts">${acts}</span></div>`;
 }
 
+// rows that were not in the list a moment ago (new mail, an undo) fade in; a new folder fades in as a whole
+let shownIds = new Set(), shownKey = null;
 function renderRows() {
   const box = $("#rows");
+  const key = S.folder + "\n" + S.query;
+  const same = key === shownKey && shownIds.size > 0;
+  shownIds = new Set(S.rows.map((x) => x.id)); shownKey = key;
   if (!S.rows.length) {
+    if (S.loading) { box.replaceChildren(); return; }
     const msg = S.query ? t("no_results") : (S.syncing && S.folder === "inbox" ? t("syncing") : t("no_mail"));
-    box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query ? icon("loader-circle", "big spin") : ""}<span>${esc(msg)}</span></div>`;
+    box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query ? icon("loader-circle", "big spin") : icon(S.query ? "search" : FOLDER_ICON[S.folder] || "inbox", "big")}<span>${esc(msg)}</span></div>`;
     return;
   }
+  const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
   box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
+  if (REDUCED.matches) return;
+  if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+  else growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
+}
+
+// rows going away fold up before they are dropped
+const SMOOTH = "cubic-bezier(.4, 0, .2, 1)";
+function foldRows(nodes) {
+  nodes = nodes.filter(Boolean);
+  if (!nodes.length || REDUCED.matches) return Promise.resolve();
+  return Promise.all(nodes.map((n) => {
+    const h = n.offsetHeight + "px";
+    n.classList.add("leaving");
+    return n.animate([
+      { height: h, opacity: 1, transform: "none" },
+      { height: h, opacity: 0, transform: "translateX(-10px)", offset: 0.4 },
+      { height: "0px", opacity: 0, transform: "translateX(-10px)", paddingTop: "0px", paddingBottom: "0px" },
+    ], { duration: 320, easing: SMOOTH, fill: "forwards" }).finished.catch(() => {});
+  }));
+}
+
+// a row that arrives (undo, new mail) opens its space first, then fades in
+function growRows(nodes) {
+  if (REDUCED.matches) return;
+  for (const n of nodes) {
+    const h = n.offsetHeight + "px";
+    n.classList.add("leaving");
+    const a = n.animate([
+      { height: "0px", opacity: 0, transform: "translateY(-4px)", paddingTop: "0px", paddingBottom: "0px" },
+      { height: h, opacity: 0, transform: "translateY(-4px)", offset: 0.55 },
+      { height: h, opacity: 1, transform: "none" },
+    ], { duration: 340, easing: SMOOTH });
+    a.finished.finally(() => n.classList.toggle("leaving", false)).catch(() => {});
+  }
 }
 
 let listSeq = 0;
 async function loadList({ quiet = false } = {}) {
   const seq = ++listSeq;
+  if (!quiet) S.loading = true;
   try {
     let rows, more = false;
     if (S.query) rows = (await api("search", { q: S.query })).rows;
@@ -311,13 +370,14 @@ async function loadList({ quiet = false } = {}) {
       rows = r.rows; more = r.more;
     }
     if (seq !== listSeq) return;
+    S.loading = false;
     rows = rows.filter((x) => !hidden.has(x.id));
     if (quiet && JSON.stringify(rows) === JSON.stringify(S.rows) && more === S.more) return;
     const box = $("#rows"), top = box.scrollTop;
     S.rows = rows; S.more = more;
     renderRows();
     if (quiet) box.scrollTop = top; else box.scrollTop = 0;
-  } catch (e) { if (!quiet) fail(e); }
+  } catch (e) { if (seq === listSeq && S.loading) { S.loading = false; renderRows(); } if (!quiet) fail(e); }
 }
 
 async function loadMore() {
@@ -344,7 +404,7 @@ function markRow(id, patch) {
 async function openFolder(key) {
   if (!(await leaveCompose())) return;
   S.folder = key; S.query = ""; $("#search").value = ""; syncSearchUI();
-  S.sel = null; S.rows = []; S.more = false;
+  S.sel = null; S.rows = []; S.more = false; S.loading = true;
   renderNav(); renderRows(); showEmpty();
   await loadList();
 }
@@ -397,7 +457,9 @@ function moveMail(ids, to) {
   const sel = S.sel;
   ids.forEach((i) => hidden.add(i));
   S.rows = S.rows.filter((x) => !ids.includes(x.id));
-  renderRows();
+  shownIds = new Set(S.rows.map((x) => x.id));
+  const gone = ids.map((i) => $(`.row[data-id="${CSS.escape(i)}"]`));
+  foldRows(gone).then(() => { gone.forEach((n) => n?.remove()); if (!S.rows.length) renderRows(); });
   if (wasSel) { if (next) selectRow(next.id); else { S.sel = null; showEmpty(); } }
   const job = { ids, to, done: false };
   const unhide = () => { ids.forEach((i) => hidden.delete(i)); pendingMoves.delete(job); };
@@ -479,43 +541,35 @@ function showEmpty() {
 }
 
 function renderToolbar() {
-  const tools = $("#tools"), prim = $("#primary");
-  tools.replaceChildren();
-  $("#toolbar").classList.toggle("lined", !!S.compose);
+  const tools = $("#tools"), end = $("#tools-end");
+  tools.replaceChildren(); end.replaceChildren();
+  $("#toolbar").classList.toggle("lined", $("#pane").scrollTop > 0);
   if (S.compose) {
     tools.append(
+      iconBtn("send", t("send"), () => sendCompose(), { key: MOD + "↩", disabled: !!S.compose.busy, cls: "accent" }),
+      el("span", { class: "sep" }),
       iconBtn("paperclip", t("attach"), () => pickFiles()),
-      iconBtn("trash-2", t("discard"), () => discardCompose()),
     );
-    const st = el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || "");
-    prim.hidden = false;
-    prim.disabled = !!S.compose.busy;
-    prim.innerHTML = esc(t("send")) + `<kbd>${MOD}↩</kbd>`;
-    prim.onclick = () => sendCompose();
-    prim.before(st);
-    $$(".compose-status").forEach((n) => { if (n !== st) n.remove(); });
+    end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
+      iconBtn("trash-2", t("discard"), () => discardCompose()));
     return;
   }
-  $$(".compose-status").forEach((n) => n.remove());
   const has = !!S.thread;
   const id = S.focus || S.sel;
   const r = S.thread?.rows.find((x) => x.id === id);
   const inTrash = r?.folder === "trash";
   tools.append(
-    iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id }), { key: "R", disabled: !has }),
-    iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id }), { key: "A", disabled: !has }),
-    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id }), { key: "F", disabled: !has }),
-    el("span", { class: "sep" }),
     inTrash
       ? iconBtn("inbox", t("restore"), () => moveMail([id], "inbox"), { disabled: !has })
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
   );
-  prim.hidden = !has;
-  prim.disabled = false;
-  prim.innerHTML = esc(t("reply"));
-  prim.onclick = () => openCompose({ mode: "reply", id: S.focus || S.sel });
+  end.append(
+    iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id }), { key: "R", disabled: !has }),
+    iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id }), { key: "A", disabled: !has }),
+    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id }), { key: "F", disabled: !has }),
+  );
 }
 
 let threadSeq = 0;
@@ -528,6 +582,8 @@ async function openThread(id) {
   S.thread = th;
   const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject" }, th.subject || t("no_subject")));
   for (const r of th.rows) doc.append(msgNode(r, r.id === id));
+  const act = (ic, label, mode) => el("button", { class: "btn", onclick: () => openCompose({ mode, id: S.focus || id }), html: icon(ic, "small") + esc(label) });
+  doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
   $("#pane").replaceChildren(doc);
   $("#pane").scrollTop = 0;
   renderToolbar();
@@ -1064,7 +1120,6 @@ async function sendCompose(force = false) {
     S.compose = c; renderCompose(); return;
   }
   tt.node.querySelector("button")?.remove();
-  tt.node.classList.add("solo");
   try {
     const res = await api("send", { id: r.id });
     tt.close();
@@ -1086,9 +1141,9 @@ function problemsSheet(problems) {
     el("h2", { html: icon("triangle-alert") + esc(t("problems")) }),
     el("ul", {}, problems.map((p) => el("li", {}, p.charAt(0).toUpperCase() + p.slice(1)))),
     el("div", { class: "sheet-acts" },
-      el("button", { class: "ghost-btn", onclick: () => { closeLayer(); $(".compose .editor")?.focus(); } }, t("keep_editing")),
-      el("button", { class: "pill-btn", onclick: () => { closeLayer(); sendCompose(true); } }, t("send_anyway")))));
-  box.querySelector(".ghost-btn").focus();
+      el("button", { class: "btn", onclick: () => { closeLayer(); $(".compose .editor")?.focus(); } }, t("keep_editing")),
+      el("button", { class: "btn primary", onclick: () => { closeLayer(); sendCompose(true); } }, t("send_anyway")))));
+  box.querySelector(".btn").focus();
 }
 
 // drop files on the reader: attach (opens a new mail when none is open)
@@ -1121,8 +1176,8 @@ async function openSettings() {
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
-  const saveBtn = el("button", { class: "pill-btn", onclick: save }, t("save"));
-  const foot = el("div", { class: "settings-foot" }, msg, el("button", { class: "ghost-btn", onclick: closeLayer }, t("cancel")), saveBtn);
+  const saveBtn = el("button", { class: "btn primary", onclick: save }, t("save"));
+  const foot = el("div", { class: "settings-foot" }, msg, el("button", { class: "btn", onclick: closeLayer }, t("cancel")), saveBtn);
   const tabs = [["account", "circle-user-round"], ["signature", "square-pen"], ["appearance", "sun"]];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
@@ -1147,7 +1202,7 @@ async function openSettings() {
         lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))),
         lab(t("require_cc"), inp("require_cc", "text", "boss@example.com")));
       const res = el("div");
-      const testBtn = el("button", { class: "ghost-btn", onclick: async () => {
+      const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
         try { const r = await api("test", v); v.folders = r.folders; res.replaceChildren(el("div", { class: "msg-ok", html: icon("circle-check") + esc(t("test_ok")) })); }
         catch (e) { res.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) })); }
@@ -1219,7 +1274,7 @@ function showSetup() {
         lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host", "text", { "data-host": "smtp_host" }), inp("smtp_port", "number"))));
     }
     if (err) f.append(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
-    const go = el("button", { class: "pill-btn", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
+    const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
     f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
     box.replaceChildren(el("div", { class: "setup-drag pywebview-drag-region" }),
@@ -1274,6 +1329,7 @@ function onKey(e) {
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
 }
 document.addEventListener("keydown", onKey);
+$("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lined", e.target.scrollTop > 0), { passive: true });
 
 // ---------------------------------------------------------------- list width
 

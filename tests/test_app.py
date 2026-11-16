@@ -64,6 +64,24 @@ class AppServer(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertTrue(out["data"]["rows"])
 
+    def test_refused_post_does_not_break_the_connection(self):
+        # a refused POST must not leave its body behind for the next request on a kept-alive connection
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        h = {"Host": "127.0.0.1:%d" % self.port, "Content-Type": "application/json"}
+        c.request("POST", "/api/boot", "{}", dict(h, **{"X-Token": "wrong"}))
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 403)
+        c.request("POST", "/api/boot", "{}", dict(h, **{"X-Token": TOKEN}))
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        self.assertTrue(json.loads(r.read())["ok"])
+        c.request("POST", "/api/boot", "{}", dict(h, **{"X-Token": TOKEN}))
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        r.read()
+        c.close()
+
     def test_unknown_call(self):
         code, out = self.api("nope")
         self.assertEqual(code, 404)

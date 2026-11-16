@@ -1358,6 +1358,8 @@ def make_handler(backend, token):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            if self.close_connection:
+                self.send_header("Connection", "close")
             for k, v in extra:
                 self.send_header(k, v)
             self.end_headers()
@@ -1379,10 +1381,18 @@ def make_handler(backend, token):
             self.send(200, body, TYPES.get(ext, "application/octet-stream"), extra)
 
         def do_POST(self):
+            # On a kept-alive connection an unread body would be parsed as the next request,
+            # so every early answer either reads the body or closes the connection.
+            try:
+                n = max(0, int(self.headers.get("Content-Length") or 0))
+            except ValueError:
+                self.close_connection = True
+                return self.send(400, b'{"ok":false,"error":"bad request"}')
             if not self.host_ok() or not secrets.compare_digest(self.headers.get("X-Token", ""), token):
+                self.close_connection = True
                 return self.send(403, b'{"ok":false,"error":"forbidden"}')
-            n = int(self.headers.get("Content-Length") or 0)
             if n > 200 * 1024 * 1024:
+                self.close_connection = True
                 return self.send(413, b'{"ok":false,"error":"That file is too big."}')
             data = self.rfile.read(n) if n else b""
             path = urllib.parse.urlparse(self.path).path
