@@ -5,12 +5,12 @@ from email import policy
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll  # noqa: E402
 
-ragdoll.CFG = ragdoll.Cfg(dict(ragdoll.DEFAULTS, user="me@example.com", name="Me",
-                           signature_marks=["+65 1234 5678"], require_cc=["boss@example.com"]))
-SIG = "<div>Me</div><div>M: +65 1234 5678</div>"
+ragdoll.CFG = ragdoll.Cfg(dict(ragdoll.DEFAULTS, user="me@example.com", name="Me", utc_offset_hours=8,
+                           signature_marks=["+1 555 0100"], require_cc=["boss@example.com"]))
+SIG = "<div>Me</div><div>M: +1 555 0100</div>"
 
 ORIG = (b"From: \"Linh\" <linh@cust.vn>\r\nTo: me@example.com, hoa@partner.vn\r\nCc: boss@example.com\r\n"
-        b"Subject: =?utf-8?b?5Zue5aSN77yaIEUtVzI2MDA4NA==?=\r\nDate: Mon, 16 Nov 2026 08:10:47 +0800\r\n"
+        b"Subject: =?utf-8?b?5Zue5aSN77yaIFBPLTEyMzQ=?=\r\nDate: Mon, 16 Nov 2026 08:10:47 +0800\r\n"
         b"Message-ID: <abc@cust.vn>\r\nReferences: <root@cust.vn>\r\nMIME-Version: 1.0\r\n"
         b"Content-Type: multipart/related; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
         b"<p>Please send the drawing.</p><img src=\"cid:logo1\">\r\n--B\r\nContent-Type: image/png\r\n"
@@ -39,7 +39,7 @@ class Basics(unittest.TestCase):
         self.assertEqual(ragdoll.bare_subject("回复： Re: Fw: Order 12"), "order 12")
 
     def test_big_attachment_lines_hide_links(self):
-        t = "从腾讯企业邮箱发来的超大附件\nmodel.stp (52.3M, 2026年11月30日 到期)\nhttps://exmail.qq.com/ftnExs_download?x"
+        t = "从腾讯企业邮箱发来的超大附件\nmodel.stp (52.3M, 2026年11月30日 到期)\nhttps://mail.example.com/download?x"
         lines = ragdoll.big_attachment_lines(t)
         self.assertTrue(any("model.stp" in x for x in lines))
         self.assertFalse(any("http" in x for x in lines))
@@ -82,9 +82,9 @@ class Drafts(unittest.TestCase):
         m = self.build()
         self.assertEqual(m["In-Reply-To"], "<abc@cust.vn>")
         self.assertIn("<root@cust.vn>", m["References"])
-        self.assertEqual(str(m["Subject"]), "Re: 回复： E-W260084")
+        self.assertEqual(str(m["Subject"]), "Re: 回复： PO-1234")
         html = m.get_body(("html",)).get_content()
-        self.assertLess(html.find("+65 1234 5678"), html.find("发件人"))
+        self.assertLess(html.find("+1 555 0100"), html.find("发件人"))
         self.assertIn("cid:logo1", html)
         self.assertEqual(ragdoll.check_message(m, reply=True), [])
 
@@ -132,27 +132,27 @@ def built(msg):
 
 
 class Charsets(unittest.TestCase):
-    """16th Nov 2026: 赵珺 labelled GB2312 became 赵�B in the To line of a reply."""
+    """A GBK-only character in a name labelled GB2312 must not turn into �."""
 
     def test_gb2312_label_with_gbk_character(self):
-        m = parse(b"From: =?GB2312?B?1dSsQg==?= <rose@x.cn>\r\nTo: me@example.com\r\nSubject: s\r\n\r\nx\r\n")
-        self.assertEqual(ragdoll.hdr(m, "From"), "赵珺 <rose@x.cn>")
+        m = parse(b"From: =?GB2312?B?s8KGtA==?= <rose@x.cn>\r\nTo: me@example.com\r\nSubject: s\r\n\r\nx\r\n")
+        self.assertEqual(ragdoll.hdr(m, "From"), "陈喆 <rose@x.cn>")
         to, _ = ragdoll.reply_recipients(m, False, "me@example.com")
-        self.assertEqual(to, [("赵珺", "rose@x.cn")])
-        self.assertIn("赵珺", ragdoll.quote_block(m))
+        self.assertEqual(to, [("陈喆", "rose@x.cn")])
+        self.assertIn("陈喆", ragdoll.quote_block(m))
 
     def test_gb2312_body(self):
         m = parse(b"From: a@b.c\r\nSubject: s\r\nContent-Type: text/plain; charset=gb2312\r\n"
-                  b"Content-Transfer-Encoding: 8bit\r\n\r\n" + "赵珺你好".encode("gbk") + b"\r\n")
-        self.assertEqual(ragdoll.body_text(m), "赵珺你好")
+                  b"Content-Transfer-Encoding: 8bit\r\n\r\n" + "陈喆你好".encode("gbk") + b"\r\n")
+        self.assertEqual(ragdoll.body_text(m), "陈喆你好")
 
     def test_raw_8bit_gbk_headers_and_filename(self):
-        raw = (b"From: " + "赵珺".encode("gbk") + b" <z@x.cn>\r\nSubject: " + "报价".encode("gbk") +
+        raw = (b"From: " + "陈喆".encode("gbk") + b" <z@x.cn>\r\nSubject: " + "报价".encode("gbk") +
                b"\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\n"
                b"Content-Type: text/plain; charset=utf-8\r\n\r\nhi\r\n--B\r\nContent-Type: application/pdf\r\n"
                b"Content-Disposition: attachment; filename=\"" + "报价.pdf".encode("gbk") + b"\"\r\n\r\nx\r\n--B--\r\n")
         m = parse(raw)
-        self.assertEqual(ragdoll.hdr(m, "From"), "赵珺 <z@x.cn>")
+        self.assertEqual(ragdoll.hdr(m, "From"), "陈喆 <z@x.cn>")
         self.assertEqual(ragdoll.hdr(m, "Subject"), "报价")
         self.assertEqual([ragdoll.fname(p) for p in ragdoll.attachments(m)], ["报价.pdf"])
 
@@ -211,7 +211,7 @@ class Safety(unittest.TestCase):
         self.assertEqual(ragdoll.drafts_only("drafts:3", "--replace"), ("Drafts", 3))
 
     def test_parse_people(self):
-        self.assertEqual(ragdoll.parse_people('"Tan, Eric" <Eric@X.com>; b@c.d'), [("Tan, Eric", "eric@x.com"),
+        self.assertEqual(ragdoll.parse_people('"Doe, Jane" <Jane@X.com>; b@c.d'), [("Doe, Jane", "jane@x.com"),
                                                                                 ("", "b@c.d")])
         with self.assertRaises(SystemExit):
             ragdoll.parse_people("not an address")
@@ -245,12 +245,12 @@ class Safety(unittest.TestCase):
         self.assertIn("16:10", q)        # 08:10 UTC shown as 16:10 at +08
 
     def test_bodystructure_continuation_charset_and_cut_names(self):
-        blob = (b'("APPLICATION" "PDF" ("NAME" "COMMERCIAL INVOICE ES26-006.pd") NIL NIL "BASE64" 1 NIL '
-                b'("ATTACHMENT" ("FILENAME" "COMMERCIAL INVOICE ES26-006.pdf"))) '
+        blob = (b'("APPLICATION" "PDF" ("NAME" "COMMERCIAL INVOICE INV-0006.pd") NIL NIL "BASE64" 1 NIL '
+                b'("ATTACHMENT" ("FILENAME" "COMMERCIAL INVOICE INV-0006.pdf"))) '
                 b'("APPLICATION" "PDF" NIL NIL NIL "BASE64" 1 NIL ("ATTACHMENT" ("filename*0*" "utf-8\'\'%E6%8A%A5" '
                 b'"filename*1*" "%E4%BB%B7.pdf"))) '
-                b'("APPLICATION" "PDF" NIL NIL NIL "BASE64" 1 NIL ("ATTACHMENT" ("FILENAME*" "gb2312\'\'%D5%D4%ACB.pdf")))')
-        self.assertEqual(ragdoll.bs_names(blob), ["COMMERCIAL INVOICE ES26-006.pdf", "报价.pdf", "赵珺.pdf"])
+                b'("APPLICATION" "PDF" NIL NIL NIL "BASE64" 1 NIL ("ATTACHMENT" ("FILENAME*" "gb2312\'\'%B3%C2%86%B4.pdf")))')
+        self.assertEqual(ragdoll.bs_names(blob), ["COMMERCIAL INVOICE INV-0006.pdf", "报价.pdf", "陈喆.pdf"])
 
     def test_already_sent_log(self):
         import tempfile
@@ -276,9 +276,9 @@ class Safety(unittest.TestCase):
                 if cmd == "SEARCH":
                     return "OK", [b"5"]
                 return "OK", [(b"5 (UID 5 BODY[HEADER.FIELDS (MESSAGE-ID)] {60}",
-                               b"Message-ID: <E7A71F8638388FB7+1794.47644@huaming.com>\r\n\r\n"), b")"]
-        self.assertTrue(ragdoll.in_folder(M(), "Sent Messages", "<1794.47644@huaming.com>"))
-        self.assertFalse(ragdoll.in_folder(M(), "Sent Messages", "<94.47644@huaming.com>x"))
+                               b"Message-ID: <E7A71F8638388FB7+1794.47644@example.com>\r\n\r\n"), b")"]
+        self.assertTrue(ragdoll.in_folder(M(), "Sent Messages", "<1794.47644@example.com>"))
+        self.assertFalse(ragdoll.in_folder(M(), "Sent Messages", "<94.47644@example.com>x"))
 
     def test_safe_unique_names(self):
         used = set()
@@ -293,8 +293,8 @@ class Index(unittest.TestCase):
     def test_trigram_search_chinese(self):
         c = sqlite3.connect(":memory:")
         c.execute("create virtual table fts using fts5(x, tokenize='trigram')")
-        c.execute("insert into fts values('回复： Fw: E-W260084-088 越南MEE 夏洁平')")
-        self.assertEqual(c.execute("select count(*) from fts where fts match '\"越南MEE\"'").fetchone()[0], 1)
+        c.execute("insert into fts values('回复： Fw: PO-1234-088 北京ABC项目 李明')")
+        self.assertEqual(c.execute("select count(*) from fts where fts match '\"北京ABC\"'").fetchone()[0], 1)
 
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")

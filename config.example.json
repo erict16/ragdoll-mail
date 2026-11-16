@@ -7,7 +7,6 @@
   "folders": {"inbox": "INBOX", "sent": "Sent Messages", "drafts": "Drafts", "trash": "Deleted Messages", "junk": "Junk"},
   "sync_folders": ["INBOX", "Sent Messages", "Drafts"],
   "data_dir": "~/.local/share/ragdoll-mail",
-  "utc_offset_hours": 8,
   "signature": "~/path/to/signature.html",
   "signature_marks": ["a phone number or line that only appears in your signature"],
   "require_cc": [],

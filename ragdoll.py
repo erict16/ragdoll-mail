@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ragdoll: a mail CLI for one IMAP/SMTP mailbox, built for an AI agent and its owner.
+"""ragdoll: a mail CLI for one IMAP/SMTP mailbox, made to be driven by an AI agent and checked by a person.
 
 Some servers (Tencent Exmail among them) ignore IMAP text search and return
 every mail, so ragdoll keeps a local SQLite index and searches that. The index
@@ -55,7 +55,7 @@ import encodings.aliases, unicodedata
 
 __version__ = "0.4.0"
 
-# Chinese mail clients label text GB2312 but use GBK characters (e.g. 珺 in 赵珺). Strict GB2312
+# Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
 # superset of GB2312 and GBK; cp950 likewise of Big5.
 for _cs in ("gb2312", "gb_2312", "gb_2312_80", "gb2312_1980", "eucgb2312_cn", "euc_cn", "euccn", "chinese",
@@ -78,7 +78,7 @@ DEFAULTS = {
                 "trash": "Deleted Messages", "junk": "Junk"},
     "sync_folders": ["INBOX", "Sent Messages", "Drafts"],
     "data_dir": "~/.local/share/ragdoll-mail",
-    "utc_offset_hours": 8,
+    "utc_offset_hours": None,       # None: the computer's time zone
     "signature": "",
     "signature_marks": [],
     "require_cc": [],
@@ -112,7 +112,10 @@ class Cfg:
 
     @property
     def tz(self):
-        return dt.timezone(dt.timedelta(hours=self.d["utc_offset_hours"]))
+        h = self.d.get("utc_offset_hours")
+        if h is None:
+            return dt.datetime.now().astimezone().tzinfo
+        return dt.timezone(dt.timedelta(hours=h))
 
     @property
     def home(self):
@@ -225,7 +228,7 @@ def password():
         except OSError:
             pass
     if not p:
-        die("%s is not set. The mailbox owner sets it himself; never type it for him." % name)
+        die("%s is not set. The mailbox owner sets it; an agent must never type, print or store it." % name)
     return p
 
 
@@ -1196,7 +1199,7 @@ def reply_recipients(orig, reply_all, user, extra_to=(), extra_cc=(), remove=())
     extra_to = [x if isinstance(x, tuple) else ("", x.lower()) for x in extra_to]
     extra_cc = [x if isinstance(x, tuple) else ("", x.lower()) for x in extra_cc]
     remove = {x.lower() for x in remove}
-    # the owner's own address is dropped when it comes from the original mail, kept when he names it
+    # the owner's own address is dropped when it comes from the original mail, kept when named on purpose
     to, cc = clean_recipients(to, cc, {user.lower(), *remove})
     return clean_recipients(to + extra_to, cc + extra_cc, remove)
 
@@ -1425,7 +1428,7 @@ def check_message(msg, reply, blanks_ok=False, required_cc=True, attach_ok=False
     if not to:
         problems.append("To is empty")
     if CFG.user in everyone:
-        problems.append("the sender himself is a recipient")
+        problems.append("the sender is also a recipient")
     if required_cc:
         for x in CFG.require_cc:
             if x.lower() not in everyone:
