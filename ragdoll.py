@@ -53,7 +53,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -75,7 +75,7 @@ DEFAULTS = {
     "smtp": {"host": "", "port": 465},
     "password_env": "RAGDOLL_PASSWORD",
     "folders": {"inbox": "INBOX", "sent": "Sent Messages", "drafts": "Drafts",
-                "trash": "Deleted Messages", "junk": "Junk"},
+                "trash": "Deleted Messages", "junk": "Junk", "archive": "Archive"},
     "sync_folders": ["INBOX", "Sent Messages", "Drafts"],
     "data_dir": "~/.local/share/ragdoll-mail",
     "utc_offset_hours": None,       # None: the computer's time zone
@@ -218,6 +218,8 @@ def die(msg):
 
 
 def password():
+    """The mailbox password: the environment variable named by password_env (on Windows also that
+    user variable in the registry), else the system keychain (what the app saves)."""
     name = CFG.password_env
     p = os.environ.get(name) or (name == "RAGDOLL_PASSWORD" and os.environ.get("HMAIL_PASSWORD"))
     if not p and sys.platform == "win32":
@@ -227,9 +229,136 @@ def password():
                 p = winreg.QueryValueEx(k, name)[0]
         except OSError:
             pass
+    if not p and CFG.user:
+        p = keychain_get(CFG.user)
     if not p:
-        die("%s is not set. The mailbox owner sets it; an agent must never type, print or store it." % name)
+        die("%s is not set and no password is saved in the keychain. The mailbox owner sets it; "
+            "an agent must never type, print or store it." % name)
     return p
+
+
+# ------------------------------------------------------------------ keychain
+# The app saves the password here (macOS Keychain, Windows Credential Manager), so nobody has to
+# set an environment variable. ctypes only, no extra packages.
+
+KEYCHAIN_SERVICE = "ragdoll-mail"
+
+
+def _mac_security():
+    import ctypes
+    import ctypes.util
+    sec = ctypes.CDLL(ctypes.util.find_library("Security"))
+    cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+    sec.SecKeychainFindGenericPassword.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    sec.SecKeychainAddGenericPassword.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
+        ctypes.c_uint32, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+    sec.SecKeychainItemModifyAttributesAndData.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                                           ctypes.c_uint32, ctypes.c_char_p]
+    sec.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    sec.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    return ctypes, sec, cf
+
+
+def _mac_find(account, service):
+    ctypes, sec, cf = _mac_security()
+    s, a = service.encode(), account.encode()
+    n, data, item = ctypes.c_uint32(), ctypes.c_void_p(), ctypes.c_void_p()
+    err = sec.SecKeychainFindGenericPassword(None, len(s), s, len(a), a, ctypes.byref(n), ctypes.byref(data),
+                                             ctypes.byref(item))
+    if err:
+        return None, None, (ctypes, sec, cf)
+    pw = ctypes.string_at(data, n.value).decode("utf-8", "replace")
+    sec.SecKeychainItemFreeContent(None, data)
+    return pw, item, (ctypes, sec, cf)
+
+
+def _win_cred():
+    import ctypes
+    from ctypes import wintypes
+
+    class CREDENTIAL(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.DWORD), ("Type", wintypes.DWORD), ("TargetName", wintypes.LPWSTR),
+                    ("Comment", wintypes.LPWSTR), ("LastWritten", wintypes.FILETIME),
+                    ("CredentialBlobSize", wintypes.DWORD), ("CredentialBlob", ctypes.POINTER(ctypes.c_char)),
+                    ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD),
+                    ("Attributes", ctypes.c_void_p), ("TargetAlias", wintypes.LPWSTR),
+                    ("UserName", wintypes.LPWSTR)]
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    adv.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                              ctypes.POINTER(ctypes.POINTER(CREDENTIAL))]
+    adv.CredWriteW.argtypes = [ctypes.POINTER(CREDENTIAL), wintypes.DWORD]
+    adv.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+    adv.CredFree.argtypes = [ctypes.c_void_p]
+    return ctypes, adv, CREDENTIAL
+
+
+def keychain_get(account, service=KEYCHAIN_SERVICE):
+    """The saved password for this mailbox, or None (also when there is no keychain)."""
+    try:
+        if sys.platform == "darwin":
+            pw, item, (ctypes, sec, cf) = _mac_find(account, service)
+            if item:
+                cf.CFRelease(item)
+            return pw
+        if sys.platform == "win32":
+            ctypes, adv, CREDENTIAL = _win_cred()
+            p = ctypes.POINTER(CREDENTIAL)()
+            if not adv.CredReadW("%s:%s" % (service, account), 1, 0, ctypes.byref(p)):
+                return None
+            try:
+                c = p.contents
+                return ctypes.string_at(c.CredentialBlob, c.CredentialBlobSize).decode("utf-16-le")
+            finally:
+                adv.CredFree(p)
+    except Exception:
+        return None
+    return None
+
+
+def keychain_set(account, pw, service=KEYCHAIN_SERVICE):
+    """Save (or replace) the password. Raises OSError when it could not be saved."""
+    if sys.platform == "darwin":
+        old, item, (ctypes, sec, cf) = _mac_find(account, service)
+        b = pw.encode()
+        if item:
+            err = sec.SecKeychainItemModifyAttributesAndData(item, None, len(b), b)
+            cf.CFRelease(item)
+        else:
+            s, a = service.encode(), account.encode()
+            err = sec.SecKeychainAddGenericPassword(None, len(s), s, len(a), a, len(b), b, None)
+        if err:
+            raise OSError("the keychain refused the password (error %d)" % err)
+        return
+    if sys.platform == "win32":
+        ctypes, adv, CREDENTIAL = _win_cred()
+        blob = pw.encode("utf-16-le")
+        c = CREDENTIAL()
+        c.Type = 1                        # CRED_TYPE_GENERIC
+        c.TargetName = "%s:%s" % (service, account)
+        c.UserName = account
+        c.CredentialBlobSize = len(blob)
+        c.CredentialBlob = ctypes.cast(ctypes.create_string_buffer(blob, len(blob)), ctypes.POINTER(ctypes.c_char))
+        c.Persist = 2                     # CRED_PERSIST_LOCAL_MACHINE
+        if not adv.CredWriteW(ctypes.byref(c), 0):
+            raise OSError("Credential Manager refused the password (error %d)" % ctypes.get_last_error())
+        return
+    raise OSError("no keychain on this system: set %s instead" % CFG.password_env)
+
+
+def keychain_delete(account, service=KEYCHAIN_SERVICE):
+    with contextlib.suppress(Exception):
+        if sys.platform == "darwin":
+            old, item, (ctypes, sec, cf) = _mac_find(account, service)
+            if item:
+                sec.SecKeychainItemDelete(item)
+                cf.CFRelease(item)
+        elif sys.platform == "win32":
+            ctypes, adv, CREDENTIAL = _win_cred()
+            adv.CredDeleteW("%s:%s" % (service, account), 1, 0)
 
 
 def need_account():
@@ -1279,6 +1408,8 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
                 msg.add_attachment(part_bytes(p), mt, st, filename=fname(p))
     for f in attach:
         ctype = mimetypes.guess_type(f)[0] or "application/octet-stream"
+        if ctype.startswith("message/"):     # a .eml file: add_attachment wants a Message object for these
+            ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
             msg.add_attachment(fh.read(), mt, st, filename=os.path.basename(f))
@@ -1514,6 +1645,12 @@ def cmd_send(a):
     if not a.yes:
         die("send needs --yes, given only after the owner approved this exact draft")
     folder, uid = drafts_only(a.id, "send")
+    print(json.dumps(send_draft(folder, uid), ensure_ascii=False, indent=1))
+
+
+def send_draft(folder, uid, wait=3):
+    """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
+    answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
     sent = CFG.folders["sent"]
     with session() as m:
         raw = fetch_raw(m, folder, uid)
@@ -1548,7 +1685,7 @@ def cmd_send(a):
         # a fresh connection: the first one may have timed out during a long upload
         with session() as m:
             for _ in range(4):      # the server files SMTP mail in Sent by itself, sometimes late
-                time.sleep(3)
+                time.sleep(wait)
                 if in_folder(m, sent, mid, last=30):
                     saved = True
                     break
@@ -1574,10 +1711,10 @@ def cmd_send(a):
     except Exception as e:
         cleanup.append("the mail WAS sent, but tidying up failed (%s): do not send it again; "
                        "check Sent and remove the draft with delete-draft" % e)
-    print(json.dumps({"sent": True, "to": hdr(msg, "To"), "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"),
-                      "refused": refused, "attachments": [fname(p) for p in attachments(msg)],
-                      "copy_in_sent": "server" if saved else ("added by ragdoll" if not cleanup else "unknown"),
-                      "problems_after_sending": cleanup}, ensure_ascii=False, indent=1))
+    return {"sent": True, "to": hdr(msg, "To"), "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"),
+            "refused": refused, "attachments": [fname(p) for p in attachments(msg)],
+            "copy_in_sent": "server" if saved else ("added by ragdoll" if not cleanup else "unknown"),
+            "problems_after_sending": cleanup}
 
 
 def move_uids(m, folder, uids, dest):
@@ -2053,6 +2190,7 @@ def parser():
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_delete_draft)
+    sp.add_parser("app", help="open the desktop app (ragdoll app --help)", add_help=False)
     p = sp.add_parser("update", help="get the newest ragdoll from GitHub, test it, keep it")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--check", action="store_true", help="only say whether there is a newer version")
@@ -2064,6 +2202,16 @@ def parser():
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["app"]:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)            # python -I leaves the script folder off the path
+        try:
+            import ragdoll_app
+        except ImportError:
+            die("the desktop app needs the full clone (ragdoll_app.py and app/ next to ragdoll.py)")
+        return ragdoll_app.main(argv[1:])
     a = parser().parse_args(argv)
     if a.cmd == "update":
         return a.fn(a)

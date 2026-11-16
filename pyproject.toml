@@ -1,9 +1,12 @@
 [project]
 name = "ragdoll-mail"
-version = "0.4.0"
+version = "0.5.0"
 description = "Mail CLI for one IMAP/SMTP mailbox with a local search index, built for AI agents"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+
+[project.optional-dependencies]
+app = ["pywebview>=5"]
 
 [project.scripts]
 ragdoll = "ragdoll:main"
