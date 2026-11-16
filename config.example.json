@@ -1,0 +1,16 @@
+{
+  "user": "you@example.com",
+  "name": "Your Name",
+  "imap": {"host": "imap.example.com", "port": 993},
+  "smtp": {"host": "smtp.example.com", "port": 465},
+  "password_env": "HMAIL_PASSWORD",
+  "folders": {"inbox": "INBOX", "sent": "Sent Messages", "drafts": "Drafts", "trash": "Deleted Messages", "junk": "Junk"},
+  "sync_folders": ["INBOX", "Sent Messages", "Drafts"],
+  "data_dir": "~/.local/share/hmail",
+  "utc_offset_hours": 8,
+  "signature": "~/path/to/signature.html",
+  "signature_marks": ["a phone number or line that only appears in your signature"],
+  "require_cc": [],
+  "body_bytes": 30000,
+  "body_chars": 20000
+}
