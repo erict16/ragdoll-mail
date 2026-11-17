@@ -628,10 +628,30 @@ def new_text(text):
     return (text[:mo.start()] if mo else text or "").strip()
 
 
+IMAGE_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"),
+               (b"BM", "image/bmp"))
+
+
+def image_type(p):
+    """The image type of a part, or "". Some mailers send body images as application/octet-stream:
+    then the file name, or failing that the first bytes, tell."""
+    if p.get_content_maintype() == "image":
+        return p.get_content_type()
+    if p.get_content_type() != "application/octet-stream":
+        return ""
+    guess = mimetypes.guess_type(fname(p) or "")[0] or ""
+    if guess.startswith("image/"):
+        return guess
+    head = (p.get_payload(decode=True) or b"")[:12]
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return next((t for magic, t in IMAGE_MAGIC if head.startswith(magic)), "")
+
+
 def is_inline(p):
     """An image shown in the body (cid:), not a file: a PDF with a Content-ID is still a file."""
     return (bool(p.get("Content-ID")) and p.get_content_disposition() != "attachment"
-            and p.get_content_maintype() == "image")
+            and bool(image_type(p)))
 
 
 def attachments(msg, inline=False):
@@ -665,6 +685,29 @@ def bare_subject(s):
         if t == s:
             return re.sub(r"\s+", " ", t).lower()
         s = t
+
+
+FWD_HEADER = "X-Forwarded-Message-Id"     # as Thunderbird does; Exmail keeps no forwarded flag
+
+
+def is_forward_subject(s):
+    return bool(re.match(r"(?i)\s*(fw|fwd|转发)\s*[:：]", s or ""))
+
+
+def forward_source(msg):
+    """The Message-ID this mail forwards, or "". Ours carry FWD_HEADER; a WeCom forward sometimes
+    keeps the In-Reply-To of the mail it forwards."""
+    mid = hdr(msg, FWD_HEADER).strip()
+    if not mid and is_forward_subject(hdr(msg, "Subject")):
+        mid = hdr(msg, "In-Reply-To").strip()
+    return mid
+
+
+def mark_forwarded(c):
+    """forwarded=1 on every mail a forward in Sent points at (not a draft, not someone else's
+    forward in the Inbox). Never taken off, like Answered."""
+    c.execute("update msgs set forwarded=1 where forwarded=0 and msgid!='' and msgid in "
+              "(select fwd from msgs where fwd!='' and folder=?)", (CFG.folders["sent"],))
 
 
 def make_id(folder, uid):
@@ -702,7 +745,7 @@ SCHEMA = """
 create table if not exists msgs(id integer primary key, folder text, uidv integer, uid integer,
   msgid text, irt text, refs text, ts integer, frm text, to_ text, cc text, subject text,
   atts text, body text, seen int, flagged int, answered int, size int default 0,
-  has_body int default 0, unique(folder, uidv, uid));
+  has_body int default 0, fwd text default '', forwarded int default 0, unique(folder, uidv, uid));
 create index if not exists msgs_ts on msgs(ts);
 create index if not exists msgs_msgid on msgs(msgid);
 create index if not exists msgs_irt on msgs(irt);
@@ -725,6 +768,15 @@ def db():
         c.execute("alter table msgs add column has_body int default 0")
         c.execute("update msgs set has_body=1")
         c.commit()
+    if "fwd" not in cols:          # forwarded marks: fwd = the Message-ID a sent forward came from
+        c.execute("alter table msgs add column fwd text default ''")
+        c.execute("alter table msgs add column forwarded int default 0")
+        for r in c.execute("select id, subject, irt from msgs where irt!=''").fetchall():
+            if is_forward_subject(r["subject"]):
+                c.execute("update msgs set fwd=? where id=?", (r["irt"], r["id"]))
+        mark_forwarded(c)
+        c.commit()
+    c.execute("create index if not exists msgs_fwd on msgs(fwd)")
     if not c.execute("select 1 from meta where k='charset_fix'").fetchone():
         # rows decoded before the GB18030/Big5/raw-8-bit fixes: drop them so the next sync
         # fetches them again with the right names
@@ -855,6 +907,7 @@ def header_row(seg):
     size = re.search(rb"RFC822\.SIZE (\d+)", blob)
     bs = blob.split(b"BODY[HEADER]")[0]
     return {"msgid": hdr(msg, "Message-ID").strip(), "irt": hdr(msg, "In-Reply-To").strip(),
+            "fwd": forward_source(msg),
             "refs": hdr(msg, "References"), "ts": ts, "frm": hdr(msg, "From"), "to_": hdr(msg, "To"),
             "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"), "atts": " | ".join(bs_names(bs)),
             "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
@@ -908,9 +961,9 @@ def sync_headers(m, c, folder, full_flags=False, workers=1):
             h = header_row(seg)
             cur = c.execute(
                 "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,"
-                "seen,flagged,answered,size,has_body) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0)",
+                "seen,flagged,answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0,?)",
                 (folder, uidv, uid, h["msgid"], h["irt"], h["refs"], h["ts"], h["frm"], h["to_"], h["cc"],
-                 h["subject"], h["atts"], *h["flags"], h["size"]))
+                 h["subject"], h["atts"], *h["flags"], h["size"], h["fwd"]))
             if cur.rowcount:
                 c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,'')",
                           (cur.lastrowid, h["subject"], h["frm"], h["to_"] + " " + h["cc"], h["atts"]))
@@ -919,6 +972,9 @@ def sync_headers(m, c, folder, full_flags=False, workers=1):
         print("  %s headers: %d/%d" % (folder, done, len(new)), file=sys.stderr)
     if ex:
         ex.shutdown()
+    if new:
+        mark_forwarded(c)       # a new forward in Sent, or an original fetched again
+        c.commit()
     return len(new)
 
 
@@ -1019,10 +1075,16 @@ def row_out(r, snippet=True):
     d = {"id": make_id(r["folder"], r["uid"]), "date": local_time(r["ts"]), "from": r["frm"],
          "to": r["to_"], "cc": r["cc"], "subject": r["subject"],
          "attachments": [x for x in (r["atts"] or "").split(" | ") if x],
-         "unread": not r["seen"], "answered": bool(r["answered"]), "body_indexed": bool(r["has_body"])}
+         "unread": not r["seen"], "answered": bool(r["answered"]), "forwarded": bool(r["forwarded"]),
+         "body_indexed": bool(r["has_body"])}
     if snippet:
         d["snippet"] = re.sub(r"\s+", " ", new_text(r["body"] or ""))[:200]
     return d
+
+
+def marks(r):
+    """Two columns: ↩ replied, → forwarded."""
+    return ("↩" if r["answered"] else " ") + ("→" if r["forwarded"] else " ")
 
 
 def print_rows(rows, as_json, empty="(nothing found)"):
@@ -1032,8 +1094,8 @@ def print_rows(rows, as_json, empty="(nothing found)"):
     for r in rows:
         f = addrs(r["frm"])
         who = (f[0][0] or f[0][1]) if f else ""
-        print("%-14s %s %s %-20s %s%s" % (make_id(r["folder"], r["uid"]), local_time(r["ts"]),
-                                          "*" if not r["seen"] else " ", who[:20], r["subject"],
+        print("%-14s %s %s%s %-20s %s%s" % (make_id(r["folder"], r["uid"]), local_time(r["ts"]),
+                                            "*" if not r["seen"] else " ", marks(r), who[:20], r["subject"],
                                           "  [%s]" % r["atts"] if r["atts"] else ""))
     if not rows:
         print(empty)
@@ -1427,6 +1489,8 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
             msg["In-Reply-To"] = mid
             refs = hdr(orig, "References").strip() or hdr(orig, "In-Reply-To").strip()
             msg["References"] = (refs + " " + mid).strip()
+    if mode == "forward" and orig is not None and hdr(orig, "Message-ID").strip():
+        msg[FWD_HEADER] = hdr(orig, "Message-ID").strip()
     msg.set_content(html_to_text(html))
     msg.add_alternative(html, subtype="html")
     hpart = msg.get_body(("html",))
@@ -1438,7 +1502,7 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
             if cid in used and cid not in done and is_inline(p):
-                mt, st = p.get_content_type().split("/", 1)
+                mt, st = image_type(p).split("/", 1)
                 hpart.add_related(p.get_payload(decode=True) or b"", mt, st, cid="<%s>" % cid,
                                   filename=fname(p))
                 done.add(cid)
@@ -1756,16 +1820,7 @@ def send_draft(folder, uid, wait=3):
                 else:
                     cleanup.append("no copy in Sent: %s" % data)
             delete_uid(m, folder, uid)
-            irt = hdr(msg, "In-Reply-To").strip()
-            if irt:
-                r = db().execute("select folder, uid from msgs where msgid=? order by ts desc limit 1",
-                                 (irt,)).fetchone()
-                if r:
-                    try:
-                        select(m, r["folder"], readonly=False)
-                        m.uid("STORE", str(r["uid"]), "+FLAGS", "(\\Answered)")
-                    except Exception:
-                        pass
+            mark_original(m, msg)
     except Exception as e:
         cleanup.append("the mail WAS sent, but tidying up failed (%s): do not send it again; "
                        "check Sent and remove the draft with delete-draft" % e)
@@ -1773,6 +1828,26 @@ def send_draft(folder, uid, wait=3):
             "refused": refused, "attachments": [fname(p) for p in attachments(msg)],
             "copy_in_sent": "server" if saved else ("added by ragdoll" if not cleanup else "unknown"),
             "problems_after_sending": cleanup}
+
+
+def mark_original(m, msg):
+    """After sending: mark the mail it answers (\\Answered, on the server too, so WeCom shows it)
+    or forwards (in the index only: Exmail keeps no forwarded flag)."""
+    c = db()
+    fwd = forward_source(msg)
+    irt = "" if fwd else hdr(msg, "In-Reply-To").strip()
+    if fwd:
+        c.execute("update msgs set forwarded=1 where msgid=?", (fwd,))
+    if irt:
+        c.execute("update msgs set answered=1 where msgid=?", (irt,))
+        r = c.execute("select folder, uid from msgs where msgid=? order by ts desc limit 1", (irt,)).fetchone()
+        if r:
+            try:
+                select(m, r["folder"], readonly=False)
+                m.uid("STORE", str(r["uid"]), "+FLAGS", "(\\Answered)")
+            except Exception:
+                pass
+    c.commit()
 
 
 def move_uids(m, folder, uids, dest):

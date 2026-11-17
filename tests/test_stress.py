@@ -137,14 +137,18 @@ class Stress(unittest.TestCase):
     def test_line_breaks_in_headers_do_not_break_the_draft(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         att = os.path.join(d, "new\nline.txt")
-        with open(att, "wb") as f:
-            f.write(b"x")
+        try:
+            with open(att, "wb") as f:
+                f.write(b"x")
+        except OSError:         # Windows: no line break allowed in a file name
+            att = None
         m = R.build_message("<p>hi</p>", [("Ann\r\nBcc: evil@x.com", "ann@x.com")], [],
-                            "line1\r\nBcc: evil@x.com", attach=[att])
+                            "line1\r\nBcc: evil@x.com", attach=[att] if att else [])
         back = parse(m.as_bytes(policy=R.OUT_POLICY))
         self.assertIsNone(back["Bcc"])
         self.assertEqual(R.hdr(back, "Subject"), "line1 Bcc: evil@x.com")
-        self.assertEqual([R.fname(p) for p in R.attachments(back)], ["new line.txt"])
+        if att:
+            self.assertEqual([R.fname(p) for p in R.attachments(back)], ["new line.txt"])
         self.assertEqual(R.addrs(R.hdr(back, "To")), [("Ann Bcc: evil@x.com", "ann@x.com")])
 
 

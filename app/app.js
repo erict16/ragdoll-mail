@@ -363,6 +363,7 @@ function rowTemplate(r) {
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(t(r.folder) || r.folder)}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("flag", "small")}</span>` : "";
+  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("arrow-right", "small") : ""}</span>` : "";
   const acts = r.sched
     ? `<button class="icon-btn tiny" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : S.folder === "trash" && !S.query
@@ -370,7 +371,7 @@ function rowTemplate(r) {
     : `<button class="icon-btn tiny" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
   return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span><span class="who" dir="auto">${esc(name)}</span>` +
+    `<span class="dot"></span><span class="who" dir="auto">${done}${esc(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
     `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
     `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
