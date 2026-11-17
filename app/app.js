@@ -126,7 +126,7 @@ const fontLabel = (k) => FONT_NAMES[k] || t("system");
 const mailFont = () => fontStack(PREFS.font || "system");
 const mailSize = () => (FONT_SIZES.includes(PREFS.font_size) ? PREFS.font_size : 14);
 const savePref = (patch) => { Object.assign(PREFS, patch); api("prefs", patch).catch(() => {}); };
-const FOLDER_ICON = { inbox: "inbox", flagged: "flag", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", trash: "trash-2" };
+const FOLDER_ICON = { inbox: "inbox", flagged: "star", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", trash: "trash-2" };
 
 // ---------------------------------------------------------------- theme
 
@@ -362,7 +362,8 @@ function rowTemplate(r) {
   const clip = r.atts.length ? icon("paperclip", "small") : "";
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(t(r.folder) || r.folder)}</span>` : "";
-  const flag = r.flagged ? `<span class="flag-ic">${icon("flag", "small")}</span>` : "";
+  const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
+  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("arrow-right", "small") : ""}</span>` : "";
   const acts = r.sched
     ? `<button class="icon-btn tiny" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : S.folder === "trash" && !S.query
@@ -370,7 +371,7 @@ function rowTemplate(r) {
     : `<button class="icon-btn tiny" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
   return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span><span class="who" dir="auto">${esc(name)}</span>` +
+    `<span class="dot"></span><span class="who" dir="auto">${done}${esc(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
     `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
     `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
@@ -378,12 +379,15 @@ function rowTemplate(r) {
 }
 
 // rows that were not in the list a moment ago (new mail, an undo) fade in; a new folder fades in as a whole
-let shownIds = new Set(), shownKey = null;
+let shownIds = new Set(), shownKey = null, shownMarks = new Map();
+const marksOf = (r) => ({ a: !!r.answered, f: !!r.forwarded, s: !!r.flagged });
 function renderRows() {
   const box = $("#rows");
   const key = S.folder + "\n" + S.query;
   const same = key === shownKey && shownIds.size > 0;
+  const oldMarks = same ? shownMarks : new Map();
   shownIds = new Set(S.rows.map((x) => x.id)); shownKey = key;
+  shownMarks = new Map(S.rows.map((x) => [x.id, marksOf(x)]));
   if (!S.rows.length) {
     if (S.loading) { box.replaceChildren(); return; }
     const msg = S.query ? t("no_results") : (S.syncing && S.folder === "inbox" ? t("syncing") : t("no_mail"));
@@ -394,7 +398,66 @@ function renderRows() {
   box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
   if (REDUCED.matches) return;
   if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-  else growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
+  else {
+    growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
+    for (const n of $$(".row", box)) {
+      const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
+      if (!was || !now) continue;
+      if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
+      if (now.s && !was.s) popStar($(".flag-ic", n));
+    }
+  }
+}
+
+// the star in a row: grows in with a small spin and settles; shrinks away when taken off
+const STAR_W = "13px";
+function popStar(s) {
+  if (!s || REDUCED.matches) return;
+  s.animate([
+    { width: "0px", marginInlineEnd: "-5px", opacity: 0 },
+    { width: STAR_W, marginInlineEnd: "0px", opacity: 1, offset: 0.45 },
+    { width: STAR_W, marginInlineEnd: "0px", opacity: 1 },
+  ], { duration: 460, easing: SMOOTH });
+  $(".i", s)?.animate([
+    { transform: "scale(.2) rotate(-90deg)" },
+    { transform: "scale(1.22) rotate(10deg)", offset: 0.6 },
+    { transform: "scale(.96) rotate(-2deg)", offset: 0.82 },
+    { transform: "none" },
+  ], { duration: 460, easing: "cubic-bezier(.3, .7, .3, 1)" });
+}
+function setStar(node, on) {
+  const meta = $(".meta", node);
+  const s = $(".flag-ic:not(.out)", meta);
+  if (on && !s) {
+    const n = el("span", { class: "flag-ic", html: icon("star", "small") });
+    const tag = $(".tag", meta);
+    if (tag) tag.after(n); else meta.prepend(n);
+    popStar(n);
+  } else if (!on && s) {
+    s.classList.add("out");
+    if (REDUCED.matches) { s.replaceWith(); return; }
+    s.animate([
+      { width: STAR_W, marginInlineEnd: "0px", opacity: 1, transform: "none" },
+      { width: "0px", marginInlineEnd: "-5px", opacity: 0, transform: "scale(.4) rotate(45deg)" },
+    ], { duration: 240, easing: SMOOTH, fill: "forwards" }).finished.then(() => s.replaceWith(), () => {});
+  }
+}
+
+// a new replied / forwarded mark opens its space before the name, the arrow sliding the way it points
+function showDone(node, replied, forwarded) {
+  const d = $(".done-ic", node);
+  if (!d || REDUCED.matches) return;
+  const w = d.offsetWidth + "px";
+  d.animate([
+    { width: "0px", marginInlineEnd: "0px", opacity: 0 },
+    { width: w, marginInlineEnd: "5px", opacity: 0, offset: 0.35 },
+    { width: w, marginInlineEnd: "5px", opacity: 1 },
+  ], { duration: 420, easing: SMOOTH });
+  const icons = $$(".i", d);
+  const slide = (n, dx) => n?.animate([{ transform: `translateX(${dx}px)` }, { transform: "none" }],
+    { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  if (replied) slide(icons[0], 7);
+  if (forwarded) slide(icons[icons.length - 1], -7);
 }
 
 // rows going away fold up before they are dropped
@@ -472,7 +535,7 @@ function markRow(id, patch) {
   if (tr) Object.assign(tr, patch);
   const node = $(`.row[data-id="${CSS.escape(id)}"]`);
   if (!node || !r) return;
-  if ("flagged" in patch) { const n = el("div", { html: rowTemplate(r) }).firstChild; node.replaceWith(n); }
+  if ("flagged" in patch) setStar(node, r.flagged);
   else if ("unread" in patch) node.classList.toggle("unread", patch.unread);
 }
 
@@ -534,7 +597,7 @@ function showMulti() {
       inTrash ? b("inbox", t("restore"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
       inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
       b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
-      b(allFlagged ? "flag-off" : "flag", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
+      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
   renderToolbar();
 }
 
@@ -545,6 +608,7 @@ async function markMail(ids, flag, on) {
   const before = ids.map((id) => [id, rowOf(id)?.[key]]);
   ids.forEach((id) => markRow(id, { [key]: val }));
   if (S.multi.size > 1) showMulti(); else renderToolbar();
+  if (key === "flagged") popToolStar(val);
   try {
     await api("mark", { ids, flag, on });
     refreshCounts();
@@ -554,6 +618,14 @@ async function markMail(ids, flag, on) {
     if (S.multi.size > 1) showMulti(); else renderToolbar();
     fail(e);
   }
+}
+function popToolStar(on) {
+  const i = $('#tools .icon-btn[data-key="S"] .i');
+  if (!i || REDUCED.matches) return;
+  i.animate(on
+    ? [{ transform: "scale(.5) rotate(-72deg)" }, { transform: "scale(1.25) rotate(8deg)", offset: 0.6 }, { transform: "none" }]
+    : [{ transform: "scale(.82)" }, { transform: "none" }],
+  { duration: on ? 440 : 220, easing: "cubic-bezier(.3, .7, .3, 1)" });
 }
 function toggleFlag() {
   const ids = targets(), rows = ids.map(rowOf).filter(Boolean);
@@ -740,7 +812,7 @@ function renderToolbar() {
         : iconBtn("archive", t("archive_it"), () => moveMail(ids, "archive"), { key: "E" }),
       iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
       iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U" }),
-      iconBtn(allFlagged ? "flag-off" : "flag", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S" }),
+      iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on" : "" }),
     );
     return;
   }
@@ -754,7 +826,7 @@ function renderToolbar() {
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
-    iconBtn(r?.flagged ? "flag-off" : "flag", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
+    iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
   );
   end.append(
     iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id }), { key: "R", disabled: !has }),

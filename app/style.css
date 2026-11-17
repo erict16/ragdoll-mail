@@ -132,6 +132,9 @@ kbd { font: 11px var(--font); color: var(--text-3); border: 1px solid var(--line
 .row:hover .hover-acts { opacity: 1; transform: none; pointer-events: auto; }
 .row.leaving .hover-acts { opacity: 0; }
 .row .tag { font-size: 11px; color: var(--text-2); }
+.row .done-ic { display: inline-flex; gap: 1px; margin-inline-end: 5px; vertical-align: -2px; color: var(--accent-ink); overflow: hidden; }
+.icon-btn.on { color: var(--text); }
+.icon-btn.on svg { fill: currentColor; }
 .rows-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 20px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }
 .rows-empty .i.big { width: 28px; height: 28px; opacity: .7; }
 .rows-more { display: flex; justify-content: center; padding: 14px; color: var(--text-3); }
@@ -391,7 +394,7 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 .font-sample { border: 1px solid var(--line); border-radius: 9px; background: var(--sunk); padding: 12px 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- flags */
-.flag-ic { display: inline-flex; color: var(--text-2); }
+.flag-ic { display: inline-flex; justify-content: center; color: var(--text-2); }
 .flag-ic .i, .flag-ic svg { width: 13px; height: 13px; }
 .flag-ic svg { fill: currentColor; }
 .row.on .flag-ic { color: var(--text); }

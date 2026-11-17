@@ -297,6 +297,105 @@ class Index(unittest.TestCase):
         self.assertEqual(c.execute("select count(*) from fts where fts match '\"北京ABC\"'").fetchone()[0], 1)
 
 
+class ReplyForwardMarks(unittest.TestCase):
+    def setUp(self):
+        self.old = ragdoll.CFG.d["data_dir"]
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        self.c = ragdoll.db()
+
+    def tearDown(self):
+        self.c.close()
+        shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+        ragdoll.CFG.d["data_dir"] = self.old
+
+    def add(self, folder, uid, msgid, subject, fwd="", irt=""):
+        self.c.execute("insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,"
+                       "flagged,answered,has_body,fwd) values(?,1,?,?,?,'',?,'','','',?,'','',1,0,0,1,?)",
+                       (folder, uid, msgid, irt, uid, subject, fwd))
+
+    def flag(self, msgid):
+        return self.c.execute("select forwarded from msgs where msgid=?", (msgid,)).fetchone()[0]
+
+    def test_forward_carries_source_reply_does_not(self):
+        o = orig()
+        fw = ragdoll.build_message("<div>x</div>", [("", "a@b.c")], [], "Fw: x", o, "forward")
+        self.assertEqual(fw[ragdoll.FWD_HEADER], "<abc@cust.vn>")
+        self.assertEqual(ragdoll.forward_source(fw), "<abc@cust.vn>")
+        re_ = ragdoll.build_message("<div>x</div>", [("", "a@b.c")], [], "Re: x", o, "reply")
+        self.assertIsNone(re_[ragdoll.FWD_HEADER])
+        self.assertEqual(ragdoll.forward_source(re_), "")
+
+    def test_wecom_forward_with_in_reply_to(self):
+        m = email.message_from_bytes(b"Subject: =?utf-8?b?6L2s5Y+R77yaIHg=?=\r\nIn-Reply-To: <o@x>\r\n\r\nx",
+                                     policy=policy.default)
+        self.assertEqual(ragdoll.forward_source(m), "<o@x>")
+
+    def test_only_sent_forwards_mark_the_original(self):
+        sent, drafts = ragdoll.CFG.folders["sent"], ragdoll.CFG.folders["drafts"]
+        for i, mid in enumerate(("<a@x>", "<b@x>", "<c@x>"), 1):
+            self.add("INBOX", i, mid, "hello")
+        self.add(sent, 10, "<s1@x>", "Fw: hello", fwd="<a@x>")
+        self.add(drafts, 11, "<d1@x>", "Fw: hello", fwd="<b@x>")              # not sent yet
+        self.add("INBOX", 12, "<i1@x>", "Fw: hello", fwd="<c@x>", irt="<c@x>")  # someone else's forward
+        ragdoll.mark_forwarded(self.c)
+        self.assertEqual([self.flag(m) for m in ("<a@x>", "<b@x>", "<c@x>")], [1, 0, 0])
+
+    def test_list_shows_marks(self):
+        r = {"answered": 1, "forwarded": 1}
+        self.assertEqual(ragdoll.marks(r), "↩→")
+        self.assertEqual(ragdoll.marks({"answered": 0, "forwarded": 0}), "  ")
+        self.add("INBOX", 1, "<a@x>", "hello")
+        self.c.execute("update msgs set forwarded=1")
+        row = self.c.execute("select * from msgs").fetchone()
+        self.assertTrue(ragdoll.row_out(row)["forwarded"])
+
+    def test_old_index_gets_the_columns(self):
+        self.c.close()
+        path = os.path.join(ragdoll.CFG.home, "index.db")
+        os.remove(path)
+        old = sqlite3.connect(path)
+        old.execute("create table msgs(id integer primary key, folder text, uidv integer, uid integer, msgid text, "
+                    "irt text, refs text, ts integer, frm text, to_ text, cc text, subject text, atts text, "
+                    "body text, seen int, flagged int, answered int, size int default 0, has_body int default 0, "
+                    "unique(folder, uidv, uid))")
+        old.execute("insert into msgs(folder,uidv,uid,msgid,irt,subject) values('INBOX',1,1,'<o@x>','','hi')")
+        old.execute("insert into msgs(folder,uidv,uid,msgid,irt,subject) values(?,1,2,'<s@x>','<o@x>','转发: hi')",
+                    (ragdoll.CFG.folders["sent"],))
+        old.commit()
+        old.close()
+        self.c = ragdoll.db()
+        self.assertEqual(self.flag("<o@x>"), 1)
+
+
+class OctetImages(unittest.TestCase):
+    RAW = ORIG.replace(b"Content-Type: image/png\r\n",
+                       b"Content-Type: application/octet-stream; name=\"image001.png\"\r\n")
+
+    def test_octet_stream_body_image_kept_in_reply(self):
+        o = email.message_from_bytes(self.RAW, policy=policy.default)
+        part = [p for p in o.walk() if p.get("Content-ID")][0]
+        self.assertTrue(ragdoll.is_inline(part))
+        self.assertEqual(ragdoll.attachments(o), [])
+        msg = ragdoll.build_message("<div>x</div>", [("", "a@b.c")], [], "Re: x", o, "reply")
+        imgs = [p for p in msg.walk() if p.get("Content-ID")]
+        self.assertEqual(len(imgs), 1)
+        self.assertEqual(imgs[0].get_content_type(), "image/png")
+
+    def test_octet_stream_without_name_sniffed(self):
+        raw = ORIG.replace(b"Content-Type: image/png\r\n", b"Content-Type: application/octet-stream\r\n")
+        o = email.message_from_bytes(raw, policy=policy.default)
+        part = [p for p in o.walk() if p.get("Content-ID")][0]
+        self.assertEqual(ragdoll.image_type(part), "image/png")
+
+    def test_pdf_with_content_id_is_still_a_file(self):
+        raw = ORIG.replace(b"Content-Type: image/png\r\n",
+                           b"Content-Type: application/octet-stream; name=\"po.pdf\"\r\n").replace(
+            b"iVBORw0KGgo=", b"JVBERi0xLjQ=")
+        o = email.message_from_bytes(raw, policy=policy.default)
+        part = [p for p in o.walk() if p.get("Content-ID")][0]
+        self.assertFalse(ragdoll.is_inline(part))
+
+
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class Update(unittest.TestCase):
     """update against a local remote: check, update, self-test rollback, gates, rollback."""

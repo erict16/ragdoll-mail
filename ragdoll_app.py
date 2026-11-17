@@ -186,11 +186,14 @@ def data_uri(ctype, data):
 def cid_map(msg):
     out = {}
     for p in msg.walk():
-        if p.is_multipart() or not p.get("Content-ID") or p.get_content_maintype() != "image":
+        if p.is_multipart() or not p.get("Content-ID"):
+            continue
+        ctype = R.image_type(p)
+        if not ctype:
             continue
         data = p.get_payload(decode=True) or b""
         if len(data) <= 8 * 1024 * 1024:
-            out[p.get("Content-ID").strip().strip("<>")] = data_uri(p.get_content_type(), data)
+            out[p.get("Content-ID").strip().strip("<>")] = data_uri(ctype, data)
     return out
 
 
@@ -528,7 +531,7 @@ class Backend:
         return {"id": R.make_id(r["folder"], r["uid"]), "folder": R.CFG.short(r["folder"]), "ts": r["ts"],
                 "from": person(n, a), "to": people_json(r["to_"]), "cc": people_json(r["cc"]),
                 "subject": r["subject"] or "", "snippet": snippet(r["body"]), "unread": not r["seen"],
-                "flagged": bool(r["flagged"]), "answered": bool(r["answered"]),
+                "flagged": bool(r["flagged"]), "answered": bool(r["answered"]), "forwarded": bool(r["forwarded"]),
                 "atts": [x for x in (r["atts"] or "").split(" | ") if x]}
 
     # ---- raw mail, with a disk cache
@@ -642,7 +645,7 @@ class Backend:
     @staticmethod
     def fingerprint(c):
         return tuple(c.execute("select count(*), coalesce(max(id),0), coalesce(sum(seen),0), "
-                               "coalesce(sum(has_body),0), coalesce(sum(answered),0), coalesce(sum(flagged),0) "
+                               "coalesce(sum(has_body),0), coalesce(sum(answered),0), coalesce(sum(flagged),0), coalesce(sum(forwarded),0) "
                                "from msgs").fetchone())
 
     def check_update(self):
@@ -1012,7 +1015,7 @@ class Backend:
                         "bcc": people_json(R.hdr(msg, "Bcc")), "subject": R.hdr(msg, "Subject"),
                         "html": page_html(html, cid_map(msg)) if html.strip() else R.text_to_html(plain),
                         "use_signature": False, "irt": R.hdr(msg, "In-Reply-To").strip(),
-                        "refs": R.hdr(msg, "References").strip(),
+                        "refs": R.hdr(msg, "References").strip(), "fwd": R.hdr(msg, R.FWD_HEADER).strip(),
                         "atts": [self.keep_file(R.fname(p) or "attachment", R.part_bytes(p))
                                  for p in file_parts(msg)]})
             return out
@@ -1060,6 +1063,10 @@ class Backend:
         if mode == "draft" and not orig and a.get("irt"):
             msg["In-Reply-To"] = a["irt"]
             msg["References"] = a.get("refs") or a["irt"]
+        if mode == "forward" and orig is not None and R.hdr(orig, "Message-ID").strip():
+            msg[R.FWD_HEADER] = R.hdr(orig, "Message-ID").strip()
+        elif mode == "draft" and not orig and a.get("fwd"):
+            msg[R.FWD_HEADER] = a["fwd"]
         if images:
             holder = msg.get_body(("related",)) or msg.get_body(("html",))
             for cid, data, mt, st in images:
@@ -1100,7 +1107,7 @@ class Backend:
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
         state = {k: a.get(k) for k in ("mode", "orig", "to", "cc", "bcc", "subject", "html", "atts",
-                                       "use_signature", "irt", "refs")}
+                                       "use_signature", "irt", "refs", "fwd")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
             with open(self.state_path(R.hdr(msg, "Message-ID")), "w", encoding="utf-8") as f:
@@ -1141,8 +1148,11 @@ class Backend:
             self.demo_delete(a["id"])
             del msg["Bcc"]
             self.demo_insert(R.CFG.folders["sent"], msg.as_bytes(policy=R.OUT_POLICY), int(time.time()), 1, 0)
+            fwd = R.forward_source(msg)
             irt = R.hdr(msg, "In-Reply-To").strip()
-            if irt:
+            if fwd:
+                self.exec("update msgs set forwarded=1 where msgid=?", (fwd,))
+            elif irt:
                 self.exec("update msgs set answered=1 where msgid=?", (irt,))
             self.bump()
             return {"sent": True, "problems_after_sending": []}
@@ -1503,10 +1513,11 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
     c.execute("insert or ignore into state values(?,?)", (folder, uidv))
     cur = c.execute(
         "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
-        "answered,size,has_body) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+        "answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
         (folder, uidv, uid, R.hdr(msg, "Message-ID").strip(), R.hdr(msg, "In-Reply-To").strip(),
          R.hdr(msg, "References"), ts, R.hdr(msg, "From"), R.hdr(msg, "To"), R.hdr(msg, "Cc"),
-         R.hdr(msg, "Subject"), " | ".join(names), body, seen, int(flagged), answered, len(raw)))
+         R.hdr(msg, "Subject"), " | ".join(names), body, seen, int(flagged), answered, len(raw),
+         R.forward_source(msg)))
     if cur.rowcount:
         c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,?)",
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
