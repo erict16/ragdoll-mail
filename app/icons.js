@@ -78,6 +78,7 @@ export const ICONS = {
 "calendar": "<path d=\"M8 2v4\" /> <path d=\"M16 2v4\" /> <rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\" /> <path d=\"M3 10h18\" />",
 "a-large-small": "<path d=\"M21 14h-5\" /> <path d=\"M16 16v-3.5a2.5 2.5 0 0 1 5 0V16\" /> <path d=\"M4.5 13h6\" /> <path d=\"m3 16 4.5-9 4.5 9\" />",
 "baseline": "<path d=\"M4 20h16\" /> <path d=\"m6 16 6-12 6 12\" /> <path d=\"M8 12h8\" />",
+"star-off": "<path d=\"M8.34 8.34 2 9.27l5 4.87L5.82 21 12 17.77 18.18 21l-.59-3.43\" /> <path d=\"M18.42 12.76 22 9.27l-6.91-1L12 2l-1.44 2.91\" /> <line x1=\"2\" x2=\"22\" y1=\"2\" y2=\"22\" />",
 "flag-off": "<path d=\"M8 2c3 0 5 2 8 2s4-1 4-1v11\" /> <path d=\"M4 22V4\" /> <path d=\"M4 15s1-1 4-1 5 2 8 2\" /> <line x1=\"2\" x2=\"22\" y1=\"2\" y2=\"22\" />",
 "flag": "<path d=\"M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z\" /> <line x1=\"4\" x2=\"4\" y1=\"22\" y2=\"15\" />",
 "keyboard": "<path d=\"M10 8h.01\" /> <path d=\"M12 12h.01\" /> <path d=\"M14 8h.01\" /> <path d=\"M16 12h.01\" /> <path d=\"M18 8h.01\" /> <path d=\"M6 8h.01\" /> <path d=\"M7 16h10\" /> <path d=\"M8 12h.01\" /> <rect width=\"20\" height=\"16\" x=\"2\" y=\"4\" rx=\"2\" />",

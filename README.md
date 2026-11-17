@@ -98,7 +98,7 @@ ragdoll keeps its own index of your mailbox in SQLite. Opening a folder takes ab
 **Read**
 - Whole conversations on one page, newest mail on top. Long quoted history folds away.
 - Search everything with ⌘K / Ctrl+K: `from:jane`, `in:sent`, `is:unread`, `has:attachment`, or any words.
-- Flag mail with **S** and find it again in **Flagged**. Select many rows with ⌘/Ctrl or Shift and act on them at once.
+- Star mail with **S** and find it again in **Starred**. Select many rows with ⌘/Ctrl or Shift and act on them at once.
 - Text size from ⌘− to ⌘+, for the list and the reader together.
 
 **Write**

@@ -429,7 +429,7 @@ LANGS.de = {
 const MORE = {
   en: {
     back: "Back", ok: "OK", close: "Close", font_sample: "The quick brown fox jumps over the lazy dog. 你好，世界。",
-    flagged: "Flagged", flag: "Flag", unflag: "Remove flag", formatting: "Formatting", font: "Font", font_size: "Size",
+    flagged: "Starred", flag: "Star", unflag: "Remove star", formatting: "Formatting", font: "Font", font_size: "Size",
     size_small: "Small", size_normal: "Normal", size_large: "Large", size_huge: "Huge",
     bold: "Bold", italic: "Italic", underline: "Underline", strike: "Strikethrough", bullets: "Bulleted list",
     numbers: "Numbered list", quote_block: "Quote", link: "Link", link_url: "Link address", clear_fmt: "Clear formatting",
@@ -441,7 +441,7 @@ const MORE = {
   },
   "zh-Hans": {
     back: "返回", ok: "确定", close: "关闭", font_sample: "这是新邮件的默认字体。The quick brown fox.",
-    flagged: "已加旗标", flag: "加旗标", unflag: "取消旗标", formatting: "格式", font: "字体", font_size: "字号",
+    flagged: "星标邮件", flag: "加星标", unflag: "取消星标", formatting: "格式", font: "字体", font_size: "字号",
     size_small: "小", size_normal: "正常", size_large: "大", size_huge: "特大",
     bold: "粗体", italic: "斜体", underline: "下划线", strike: "删除线", bullets: "项目符号列表",
     numbers: "编号列表", quote_block: "引用", link: "链接", link_url: "链接地址", clear_fmt: "清除格式",
@@ -453,7 +453,7 @@ const MORE = {
   },
   "zh-Hant": {
     back: "返回", ok: "確定", close: "關閉", font_sample: "這是新郵件的預設字型。The quick brown fox.",
-    flagged: "已加旗標", flag: "加旗標", unflag: "移除旗標", formatting: "格式", font: "字型", font_size: "字級",
+    flagged: "星號郵件", flag: "加上星號", unflag: "移除星號", formatting: "格式", font: "字型", font_size: "字級",
     size_small: "小", size_normal: "標準", size_large: "大", size_huge: "特大",
     bold: "粗體", italic: "斜體", underline: "底線", strike: "刪除線", bullets: "項目符號清單",
     numbers: "編號清單", quote_block: "引言", link: "連結", link_url: "連結網址", clear_fmt: "清除格式",
@@ -465,7 +465,7 @@ const MORE = {
   },
   ja: {
     back: "戻る", ok: "OK", close: "閉じる", font_sample: "新規メールの既定のフォントです。The quick brown fox.",
-    flagged: "フラグ付き", flag: "フラグを付ける", unflag: "フラグを外す", formatting: "書式", font: "フォント", font_size: "サイズ",
+    flagged: "スター付き", flag: "スターを付ける", unflag: "スターを外す", formatting: "書式", font: "フォント", font_size: "サイズ",
     size_small: "小", size_normal: "標準", size_large: "大", size_huge: "特大",
     bold: "太字", italic: "斜体", underline: "下線", strike: "取り消し線", bullets: "箇条書き",
     numbers: "番号付きリスト", quote_block: "引用", link: "リンク", link_url: "リンク先", clear_fmt: "書式をクリア",
@@ -477,7 +477,7 @@ const MORE = {
   },
   ko: {
     back: "뒤로", ok: "확인", close: "닫기", font_sample: "새 메일의 기본 글꼴입니다. The quick brown fox.",
-    flagged: "깃발 표시됨", flag: "깃발 표시", unflag: "깃발 해제", formatting: "서식", font: "글꼴", font_size: "크기",
+    flagged: "별표편지함", flag: "별표", unflag: "별표 해제", formatting: "서식", font: "글꼴", font_size: "크기",
     size_small: "작게", size_normal: "보통", size_large: "크게", size_huge: "아주 크게",
     bold: "굵게", italic: "기울임꼴", underline: "밑줄", strike: "취소선", bullets: "글머리 기호 목록",
     numbers: "번호 목록", quote_block: "인용", link: "링크", link_url: "링크 주소", clear_fmt: "서식 지우기",
@@ -489,7 +489,7 @@ const MORE = {
   },
   es: {
     back: "Atrás", ok: "Aceptar", close: "Cerrar", font_sample: "Así se verá el texto de sus nuevos correos.",
-    flagged: "Marcados", flag: "Marcar", unflag: "Quitar marca", formatting: "Formato", font: "Fuente", font_size: "Tamaño",
+    flagged: "Destacados", flag: "Destacar", unflag: "Quitar destacado", formatting: "Formato", font: "Fuente", font_size: "Tamaño",
     size_small: "Pequeño", size_normal: "Normal", size_large: "Grande", size_huge: "Enorme",
     bold: "Negrita", italic: "Cursiva", underline: "Subrayado", strike: "Tachado", bullets: "Lista con viñetas",
     numbers: "Lista numerada", quote_block: "Cita", link: "Enlace", link_url: "Dirección del enlace", clear_fmt: "Borrar formato",
@@ -501,7 +501,7 @@ const MORE = {
   },
   fr: {
     back: "Retour", ok: "OK", close: "Fermer", font_sample: "Voici l’apparence du texte de vos nouveaux e-mails.",
-    flagged: "Signalés", flag: "Signaler", unflag: "Retirer le drapeau", formatting: "Mise en forme", font: "Police", font_size: "Taille",
+    flagged: "Suivis", flag: "Suivre", unflag: "Ne plus suivre", formatting: "Mise en forme", font: "Police", font_size: "Taille",
     size_small: "Petite", size_normal: "Normale", size_large: "Grande", size_huge: "Très grande",
     bold: "Gras", italic: "Italique", underline: "Souligné", strike: "Barré", bullets: "Liste à puces",
     numbers: "Liste numérotée", quote_block: "Citation", link: "Lien", link_url: "Adresse du lien", clear_fmt: "Effacer la mise en forme",
