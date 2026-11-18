@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in ragdoll does not work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ragdoll --version`, or the app's About box.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [Command line, Desktop app, Both]
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and mail server
+      placeholder: Windows 11, Fastmail
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or log
+      description: Paste the command output. Remove addresses and mail text you do not want to share.
+      render: shell
