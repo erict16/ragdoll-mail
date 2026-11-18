@@ -1,5 +1,5 @@
 """Offline tests: python -m unittest discover -s tests"""
-import email, json, os, shutil, sqlite3, subprocess, sys, tempfile, unittest
+import contextlib, email, io, json, os, shutil, sqlite3, subprocess, sys, tempfile, unittest
 from email import policy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -295,6 +295,22 @@ class Index(unittest.TestCase):
         c.execute("create virtual table fts using fts5(x, tokenize='trigram')")
         c.execute("insert into fts values('回复： Fw: PO-1234-088 北京ABC项目 李明')")
         self.assertEqual(c.execute("select count(*) from fts where fts match '\"北京ABC\"'").fetchone()[0], 1)
+
+    def test_search_offline_uses_index(self):
+        old_dir, old_imap = ragdoll.CFG.d["data_dir"], ragdoll.imap
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        def no_network():
+            raise OSError("network is unreachable")
+        ragdoll.imap = no_network
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                c = ragdoll.quick_sync()
+            self.assertIn("showing the index as it is", err.getvalue())
+            c.close()
+        finally:
+            ragdoll.imap = old_imap
+            shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+            ragdoll.CFG.d["data_dir"] = old_dir
 
 
 class ReplyForwardMarks(unittest.TestCase):

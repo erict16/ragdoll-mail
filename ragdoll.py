@@ -1058,14 +1058,23 @@ def quick_sync():
         if not got:
             print("(another ragdoll is syncing; showing the index as it is)", file=sys.stderr)
             return c
-        with session() as m:
-            for f in CFG.sync_folders:
-                sync_headers(m, c, f)
+        try:
+            with session() as m:
+                for f in CFG.sync_folders:
+                    sync_headers(m, c, f)
+        except (OSError, imaplib.IMAP4.abort) as e:
+            # offline or the server is down: the index still answers
+            c.rollback()
+            print("(cannot reach the mail server: %s; showing the index as it is)" % e, file=sys.stderr)
+            return c
         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
         c.commit()
     with file_lock("bodies", wait=False) as got:
         if got:
-            sync_bodies(c, CFG.sync_folders, limit=40, workers=1, quiet=True)
+            try:
+                sync_bodies(c, CFG.sync_folders, limit=40, workers=1, quiet=True)
+            except (OSError, imaplib.IMAP4.abort):
+                c.rollback()
     return c
 
 

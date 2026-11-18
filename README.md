@@ -2,9 +2,9 @@
 
 <h1 align="center">ragdoll-mail</h1>
 
-<p align="center"><b>The mail app with a command line.<br>Your AI agent writes the draft. You press Send.</b></p>
+<p align="center"><b>Mail search that works, on your own computer.<br>Every mail in milliseconds, for you and your AI agent.</b></p>
 
-<p align="center">One IMAP mailbox · Mac and Windows · light and dark · 8 languages · free and open source · your mail stays on your computer</p>
+<p align="center">Any IMAP mailbox · local SQLite index · Chinese and English · desktop app and <code>--json</code> command line · Mac and Windows · free and open source</p>
 
 <p align="center">
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><img src="https://img.shields.io/github/v/release/erict16/ragdoll-mail" alt="Latest release"></a>
@@ -16,13 +16,34 @@
 <p align="center">
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Mac</b></a> ·
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Windows</b></a> ·
+  <a href="#search-that-works">Search</a> ·
   <a href="#the-command-line">The command line</a> ·
   <a href="#how-it-compares">How it compares</a>
 </p>
 
 <p align="center"><img src="docs/demo.gif" width="860" alt="Reading, flagging, searching, writing a formatted mail, scheduling it, then changing the font, theme and language"></p>
 
-Most mail apps were made for a person with a mouse. Most AI mail tools want your inbox on their cloud. ragdoll gives you both halves in one tool: a calm desktop app for you, and a `ragdoll` command your agent (Claude Code, Codex, or any script) can use, on the same local index of the same mailbox.
+Most mail apps ask your mail server to search, and many servers do it badly, slowly, or not at all. ragdoll keeps its own full-text index of your mailbox on your computer, so search is instant, works offline, and finds words in the body, the people and the attachment names. You get it in a calm desktop app, and your agent (Claude Code, Codex, or any script) gets the same index through the `ragdoll` command.
+
+## Search that works
+
+A real mailbox on Tencent Exmail, 6,442 mails, searched both ways:
+
+| Search for | The server's IMAP search | ragdoll |
+|---|---|---|
+| `invoice` | 4,988 results (the whole inbox) | the matching mails, 15 ms |
+| `certificate origin` | 4,988 results (the whole inbox) | the matching mails, 8 ms |
+| `报价` (Chinese: "quotation") | 4,988 results (the whole inbox) | the matching mails, 23 ms |
+| `nonexistentzzq` (a made-up word) | 4,988 results (the whole inbox) | none, 0.4 ms |
+
+<sub>Measured 18 Nov 2026 on Windows 11. ragdoll times are the search itself, best of 5, on a 382 MB index.</sub>
+
+- **One index, every part of a mail.** Subject, sender, recipients, attachment file names and the full body text, in a SQLite FTS5 trigram index.
+- **Chinese, Japanese and Korean too.** Trigrams need no word splitting, so `分接开关` or `見積` are found inside running text. Two-letter words such as `PO` or `报价` still work.
+- **All words must match,** with filters: `--from`, `--to`, `--since`, `--until`, `--folder`, `--unread`, `--att`. In the app: `from:jane in:sent is:unread has:attachment`.
+- **Offline.** On a plane, on a bad hotel network, or when the server is down, search still answers from the index.
+- **The list never waits for the network.** Opening a folder takes about a millisecond; new mail comes in behind it.
+- **Your agent gets the same search.** `ragdoll search ... --json` gives an agent exact hits instead of a whole mailbox to read, so it spends fewer tokens and makes fewer mistakes.
 
 ## Agents draft. You send.
 
@@ -64,9 +85,7 @@ then run `check <draft id> --reply` and fix every problem. Never run `send` unti
 have said yes to that draft.
 ```
 
-## Why it feels fast
-
-ragdoll keeps its own index of your mailbox in SQLite. Opening a folder takes about a millisecond. Search finds Chinese and English text in any part of a mail, even on servers that ignore IMAP search (Tencent Exmail is one: it returns the whole mailbox for every search). The list never waits for the network: new mail comes in behind it.
+## Screenshots
 
 <table>
 <tr><td><img src="docs/hero-light.png" alt="Reading a thread in light mode"></td><td><img src="docs/hero-dark.png" alt="The same thread in dark mode"></td></tr>
