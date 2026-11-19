@@ -4,10 +4,29 @@ import re
 import sys
 
 VERSION = re.search(r'^__version__ = "([^"]+)"', open("ragdoll.py", encoding="utf-8").read(), re.M).group(1)
-ICON = "assets/icon.png"        # PyInstaller turns it into .icns / .ico (needs Pillow)
+# PyInstaller turns the picture into .icns / .ico (needs Pillow). The Windows one is the same drawing with the
+# empty margin cut off (as Windows icons are drawn), so it is as big as its neighbours on the desktop and taskbar.
+ICON = "assets/icon-win.png" if sys.platform == "win32" else "assets/icon.png"
 
-a = Analysis(["ragdoll_app.py"], datas=[("app", "app")], hiddenimports=["ragdoll"],
-             excludes=["tkinter", "unittest", "pydoc"])
+# Left out to keep the download small. None of it runs in the app: build tools that cffi names but only
+# uses to compile, process pools, async servers bottle can drive, archive formats, FTP, test helpers.
+# After changing this list, build and run  dist/ragdoll-mail --demo  once: a missing module shows at start.
+EXCLUDES = ["tkinter", "unittest", "pydoc", "doctest", "pdb", "setuptools", "pkg_resources",
+            "multiprocessing", "asyncio", "xmlrpc", "ftplib", "tarfile", "bz2", "lzma", "_pydecimal",
+            "statistics", "fractions"]
+
+a = Analysis(["ragdoll_app/__main__.py"], pathex=["."], datas=[("app", "app")], hiddenimports=["ragdoll"],
+             excludes=EXCLUDES)
+
+
+def wanted(entry):
+    """Drop the Android part and the API notes that pywebview and pythonnet ship. Keep every WebView2 loader
+    (win-x64, win-x86, win-arm64): pywebview picks by the computer, not by this build, so an ARM PC needs its own."""
+    return not entry[0].endswith((".jar", "Python.Runtime.xml"))
+
+
+a.binaries = [x for x in a.binaries if wanted(x)]
+a.datas = [x for x in a.datas if wanted(x)]
 pyz = PYZ(a.pure)
 
 if sys.platform == "darwin":

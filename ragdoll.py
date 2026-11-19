@@ -46,14 +46,14 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, html as htmlmod, imaplib
-import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time
+import json, mimetypes, os, re, smtplib, socket, sqlite3, ssl, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -746,10 +746,14 @@ create table if not exists msgs(id integer primary key, folder text, uidv intege
   msgid text, irt text, refs text, ts integer, frm text, to_ text, cc text, subject text,
   atts text, body text, seen int, flagged int, answered int, size int default 0,
   has_body int default 0, fwd text default '', forwarded int default 0, unique(folder, uidv, uid));
-create index if not exists msgs_ts on msgs(ts);
 create index if not exists msgs_msgid on msgs(msgid);
 create index if not exists msgs_irt on msgs(irt);
 create index if not exists msgs_folder_ts on msgs(folder, ts, uid);
+-- these two (and msgs_marks in db()) keep the app quick on a big mailbox: a conversation's subject and
+-- References lookups and the folder counts read a small index instead of every mail
+create index if not exists msgs_ts_subject on msgs(ts, subject);
+create index if not exists msgs_refs on msgs(refs) where refs != '';
+drop index if exists msgs_ts;
 create virtual table if not exists fts using fts5(subject, frm, to_, atts, body, tokenize='trigram');
 create table if not exists state(folder text primary key, uidv integer);
 create table if not exists meta(k text primary key, v text);
@@ -777,6 +781,8 @@ def db():
         mark_forwarded(c)
         c.commit()
     c.execute("create index if not exists msgs_fwd on msgs(fwd)")
+    # after the column upgrades above: an index from an old version lacks some of these columns
+    c.execute("create index if not exists msgs_marks on msgs(folder, flagged, seen, answered, forwarded, has_body)")
     if not c.execute("select 1 from meta where k='charset_fix'").fetchone():
         # rows decoded before the GB18030/Big5/raw-8-bit fixes: drop them so the next sync
         # fetches them again with the right names
@@ -1157,8 +1163,9 @@ def search_rows(c, words, a):
         where.insert(0, "m.id in (select rowid from fts where fts match ?)")
         params.insert(0, " AND ".join(long_terms))
     add_filters(a, where, params)
-    sql = "select m.* from msgs m %s order by m.ts desc limit ?" % (("where " + " and ".join(where)) if where else "")
-    return c.execute(sql, params + [a.limit]).fetchall()
+    sql = "select m.* from msgs m %s order by m.ts desc, m.id desc limit ? offset ?" % (
+        ("where " + " and ".join(where)) if where else "")
+    return c.execute(sql, params + [a.limit, max(0, getattr(a, "offset", 0) or 0)]).fetchall()
 
 
 # ------------------------------------------------------------------ read commands
@@ -1226,6 +1233,14 @@ def cmd_list(a):
     print_rows(c.execute(sql, params + [a.limit]).fetchall(), a.json)
 
 
+def rows_by_id(c, ids):
+    out = []
+    for k in range(0, len(ids), 500):
+        part = ids[k:k + 500]
+        out += c.execute("select * from msgs where id in (%s)" % ",".join("?" * len(part)), part).fetchall()
+    return out
+
+
 def thread_rows(c, row):
     ids = {row["msgid"]} | set(re.findall(r"<[^<>]+>", (row["refs"] or "") + " " + (row["irt"] or "")))
     ids.discard("")
@@ -1242,8 +1257,10 @@ def thread_rows(c, row):
             marks = ",".join("?" * len(q))
             found += c.execute("select * from msgs where msgid in (%s) or irt in (%s)" % (marks, marks),
                                q * 2).fetchall()
-            found += c.execute("select * from msgs where " + " or ".join(["refs like ? escape '\\'"] * len(q)),
-                               [like_arg(i, None) for i in q]).fetchall()
+            hit = [r[0] for r in c.execute(
+                "select id from msgs where refs != '' and (%s)" % " or ".join(["refs like ? escape '\\'"] * len(q)),
+                [like_arg(i, None) for i in q])]
+            found += rows_by_id(c, hit)
         new = set()
         for r in found:
             if r["id"] not in seen:
@@ -1255,13 +1272,19 @@ def thread_rows(c, row):
     # same bare subject within 180 days catches clients that drop References
     bs = bare_subject(row["subject"])
     if bs:
-        hits = [r["id"] for r in c.execute("select id, subject from msgs where ts between ? and ?",
-                                           (row["ts"] - 180 * 86400, row["ts"] + 180 * 86400))
+        sql, params = "select id, subject from msgs where ts between ? and ?", [row["ts"] - 180 * 86400,
+                                                                                 row["ts"] + 180 * 86400]
+        word = max(re.findall(r"[!-~]{3,}", bs), key=len, default="")[:100]
+        if word:
+            # a mail with the same bare subject holds this plain word too, so SQL can drop the rest early.
+            # The four characters are the only ones that turn into plain ones when a subject is cleaned.
+            sql += (" and (subject like ? escape '\\' or instr(subject, char(304)) or instr(subject, char(894))"
+                    " or instr(subject, char(8175)) or instr(subject, char(8490)))")
+            params.append(like_arg(word, None))
+        hits = [r["id"] for r in c.execute(sql, params)
                 if r["id"] not in seen and bare_subject(r["subject"]) == bs]
-        for k in range(0, len(hits), 500):
-            part = hits[k:k + 500]
-            for r in c.execute("select * from msgs where id in (%s)" % ",".join("?" * len(part)), part):
-                seen[r["id"]] = r
+        for r in rows_by_id(c, hits):
+            seen[r["id"]] = r
     seen[row["id"]] = row
     return sorted(seen.values(), key=lambda r: r["ts"])
 
@@ -1510,7 +1533,8 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
-            if cid in used and cid not in done and is_inline(p):
+            # the body shows it (cid:), so carry it even when the sender marked it "attachment"
+            if cid in used and cid not in done and image_type(p):
                 mt, st = image_type(p).split("/", 1)
                 hpart.add_related(p.get_payload(decode=True) or b"", mt, st, cid="<%s>" % cid,
                                   filename=fname(p))
@@ -1779,15 +1803,34 @@ def cmd_send(a):
     print(json.dumps(send_draft(folder, uid), ensure_ascii=False, indent=1))
 
 
+class NotConnected(OSError):
+    """The mail servers could not be reached, and nothing was sent: trying again later is safe."""
+
+
+CONNECT_ERRORS = (socket.gaierror, TimeoutError, ConnectionError, ssl.SSLError, smtplib.SMTPConnectError,
+                  smtplib.SMTPServerDisconnected, imaplib.IMAP4.abort)
+
+
+def not_connected(e):
+    """True for an error of the network (no route, DNS, timeout, a dropped line), not of the account or the mail."""
+    return isinstance(e, CONNECT_ERRORS) or (isinstance(e, OSError) and not isinstance(e, smtplib.SMTPException))
+
+
 def send_draft(folder, uid, wait=3):
     """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
-    answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
+    answered. Returns what happened; dies (SystemExit) before sending when it must not go out.
+    Raises NotConnected when the servers cannot be reached before anything was sent."""
     sent = CFG.folders["sent"]
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
-        msg = to_msg(raw)
-        mid = hdr(msg, "Message-ID").strip()
-        when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    try:
+        with session() as m:
+            raw = fetch_raw(m, folder, uid)
+            msg = to_msg(raw)
+            mid = hdr(msg, "Message-ID").strip()
+            when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    except Exception as e:
+        if not_connected(e):
+            raise NotConnected(str(e)) from e
+        raise
     if when:
         die("NOT SENT AGAIN: this draft already went out %s. Check Sent; remove the draft with delete-draft."
             % when)
@@ -1801,9 +1844,19 @@ def send_draft(folder, uid, wait=3):
     del msg["Date"]
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
     out = msg.as_bytes(policy=OUT_POLICY)
-    s = smtplib.SMTP_SSL(CFG.smtp["host"], CFG.smtp["port"], timeout=300)
     try:
-        s.login(CFG.user, password())
+        s = smtplib.SMTP_SSL(CFG.smtp["host"], CFG.smtp["port"], timeout=300)
+    except Exception as e:
+        if not_connected(e):
+            raise NotConnected(str(e)) from e
+        raise
+    try:
+        try:
+            s.login(CFG.user, password())
+        except Exception as e:
+            if not_connected(e):
+                raise NotConnected(str(e)) from e      # the line dropped before the mail was handed over
+            raise
         refused = s.sendmail(CFG.user, rcpts, out)
     finally:
         try:
@@ -2352,7 +2405,7 @@ def main(argv=None):
         try:
             import ragdoll_app
         except ImportError:
-            die("the desktop app needs the full clone (ragdoll_app.py and app/ next to ragdoll.py)")
+            die("the desktop app needs the full clone (ragdoll_app/ and app/ next to ragdoll.py)")
         return ragdoll_app.main(argv[1:])
     a = parser().parse_args(argv)
     if a.cmd == "update":

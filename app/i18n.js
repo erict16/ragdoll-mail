@@ -525,3 +525,150 @@ const MORE = {
   },
 };
 for (const [k, v] of Object.entries(MORE)) Object.assign(LANGS[k], v);
+
+// desktop notifications
+const NOTIFY = {
+  en: { notifications: "Notifications", notify_new: "New mail", on: "On" },
+  "zh-Hans": { notifications: "通知", notify_new: "新邮件", on: "开启" },
+  "zh-Hant": { notifications: "通知", notify_new: "新郵件", on: "開啟" },
+  ja: { notifications: "通知", notify_new: "新着メール", on: "オン" },
+  ko: { notifications: "알림", notify_new: "새 메일", on: "켬" },
+  es: { notifications: "Notificaciones", notify_new: "Correo nuevo", on: "Sí" },
+  fr: { notifications: "Notifications", notify_new: "Nouveaux messages", on: "Activé" },
+  de: { notifications: "Mitteilungen", notify_new: "Neue E-Mails", on: "An" },
+};
+for (const [k, v] of Object.entries(NOTIFY)) Object.assign(LANGS[k], v);
+
+// the update sheet
+const UPDATE = {
+  en: { later: "Later", skip_version: "Skip this version", update_now: "Update now", updating: "Updating…", restart: "Restart",
+    restart_to_update: "Restart to update", get_update: "Download", you_have: "You have %s.",
+    updated_restart: "Updated. Restart ragdoll-mail to use it.",
+    dl_note: "When the download is done, close ragdoll-mail and open the new file." },
+  "zh-Hans": { later: "以后再说", skip_version: "跳过这个版本", update_now: "立即更新", updating: "正在更新…", restart: "重新启动",
+    restart_to_update: "重启以完成更新", get_update: "下载", you_have: "当前版本是 %s。",
+    updated_restart: "已更新。重新启动 ragdoll-mail 后生效。",
+    dl_note: "下载完成后，请关闭 ragdoll-mail，再打开新下载的文件。" },
+  "zh-Hant": { later: "稍後再說", skip_version: "略過這個版本", update_now: "立即更新", updating: "正在更新…", restart: "重新啟動",
+    restart_to_update: "重新啟動以完成更新", get_update: "下載", you_have: "目前版本是 %s。",
+    updated_restart: "已更新。重新啟動 ragdoll-mail 後生效。",
+    dl_note: "下載完成後，請關閉 ragdoll-mail，再打開新下載的檔案。" },
+  ja: { later: "あとで", skip_version: "このバージョンをスキップ", update_now: "今すぐアップデート", updating: "アップデート中…", restart: "再起動",
+    restart_to_update: "再起動してアップデート", get_update: "ダウンロード", you_have: "現在のバージョンは %s です。",
+    updated_restart: "アップデートしました。ragdoll-mail を再起動すると使えます。",
+    dl_note: "ダウンロードが終わったら、ragdoll-mail を閉じて新しいファイルを開いてください。" },
+  ko: { later: "나중에", skip_version: "이 버전 건너뛰기", update_now: "지금 업데이트", updating: "업데이트 중…", restart: "다시 시작",
+    restart_to_update: "다시 시작하여 업데이트", get_update: "다운로드", you_have: "현재 버전은 %s입니다.",
+    updated_restart: "업데이트했습니다. ragdoll-mail을 다시 시작하면 적용됩니다.",
+    dl_note: "다운로드가 끝나면 ragdoll-mail을 닫고 새 파일을 여세요." },
+  es: { later: "Más tarde", skip_version: "Omitir esta versión", update_now: "Actualizar ahora", updating: "Actualizando…", restart: "Reiniciar",
+    restart_to_update: "Reiniciar para actualizar", get_update: "Descargar", you_have: "Tienes la %s.",
+    updated_restart: "Actualizado. Reinicia ragdoll-mail para usarlo.",
+    dl_note: "Cuando termine la descarga, cierra ragdoll-mail y abre el archivo nuevo." },
+  fr: { later: "Plus tard", skip_version: "Ignorer cette version", update_now: "Mettre à jour", updating: "Mise à jour…", restart: "Redémarrer",
+    restart_to_update: "Redémarrer pour mettre à jour", get_update: "Télécharger", you_have: "Vous avez la %s.",
+    updated_restart: "Mise à jour faite. Redémarrez ragdoll-mail pour l’utiliser.",
+    dl_note: "Une fois le téléchargement terminé, fermez ragdoll-mail et ouvrez le nouveau fichier." },
+  de: { later: "Später", skip_version: "Diese Version überspringen", update_now: "Jetzt aktualisieren", updating: "Aktualisiere…", restart: "Neu starten",
+    restart_to_update: "Neu starten zum Aktualisieren", get_update: "Laden", you_have: "Du hast %s.",
+    updated_restart: "Aktualisiert. Starte ragdoll-mail neu, um es zu nutzen.",
+    dl_note: "Wenn der Download fertig ist, schließe ragdoll-mail und öffne die neue Datei." },
+};
+for (const [k, v] of Object.entries(UPDATE)) Object.assign(LANGS[k], v);
+
+// folders
+const FOLDERS = {
+  en: { junk: "Junk", move_to: "Move to…", moved_to: "Moved to %s" },
+  "zh-Hans": { junk: "垃圾邮件", move_to: "移动到…", moved_to: "已移动到 %s" },
+  "zh-Hant": { junk: "垃圾郵件", move_to: "移至…", moved_to: "已移至 %s" },
+  ja: { junk: "迷惑メール", move_to: "移動…", moved_to: "%s に移動しました" },
+  ko: { junk: "스팸", move_to: "이동…", moved_to: "%s(으)로 이동함" },
+  es: { junk: "Correo no deseado", move_to: "Mover a…", moved_to: "Movido a %s" },
+  fr: { junk: "Indésirables", move_to: "Déplacer vers…", moved_to: "Déplacé vers %s" },
+  de: { junk: "Spam", move_to: "Verschieben nach…", moved_to: "Nach %s verschoben" },
+};
+for (const [k, v] of Object.entries(FOLDERS)) Object.assign(LANGS[k], v);
+
+// meeting invites, and mail that waits for a connection
+const INVITES = {
+  en: { inv_accepted: "Accept", inv_tentative: "Maybe", inv_declined: "Decline", add_to_calendar: "Add to calendar",
+    invite_cancelled: "This meeting was cancelled.", all_day: "All day", repeats: "Repeats",
+    x_accepted: "%s accepted", x_tentative: "%s may come", x_declined: "%s declined", reply_sent_to: "Answer sent to %s",
+    waiting: "Waiting", waiting_long: "Waiting for a connection",
+    queued_offline: "No connection. The mail goes out when you are back online." },
+  "zh-Hans": { inv_accepted: "接受", inv_tentative: "暂定", inv_declined: "拒绝", add_to_calendar: "添加到日历",
+    invite_cancelled: "这个会议已取消。", all_day: "全天", repeats: "重复",
+    x_accepted: "%s 已接受", x_tentative: "%s 暂定参加", x_declined: "%s 已拒绝", reply_sent_to: "已回复 %s",
+    waiting: "等待发送", waiting_long: "等待网络连接",
+    queued_offline: "没有网络。恢复联网后邮件会自动发出。" },
+  "zh-Hant": { inv_accepted: "接受", inv_tentative: "暫定", inv_declined: "拒絕", add_to_calendar: "加入行事曆",
+    invite_cancelled: "這個會議已取消。", all_day: "全天", repeats: "重複",
+    x_accepted: "%s 已接受", x_tentative: "%s 暫定參加", x_declined: "%s 已拒絕", reply_sent_to: "已回覆 %s",
+    waiting: "等待寄出", waiting_long: "等待網路連線",
+    queued_offline: "沒有網路。恢復連線後郵件會自動寄出。" },
+  ja: { inv_accepted: "承諾", inv_tentative: "仮承諾", inv_declined: "辞退", add_to_calendar: "カレンダーに追加",
+    invite_cancelled: "この会議はキャンセルされました。", all_day: "終日", repeats: "繰り返し",
+    x_accepted: "%s が承諾しました", x_tentative: "%s が仮承諾しました", x_declined: "%s が辞退しました", reply_sent_to: "%s に返信しました",
+    waiting: "送信待ち", waiting_long: "接続を待っています",
+    queued_offline: "接続がありません。オンラインに戻るとメールを送信します。" },
+  ko: { inv_accepted: "수락", inv_tentative: "미정", inv_declined: "거절", add_to_calendar: "캘린더에 추가",
+    invite_cancelled: "이 회의는 취소되었습니다.", all_day: "종일", repeats: "반복",
+    x_accepted: "%s 님이 수락함", x_tentative: "%s 님이 미정으로 응답함", x_declined: "%s 님이 거절함", reply_sent_to: "%s 님에게 답장을 보냄",
+    waiting: "대기 중", waiting_long: "연결을 기다리는 중",
+    queued_offline: "연결이 없습니다. 다시 온라인이 되면 메일을 보냅니다." },
+  es: { inv_accepted: "Aceptar", inv_tentative: "Quizá", inv_declined: "Rechazar", add_to_calendar: "Añadir al calendario",
+    invite_cancelled: "Esta reunión se canceló.", all_day: "Todo el día", repeats: "Se repite",
+    x_accepted: "%s aceptó", x_tentative: "%s quizá asista", x_declined: "%s rechazó", reply_sent_to: "Respuesta enviada a %s",
+    waiting: "En espera", waiting_long: "Esperando conexión",
+    queued_offline: "Sin conexión. El correo saldrá cuando vuelvas a estar en línea." },
+  fr: { inv_accepted: "Accepter", inv_tentative: "Peut-être", inv_declined: "Refuser", add_to_calendar: "Ajouter au calendrier",
+    invite_cancelled: "Cette réunion a été annulée.", all_day: "Toute la journée", repeats: "Se répète",
+    x_accepted: "%s a accepté", x_tentative: "%s viendra peut-être", x_declined: "%s a refusé", reply_sent_to: "Réponse envoyée à %s",
+    waiting: "En attente", waiting_long: "En attente de connexion",
+    queued_offline: "Pas de connexion. Le message partira quand vous serez de nouveau en ligne." },
+  de: { inv_accepted: "Zusagen", inv_tentative: "Vielleicht", inv_declined: "Absagen", add_to_calendar: "Zum Kalender hinzufügen",
+    invite_cancelled: "Dieser Termin wurde abgesagt.", all_day: "Ganztägig", repeats: "Wiederholt sich",
+    x_accepted: "%s hat zugesagt", x_tentative: "%s kommt vielleicht", x_declined: "%s hat abgesagt", reply_sent_to: "Antwort an %s gesendet",
+    waiting: "Wartet", waiting_long: "Wartet auf Verbindung",
+    queued_offline: "Keine Verbindung. Die E-Mail geht raus, sobald du wieder online bist." },
+};
+for (const [k, v] of Object.entries(INVITES)) Object.assign(LANGS[k], v);
+
+// snooze
+const SNOOZE = {
+  en: { snooze: "Snooze", snoozed: "Snoozed", snoozed_until: "Snoozed until %s", in_1_hour: "In 1 hour" },
+  "zh-Hans": { snooze: "稍后提醒", snoozed: "稍后提醒", snoozed_until: "已设为 %s 提醒", in_1_hour: "1 小时后" },
+  "zh-Hant": { snooze: "稍後提醒", snoozed: "稍後提醒", snoozed_until: "已設為 %s 提醒", in_1_hour: "1 小時後" },
+  ja: { snooze: "スヌーズ", snoozed: "スヌーズ中", snoozed_until: "%s までスヌーズ", in_1_hour: "1 時間後" },
+  ko: { snooze: "다시 알림", snoozed: "다시 알림", snoozed_until: "%s까지 미룸", in_1_hour: "1시간 후" },
+  es: { snooze: "Posponer", snoozed: "Pospuestos", snoozed_until: "Pospuesto hasta %s", in_1_hour: "En 1 hora" },
+  fr: { snooze: "Reporter", snoozed: "Reportés", snoozed_until: "Reporté jusqu’à %s", in_1_hour: "Dans 1 heure" },
+  de: { snooze: "Zurückstellen", snoozed: "Zurückgestellt", snoozed_until: "Zurückgestellt bis %s", in_1_hour: "In 1 Stunde" },
+};
+for (const [k, v] of Object.entries(SNOOZE)) Object.assign(LANGS[k], v);
+
+// templates
+const TEMPLATES = {
+  en: { templates: "Templates", new_template: "New template", edit_templates: "Edit templates", template_name: "Name", save_template: "Save template" },
+  "zh-Hans": { templates: "模板", new_template: "新建模板", edit_templates: "编辑模板", template_name: "名称", save_template: "保存模板" },
+  "zh-Hant": { templates: "範本", new_template: "新增範本", edit_templates: "編輯範本", template_name: "名稱", save_template: "儲存範本" },
+  ja: { templates: "テンプレート", new_template: "新しいテンプレート", edit_templates: "テンプレートを編集", template_name: "名前", save_template: "テンプレートを保存" },
+  ko: { templates: "템플릿", new_template: "새 템플릿", edit_templates: "템플릿 편집", template_name: "이름", save_template: "템플릿 저장" },
+  es: { templates: "Plantillas", new_template: "Nueva plantilla", edit_templates: "Editar plantillas", template_name: "Nombre", save_template: "Guardar plantilla" },
+  fr: { templates: "Modèles", new_template: "Nouveau modèle", edit_templates: "Modifier les modèles", template_name: "Nom", save_template: "Enregistrer le modèle" },
+  de: { templates: "Vorlagen", new_template: "Neue Vorlage", edit_templates: "Vorlagen bearbeiten", template_name: "Name", save_template: "Vorlage speichern" },
+};
+for (const [k, v] of Object.entries(TEMPLATES)) Object.assign(LANGS[k], v);
+
+// the unread number on the app icon (off unless turned on), and the window buttons the app draws on Windows
+const WINDOW_BAR = {
+  en: { notify_badge: "Unread number on the app icon", win_min: "Minimize", win_max: "Maximize", win_restore: "Restore" },
+  "zh-Hans": { notify_badge: "应用图标上的未读数字", win_min: "最小化", win_max: "最大化", win_restore: "还原" },
+  "zh-Hant": { notify_badge: "應用程式圖示上的未讀數字", win_min: "最小化", win_max: "最大化", win_restore: "還原" },
+  ja: { notify_badge: "アプリアイコンの未読数", win_min: "最小化", win_max: "最大化", win_restore: "元に戻す" },
+  ko: { notify_badge: "앱 아이콘의 읽지 않은 메일 수", win_min: "최소화", win_max: "최대화", win_restore: "이전 크기로" },
+  es: { notify_badge: "Número de no leídos en el icono de la app", win_min: "Minimizar", win_max: "Maximizar", win_restore: "Restaurar" },
+  fr: { notify_badge: "Nombre de non lus sur l'icône de l'app", win_min: "Réduire", win_max: "Agrandir", win_restore: "Restaurer" },
+  de: { notify_badge: "Zahl der ungelesenen E-Mails am App-Symbol", win_min: "Minimieren", win_max: "Maximieren", win_restore: "Verkleinern" },
+};
+for (const [k, v] of Object.entries(WINDOW_BAR)) Object.assign(LANGS[k], v);

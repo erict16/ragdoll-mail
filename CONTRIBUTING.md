@@ -13,8 +13,8 @@ Open an [issue](https://github.com/erict16/ragdoll-mail/issues/new/choose). Give
    ```
    python -m unittest discover -s tests
    ```
-3. Try the app without an account: `python ragdoll.py app --demo`.
-4. Keep `ragdoll.py` on the Python standard library. The desktop app may use `pywebview`.
+3. Try the app without an account: `python ragdoll.py app --demo`. `python tests/ui_smoke.py` opens that demo in the real window and clicks through it.
+4. Keep `ragdoll.py` on the Python standard library. The desktop app may use `pywebview`. The app's server is in `ragdoll_app/` (one file per feature) and the page in `app/` (one file per part in `app/js/`).
 5. Add or change a test for what you fixed, then open a pull request that says what changed and why.
 
 ## Translate the app
