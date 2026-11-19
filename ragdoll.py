@@ -710,6 +710,13 @@ def mark_forwarded(c):
               "(select fwd from msgs where fwd!='' and folder=?)", (CFG.folders["sent"],))
 
 
+def mark_answered(c):
+    """answered=1 on every mail a reply in Sent answers, whichever program sent it (this one, the app,
+    a phone, WeCom): not every program sets the server's Answered flag. Never taken off."""
+    c.execute("update msgs set answered=1 where answered=0 and msgid!='' and msgid in "
+              "(select irt from msgs where irt!='' and fwd='' and folder=?)", (CFG.folders["sent"],))
+
+
 def make_id(folder, uid):
     return "%s:%d" % (CFG.short(folder), uid)
 
@@ -783,6 +790,10 @@ def db():
     c.execute("create index if not exists msgs_fwd on msgs(fwd)")
     # after the column upgrades above: an index from an old version lacks some of these columns
     c.execute("create index if not exists msgs_marks on msgs(folder, flagged, seen, answered, forwarded, has_body)")
+    if not c.execute("select 1 from meta where k='answered_from_sent'").fetchone():
+        mark_answered(c)            # once, for an index made before replies in Sent counted
+        c.execute("insert or replace into meta values('answered_from_sent', '1')")
+        c.commit()
     if not c.execute("select 1 from meta where k='charset_fix'").fetchone():
         # rows decoded before the GB18030/Big5/raw-8-bit fixes: drop them so the next sync
         # fetches them again with the right names
@@ -947,7 +958,8 @@ def sync_headers(m, c, folder, full_flags=False, workers=1):
         for seg in segments(data):
             uid = seg_uid(seg)
             if uid in local:
-                c.execute("update msgs set seen=?, flagged=?, answered=? where id=?",
+                # answered only ever goes on: the mark may come from a reply in Sent, not from the server
+                c.execute("update msgs set seen=?, flagged=?, answered=max(answered, ?) where id=?",
                           (*flags_of(b"".join(seg)), local[uid]))
     c.commit()
     new = sorted((u for u in server if u not in local), reverse=True)
@@ -980,6 +992,7 @@ def sync_headers(m, c, folder, full_flags=False, workers=1):
         ex.shutdown()
     if new:
         mark_forwarded(c)       # a new forward in Sent, or an original fetched again
+        mark_answered(c)        # the same for a new reply in Sent
         c.commit()
     return len(new)
 

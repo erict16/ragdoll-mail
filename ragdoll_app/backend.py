@@ -67,6 +67,7 @@ class Backend(Folders, Sync, Updates, Status, Reading, Compose, SendLater, Invit
             self.make_demo()
         self.c = R.db()
         self.listed = self.listed or self.load_listed()
+        self.marks_seen = self.marks_state()    # what the lists showed when another program last wrote
         if not demo:
             threading.Thread(target=self.housekeeping, daemon=True).start()
             threading.Thread(target=self.update_loop, daemon=True).start()

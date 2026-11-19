@@ -97,6 +97,19 @@ class Status:
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.shown_update(),
                 "open": req}
 
+    def marks_state(self):
+        """Changes when the mail or the marks a list shows do (not when only a mail's text arrived)."""
+        return tuple(self.q("select count(*), coalesce(max(id),0), coalesce(sum(seen),0), coalesce(sum(answered),0), "
+                            "coalesce(sum(flagged),0), coalesce(sum(forwarded),0) from msgs")[0])
+
+    def outside_change(self):
+        """The index was written by someone else (the command line: a reply sent, a mail read or moved):
+        the page loads its list again, so the replied mark shows without waiting for the next sync."""
+        now = self.marks_state()
+        if now != self.marks_seen:
+            self.marks_seen = now
+            self.bump()
+
     def api_wait(self, a):
         """The status, as soon as something changed after the caller's tick; after 25 s at the latest.
         The page keeps one such call open, so it shows new mail at once and never has to ask in a loop."""
@@ -112,6 +125,7 @@ class Status:
                     break
                 self.cond.wait(min(left, 2))
             if self.index_state()[0] != seen:           # another program wrote to the index
+                self.outside_change()
                 break
         return self.api_status(a)
 

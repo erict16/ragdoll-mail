@@ -491,6 +491,27 @@ class AppFeatures(unittest.TestCase):
         c.close()
         self.assertEqual(unread(), n)
 
+    def test_a_reply_sent_from_the_command_line_shows_in_the_list(self):
+        b = self.b
+        st = b.api_status({})
+        inbox = A.R.CFG.folders["inbox"]
+        got = {}
+        th = threading.Thread(target=lambda: got.update(b.api_wait({"tick": st["tick"], "max": 20})))
+        th.start()
+        time.sleep(0.2)
+        c = A.R.db()                                                    # as the command line does after sending
+        row = c.execute("select id, folder, uid from msgs where folder=? and answered=0 limit 1", (inbox,)).fetchone()
+        c.execute("update msgs set answered=1 where id=?", (row["id"],))
+        c.commit()
+        th.join(5)
+        self.assertFalse(th.is_alive())
+        self.assertGreater(got["rev"], st["rev"])                       # the page loads its list again
+        i = A.R.make_id(row["folder"], row["uid"])
+        self.assertTrue(next(r for r in b.api_list({"folder": "inbox"})["rows"] if r["id"] == i)["answered"])
+        c.execute("update msgs set answered=0 where id=?", (row["id"],))
+        c.commit()
+        c.close()
+
     def test_conversation_by_subject_keeps_odd_characters(self):
         """Mails with no References join by subject; the quick SQL filter must not lose look-alike letters."""
         b, now = self.b, int(time.time())

@@ -356,6 +356,19 @@ class ReplyForwardMarks(unittest.TestCase):
         ragdoll.mark_forwarded(self.c)
         self.assertEqual([self.flag(m) for m in ("<a@x>", "<b@x>", "<c@x>")], [1, 0, 0])
 
+    def test_a_reply_in_sent_marks_the_mail_it_answers(self):
+        """Whoever sent the reply (the command line, the app, a phone): the copy in Sent is the proof."""
+        sent, drafts = ragdoll.CFG.folders["sent"], ragdoll.CFG.folders["drafts"]
+        for i, mid in enumerate(("<a@x>", "<b@x>", "<c@x>", "<d@x>"), 1):
+            self.add("INBOX", i, mid, "hello")
+        self.add(sent, 10, "<s1@x>", "Re: hello", irt="<a@x>")
+        self.add(drafts, 11, "<d1@x>", "Re: hello", irt="<b@x>")                # not sent yet
+        self.add(sent, 12, "<s2@x>", "Fw: hello", fwd="<c@x>", irt="<c@x>")     # a forward, not a reply
+        self.add("INBOX", 13, "<i1@x>", "Re: hello", irt="<d@x>")               # someone else's reply
+        ragdoll.mark_answered(self.c)
+        done = lambda m: self.c.execute("select answered from msgs where msgid=?", (m,)).fetchone()[0]  # noqa: E731
+        self.assertEqual([done(m) for m in ("<a@x>", "<b@x>", "<c@x>", "<d@x>")], [1, 0, 0, 0])
+
     def test_list_shows_marks(self):
         r = {"answered": 1, "forwarded": 1}
         self.assertEqual(ragdoll.marks(r), "↩→")
