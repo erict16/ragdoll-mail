@@ -1,4 +1,4 @@
-// Ragdoll Mail site: the search race, the right download first, a line under the bar, sections that rise in.
+// Ragdoll Mail site: the demo video, the search race, the right download first, a line under the bar, sections that rise in.
 (() => {
   const $ = (s, n = document) => n.querySelector(s);
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -21,6 +21,19 @@
 
   const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } }), { rootMargin: "0px 0px -10% 0px" });
   document.querySelectorAll(".reveal").forEach((n) => io.observe(n));
+
+  // ---- the demo video: loads after the page, plays while on screen; with reduced motion it waits for a click
+  const demo = $(".shot .demo");
+  if (demo && demo.dataset.src) {
+    demo.muted = true;
+    demo.src = demo.dataset.src;
+    if (still) demo.controls = true;
+    else {
+      demo.preload = "auto";
+      const play = () => demo.play().catch(() => { demo.controls = true; });
+      new IntersectionObserver((es) => { if (es[0].intersectionRatio >= 0.5) play(); else demo.pause(); }, { threshold: 0.5 }).observe(demo);
+    }
+  }
 
   // ---- the search race: the same words in the mailbox's own search and in Ragdoll Mail
   const race = $(".race");

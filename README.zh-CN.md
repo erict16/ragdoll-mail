@@ -19,7 +19,7 @@
   <a href="README.md"><b>English</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：搜索邮件、看邮件、写回复、撤回刚发出的邮件"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：边打字边搜到邮件，看带附件的邮件，写回复，撤销发送，再定时发送"></p>
 
 ## Ragdoll Mail 是什么？
 

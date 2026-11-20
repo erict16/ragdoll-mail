@@ -19,7 +19,7 @@
   <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: searching the mailbox, reading a mail, writing a reply, and taking a sent mail back"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: search finds a mail as you type, a mail with attachments opens, a reply is written, the send is undone, and the reply is set to go later"></p>
 
 ## What is Ragdoll Mail?
 
