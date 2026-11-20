@@ -525,3 +525,40 @@ const MORE = {
   },
 };
 for (const [k, v] of Object.entries(MORE)) Object.assign(LANGS[k], v);
+
+// filters, other folders, junk, new mail
+const MORE2 = {
+  "en": {
+    junk: "Junk", not_junk: "Not junk", moved_to: "Moved to %s", move_to: "Move to…", filter: "Filter", f_unread: "Unread", f_att: "With attachments", f_clear: "Clear filter", n_new_mail: "%s new messages", notifications: "Notifications", new_mail: "New mail", on: "On", err_no_folder: "The folder %s is no longer on the server.",
+    new_folder: "New folder", rename_folder: "Rename", delete_folder: "Delete folder", folder_menu: "Folder options", err_folder_name: "Give the folder a name.", err_folder_long: "That folder name is too long.", err_folder_char: "A folder name can't have %s in it.", err_folder_exists: "There is already a folder called %s.", err_folder_mail: "%s still has mail in it. Move the mail out first.", err_folder_kids: "%s has folders inside it. Delete those first.",
+  },
+  "zh-Hans": {
+    junk: "垃圾邮件", not_junk: "不是垃圾邮件", moved_to: "已移到“%s”", move_to: "移到…", filter: "筛选", f_unread: "未读", f_att: "有附件", f_clear: "清除筛选", n_new_mail: "%s 封新邮件", notifications: "通知", new_mail: "新邮件", on: "开启", err_no_folder: "服务器上已经没有“%s”这个文件夹。",
+    new_folder: "新建文件夹", rename_folder: "重命名", delete_folder: "删除文件夹", folder_menu: "文件夹选项", err_folder_name: "请给文件夹起个名字。", err_folder_long: "文件夹名字太长了。", err_folder_char: "文件夹名字里不能有 %s。", err_folder_exists: "已经有一个叫“%s”的文件夹。", err_folder_mail: "“%s”里还有邮件，请先把邮件移走。", err_folder_kids: "“%s”里还有文件夹，请先删除它们。",
+  },
+  "zh-Hant": {
+    junk: "垃圾郵件", not_junk: "不是垃圾郵件", moved_to: "已移到「%s」", move_to: "移到…", filter: "篩選", f_unread: "未讀", f_att: "有附件", f_clear: "清除篩選", n_new_mail: "%s 封新郵件", notifications: "通知", new_mail: "新郵件", on: "開啟", err_no_folder: "伺服器上已經沒有「%s」這個檔案夾。",
+    new_folder: "新增檔案夾", rename_folder: "重新命名", delete_folder: "刪除檔案夾", folder_menu: "檔案夾選項", err_folder_name: "請為檔案夾取個名稱。", err_folder_long: "檔案夾名稱太長了。", err_folder_char: "檔案夾名稱裡不能有 %s。", err_folder_exists: "已經有一個叫「%s」的檔案夾。", err_folder_mail: "「%s」裡還有郵件，請先把郵件移走。", err_folder_kids: "「%s」裡還有檔案夾，請先刪除它們。",
+  },
+  "ja": {
+    junk: "迷惑メール", not_junk: "迷惑メールではない", moved_to: "%s に移動しました", move_to: "移動…", filter: "フィルタ", f_unread: "未開封", f_att: "添付ファイルあり", f_clear: "フィルタを解除", n_new_mail: "新着メール %s 件", notifications: "通知", new_mail: "新着メール", on: "オン", err_no_folder: "フォルダ「%s」はサーバーにありません。",
+    new_folder: "新規フォルダ", rename_folder: "名前を変更", delete_folder: "フォルダを削除", folder_menu: "フォルダのオプション", err_folder_name: "フォルダ名を入力してください。", err_folder_long: "フォルダ名が長すぎます。", err_folder_char: "フォルダ名に %s は使えません。", err_folder_exists: "「%s」というフォルダはすでにあります。", err_folder_mail: "「%s」にはまだメールがあります。先にメールを移動してください。", err_folder_kids: "「%s」の中にフォルダがあります。先にそれらを削除してください。",
+  },
+  "ko": {
+    junk: "스팸", not_junk: "스팸 아님", moved_to: "%s(으)로 이동했습니다", move_to: "이동…", filter: "필터", f_unread: "읽지 않음", f_att: "첨부 파일 있음", f_clear: "필터 지우기", n_new_mail: "새 메일 %s개", notifications: "알림", new_mail: "새 메일", on: "켬", err_no_folder: "서버에 %s 폴더가 더 이상 없습니다.",
+    new_folder: "새 폴더", rename_folder: "이름 변경", delete_folder: "폴더 삭제", folder_menu: "폴더 옵션", err_folder_name: "폴더 이름을 입력하세요.", err_folder_long: "폴더 이름이 너무 깁니다.", err_folder_char: "폴더 이름에 %s 은(는) 쓸 수 없습니다.", err_folder_exists: "%s 폴더가 이미 있습니다.", err_folder_mail: "%s 폴더에 아직 메일이 있습니다. 먼저 메일을 옮기세요.", err_folder_kids: "%s 폴더 안에 폴더가 있습니다. 먼저 그 폴더를 삭제하세요.",
+  },
+  "es": {
+    junk: "Correo no deseado", not_junk: "No es correo no deseado", moved_to: "Movido a %s", move_to: "Mover a…", filter: "Filtrar", f_unread: "No leídos", f_att: "Con adjuntos", f_clear: "Quitar filtro", n_new_mail: "%s correos nuevos", notifications: "Notificaciones", new_mail: "Correo nuevo", on: "Sí", err_no_folder: "La carpeta %s ya no está en el servidor.",
+    new_folder: "Nueva carpeta", rename_folder: "Cambiar nombre", delete_folder: "Eliminar carpeta", folder_menu: "Opciones de carpeta", err_folder_name: "Ponle un nombre a la carpeta.", err_folder_long: "El nombre de la carpeta es demasiado largo.", err_folder_char: "El nombre de una carpeta no puede contener %s.", err_folder_exists: "Ya hay una carpeta llamada %s.", err_folder_mail: "%s todavía tiene correos. Muévelos primero.", err_folder_kids: "%s tiene carpetas dentro. Elimínalas primero.",
+  },
+  "fr": {
+    junk: "Indésirables", not_junk: "Pas indésirable", moved_to: "Déplacé vers %s", move_to: "Déplacer vers…", filter: "Filtrer", f_unread: "Non lus", f_att: "Avec pièces jointes", f_clear: "Effacer le filtre", n_new_mail: "%s nouveaux e-mails", notifications: "Notifications", new_mail: "Nouveaux e-mails", on: "Activé", err_no_folder: "Le dossier %s n’est plus sur le serveur.",
+    new_folder: "Nouveau dossier", rename_folder: "Renommer", delete_folder: "Supprimer le dossier", folder_menu: "Options du dossier", err_folder_name: "Donnez un nom au dossier.", err_folder_long: "Ce nom de dossier est trop long.", err_folder_char: "Un nom de dossier ne peut pas contenir %s.", err_folder_exists: "Il existe déjà un dossier nommé %s.", err_folder_mail: "%s contient encore des e-mails. Déplacez-les d’abord.", err_folder_kids: "%s contient des dossiers. Supprimez-les d’abord.",
+  },
+  "de": {
+    junk: "Spam", not_junk: "Kein Spam", moved_to: "In %s verschoben", move_to: "Verschieben nach…", filter: "Filtern", f_unread: "Ungelesen", f_att: "Mit Anhängen", f_clear: "Filter löschen", n_new_mail: "%s neue E-Mails", notifications: "Mitteilungen", new_mail: "Neue E-Mails", on: "Ein", err_no_folder: "Der Ordner %s ist nicht mehr auf dem Server.",
+    new_folder: "Neuer Ordner", rename_folder: "Umbenennen", delete_folder: "Ordner löschen", folder_menu: "Ordneroptionen", err_folder_name: "Gib dem Ordner einen Namen.", err_folder_long: "Der Ordnername ist zu lang.", err_folder_char: "Ein Ordnername darf %s nicht enthalten.", err_folder_exists: "Es gibt bereits einen Ordner namens %s.", err_folder_mail: "%s enthält noch E-Mails. Verschiebe sie zuerst.", err_folder_kids: "%s enthält Ordner. Lösche diese zuerst.",
+  },
+};
+for (const [k, v] of Object.entries(MORE2)) Object.assign(LANGS[k], v);

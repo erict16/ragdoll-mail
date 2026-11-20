@@ -43,6 +43,47 @@ class Stress(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def test_thread_links_follow_new_and_deleted_mail(self):
+        c = index([("<a@x>", "", "", "Quote", "A <a@x>", "", 1000),
+                   ("<b@x>", "<a@x>", "<a@x>", "Re: Quote", "B <b@x>", "", 2000)])
+        row = c.execute("select * from msgs where uid=1").fetchone()
+        self.assertEqual([r["uid"] for r in R.thread_rows(c, row)], [1, 2])
+        c.execute("insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
+                  "answered,has_body) values('INBOX',1,3,'<c@x>','<b@x>','<a@x> <b@x>',3000,'','','','Other','','',1,0,0,1)")
+        self.assertEqual([r["uid"] for r in R.thread_rows(c, row)], [1, 2, 3])
+        c.execute("delete from msgs where uid=2")
+        self.assertEqual([r["uid"] for r in R.thread_rows(c, row)], [1, 3])
+        self.assertEqual(c.execute("select count(*) from links where id=2").fetchone()[0], 0)
+
+    def test_read_commands_skip_the_server_right_after_a_sync(self):
+        c = R.db()
+        c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
+        c.commit()
+        old = R.imap
+        R.imap = lambda: self.fail("the server was asked again")
+        try:
+            R.quick_sync().close()
+            c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time()) - 600),))
+            c.commit()
+            with self.assertRaises(AssertionError):
+                R.quick_sync()
+        finally:
+            R.imap = old
+            c.close()
+
+    def test_a_kept_mail_is_read_without_the_server(self):
+        c = R.db()
+        c.execute("insert into msgs(folder,uidv,uid,msgid,subject) values('INBOX',7,42,'<k@x>','kept')")
+        c.commit()
+        c.close()
+        R.cache_put(R.cache_path("INBOX", 7, 42), b"Subject: kept\r\n\r\nhello")
+        old = R.imap
+        R.imap = lambda: self.fail("the server was asked")
+        try:
+            self.assertIn(b"hello", R.mail_raw("INBOX", 42))
+        finally:
+            R.imap = old
+
     def test_parse_id_rejects_bad_ids_cleanly(self):
         # these raised TypeError / ValueError / OverflowError, which the app does not catch
         for bad in (None, 5, True, ["inbox:1"], "inbox:", "inbox:abc", "inbox:1e3", "inbox:-1", "inbox:0",

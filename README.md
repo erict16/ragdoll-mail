@@ -125,6 +125,10 @@ have said yes to that draft.
 - Whole conversations on one page, newest mail on top. Long quoted history folds away.
 - Search everything with ⌘K / Ctrl+K: `from:jane`, `in:sent`, `is:unread`, `has:attachment`, or any words.
 - Star mail with **S** and find it again in **Starred**. Select many rows with ⌘/Ctrl or Shift and act on them at once.
+- Filter any list: unread, starred, with attachments, or one person.
+- Every folder of the mailbox is in the sidebar, your own folders and Junk too. Move mail with **V**, or drag it onto a folder.
+- Make a folder from the Move menu or the account menu; right-click one of your folders (or its **…**) to rename or delete it. Only an empty folder can be deleted, so no mail is lost that way.
+- New mail shows a short note with who wrote and the subject. When the window is in the background, the browser's own notification shows it (allow it once when asked), and a click on it opens the mail. On or off in Settings.
 - Text size from ⌘− to ⌘+, for the list and the reader together.
 
 **Write**
@@ -143,7 +147,7 @@ have said yes to that draft.
 - Light, dark, or follow the system. Native window on Mac and Windows.
 - English, 简体中文, 繁體中文, 日本語, 한국어, Español, Français, Deutsch.
 - Show times in any time zone.
-- Keyboard first: **J/K** move, **R** reply, **A** reply all, **F** forward, **E** archive, **#** delete, **U** unread, **C** new mail. Press **?** to see them all.
+- Keyboard first: **J/K** move, **R** reply, **A** reply all, **F** forward, **E** archive, **V** move, **#** delete, **U** unread, **C** new mail. Press **?** to see them all.
 - Small windows get a slim icon sidebar; very small ones show the list and the mail one at a time.
 
 **Private by design**
@@ -187,15 +191,25 @@ have said yes to that draft.
 ```
 ragdoll status
 ragdoll search PO-1234 报价 --since 2026-11-01 --att
+ragdoll search --from jane --unread            # filters alone, no word needed
+ragdoll list --starred --limit 50
 ragdoll thread inbox:9255
 ragdoll read inbox:9255 --new
 ragdoll attach inbox:9255 --out ./files
 ragdoll draft --reply inbox:9255 --all --cc a@b.com --body body.html --attach file.pdf
 ragdoll check drafts:12 --reply
 ragdoll send drafts:12 --yes
+ragdoll mark inbox:9255 inbox:9256 --read --star
+ragdoll archive inbox:9255
+ragdoll move inbox:9256 --to "Projects/Acme"
+ragdoll folders
 ```
 
 `ragdoll --help` lists every option. Ids are `<folder>:<uid>`. Add `--json` for machine output.
+
+`search` and `list` take the same filters: `--from`, `--to`, `--since`, `--until`, `--folder`, `--unread`, `--starred`, `--att`. When `--limit` cuts the list, the last line says how many there are in all: `(showing the newest 20 of 137; --limit 137 shows all)`. Junk mail is left out unless you ask for `--folder junk`.
+
+`mark` (`--read` / `--unread`, `--star` / `--unstar`), `archive` and `move` change the server and the index together. `move --to` takes a short name (`inbox`, `archive`, `junk`) or a folder name from `ragdoll folders`. Nothing is deleted; move the mail back to undo. The trash stays behind `ragdoll trash <ids> --yes`.
 
 <details>
 <summary><b>How drafts work, in detail</b></summary>

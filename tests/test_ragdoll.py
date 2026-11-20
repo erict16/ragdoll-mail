@@ -313,6 +313,176 @@ class Index(unittest.TestCase):
             ragdoll.CFG.d["data_dir"] = old_dir
 
 
+class FakeIMAP:
+    """Stands in for the server: keeps what was asked, says OK."""
+    def __init__(self, folders, caps=("IMAP4REV1", "MOVE", "UIDPLUS")):
+        self.folders, self.capabilities, self.calls = list(folders), caps, []
+
+    def list(self):
+        return "OK", [('(\\HasNoChildren) "/" "%s"' % ragdoll.mutf7(f)).encode() for f in self.folders]
+
+    def select(self, name, readonly=True):
+        self.calls.append(("select", name, readonly))
+        return "OK", [b"1"]
+
+    def response(self, code):
+        return code, [b"1"]
+
+    def uid(self, *args):
+        self.calls.append(("uid",) + args)
+        return "OK", [b""]
+
+    def create(self, name):
+        self.calls.append(("create", name))
+        return "OK", [b""]
+
+    def expunge(self):
+        self.calls.append(("expunge",))
+        return "OK", [b""]
+
+    def logout(self):
+        pass
+
+
+class ListMarkMove(unittest.TestCase):
+    """search / list with filters only, the total note, mark, move, archive, folders."""
+    SERVER = ["INBOX", "Sent Messages", "Drafts", "Deleted Messages", "Junk", "其他文件夹", "其他文件夹/2025归档"]
+
+    def setUp(self):
+        self.old_dir, self.old_imap = ragdoll.CFG.d["data_dir"], ragdoll.imap
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        self.c = ragdoll.db()
+        self.fake = FakeIMAP(self.SERVER)
+        ragdoll.imap = lambda: self.fake
+        self.add("INBOX", 1, "Linh <linh@cust.vn>", "Order 12", seen=0, atts="po.pdf")
+        self.add("INBOX", 2, "Hoa <hoa@partner.vn>", "Drawing", flagged=1)
+        self.add("INBOX", 3, "Linh <linh@cust.vn>", "Thanks", flagged=1, atts="a.dwg")
+        self.add("Junk", 4, "Spam <win@spam.example>", "You won", seen=0)
+        self.c.commit()
+
+    def tearDown(self):
+        self.c.close()
+        ragdoll.imap = self.old_imap
+        shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+        ragdoll.CFG.d["data_dir"] = self.old_dir
+
+    def add(self, folder, uid, frm, subject, seen=1, flagged=0, atts=""):
+        cur = self.c.execute(
+            "insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,answered,"
+            "has_body) values(?,1,?,?,'','',?,?,'me@example.com','',?,?,'',?,?,0,1)",
+            (folder, uid, "<%d@x>" % uid, 1700000000 + uid, frm, subject, atts, seen, flagged))
+        self.c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,'')",
+                       (cur.lastrowid, subject, frm, "me@example.com", atts))
+
+    def run_cmd(self, *argv):
+        """(stdout, stderr) of one command; a refusal comes back as SystemExit."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            a = ragdoll.parser().parse_args(list(argv))
+            a.fn(a)
+        return out.getvalue(), err.getvalue()
+
+    def row(self, folder, uid):
+        return self.c.execute("select * from msgs where folder=? and uid=?", (folder, uid)).fetchone()
+
+    def test_search_needs_a_word_or_a_filter(self):
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd("search", "--no-sync")
+        self.assertIn("give a word or a filter", str(e.exception))
+
+    def test_search_with_filters_only(self):
+        ids = lambda *argv: [r["id"] for r in json.loads(self.run_cmd("search", "--no-sync", "--json", *argv)[0])]
+        self.assertEqual(ids("--unread"), ["inbox:1"])                       # the unread junk mail is left out
+        self.assertEqual(ids("--starred"), ["inbox:3", "inbox:2"])
+        self.assertEqual(ids("--from", "linh", "--att"), ["inbox:3", "inbox:1"])
+        self.assertEqual(ids("--from", "linh", "--starred", "--att"), ["inbox:3"])
+        self.assertEqual(ids("--folder", "junk"), ["junk:4"])
+        self.assertEqual(ids("won"), [])
+        self.assertEqual(ids("won", "--folder", "junk"), ["junk:4"])
+
+    def test_list_says_the_total_when_cut(self):
+        out, _ = self.run_cmd("list", "--no-sync", "--limit", "2")
+        self.assertIn("(showing the newest 2 of 3; --limit 3 shows all)", out)
+        self.assertNotIn("inbox:1 ", out)
+        out, _ = self.run_cmd("list", "--no-sync", "--limit", "3")
+        self.assertNotIn("showing the newest", out)
+        out, err = self.run_cmd("list", "--no-sync", "--limit", "2", "--json")
+        self.assertEqual(len(json.loads(out)), 2)                           # the JSON stays a plain list
+        self.assertIn("(showing the newest 2 of 3", err)
+
+    def test_mark(self):
+        out, _ = self.run_cmd("mark", "inbox:1", "inbox:2", "--read", "--star")
+        self.assertEqual(out.strip(), "marked 2 mails read and starred")
+        self.assertIn(("select", ragdoll.q("INBOX"), False), self.fake.calls)
+        self.assertIn(("uid", "STORE", "1,2", "+FLAGS.SILENT", "(\\Seen)"), self.fake.calls)
+        self.assertIn(("uid", "STORE", "1,2", "+FLAGS.SILENT", "(\\Flagged)"), self.fake.calls)
+        self.assertEqual([(self.row("INBOX", u)["seen"], self.row("INBOX", u)["flagged"]) for u in (1, 2)], [(1, 1)] * 2)
+        out, _ = self.run_cmd("mark", "inbox:3", "--unread", "--unstar")
+        self.assertEqual(out.strip(), "marked 1 mail unread and not starred")
+        self.assertIn(("uid", "STORE", "3", "-FLAGS.SILENT", "(\\Seen)"), self.fake.calls)
+        self.assertEqual((self.row("INBOX", 3)["seen"], self.row("INBOX", 3)["flagged"]), (0, 0))
+
+    def test_mark_refusals(self):
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd("mark", "inbox:1")
+        self.assertIn("say what to mark", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd("mark", "inbox:99", "--read")
+        self.assertIn("no such mail in the index: inbox:99", str(e.exception))
+        self.assertEqual(self.fake.calls, [])                               # nothing reached the server
+
+    def test_move_to_a_server_folder(self):
+        dest = "其他文件夹/2025归档"
+        out, _ = self.run_cmd("move", "inbox:1", "inbox:3", "--to", dest)
+        self.assertIn("moved 2 mails to " + dest, out)
+        self.assertIn('ragdoll list --folder ' + dest, out)                 # not a synced folder: say how to see them
+        self.assertIn(("uid", "MOVE", "1,3", ragdoll.q(dest)), self.fake.calls)
+        self.assertFalse([c for c in self.fake.calls if c[0] == "create"])
+        self.assertIsNone(self.row("INBOX", 1))
+        self.assertIsNotNone(self.row("INBOX", 2))
+
+    def test_move_without_the_move_command(self):
+        self.fake.capabilities = ("IMAP4REV1", "UIDPLUS")
+        self.run_cmd("move", "junk:4", "--to", "inbox")
+        calls = [c for c in self.fake.calls if c[0] == "uid"]
+        self.assertEqual(calls, [("uid", "COPY", "4", ragdoll.q("INBOX")),
+                                 ("uid", "STORE", "4", "+FLAGS.SILENT", "(\\Deleted)"), ("uid", "EXPUNGE", "4")])
+        self.assertIsNone(self.row("Junk", 4))
+
+    def test_move_refusals(self):
+        for to in ("trash", "Deleted Messages"):
+            with self.assertRaises(SystemExit) as e:
+                self.run_cmd("move", "inbox:1", "--to", to)
+            self.assertIn("ragdoll trash <ids> --yes", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd("move", "inbox:1", "--to", "Nowhere")
+        self.assertIn("no folder 'Nowhere' on the server", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            self.run_cmd("move", "inbox:1")
+        self.assertIn("say where to", str(e.exception))
+        self.assertFalse([c for c in self.fake.calls if c[0] in ("uid", "create")])
+        self.assertIsNotNone(self.row("INBOX", 1))
+
+    def test_archive_makes_the_folder_once(self):
+        out, _ = self.run_cmd("archive", "inbox:2")
+        self.assertIn("moved 1 mail to Archive", out)
+        self.assertIn(("create", ragdoll.q("Archive")), self.fake.calls)
+        self.assertIn(("uid", "MOVE", "2", ragdoll.q("Archive")), self.fake.calls)
+        self.fake.folders.append("Archive")
+        self.fake.calls.clear()
+        self.run_cmd("archive", "inbox:3")
+        self.assertFalse([c for c in self.fake.calls if c[0] == "create"])
+
+    def test_folders(self):
+        rows = {d["folder"]: d for d in json.loads(self.run_cmd("folders", "--json")[0])}
+        self.assertEqual(list(rows), self.SERVER)
+        self.assertEqual(rows["INBOX"], {"folder": "INBOX", "short": "inbox", "indexed": 3, "unread": 1, "synced": True})
+        self.assertEqual((rows["Junk"]["short"], rows["Junk"]["unread"], rows["Junk"]["synced"]), ("junk", 1, False))
+        self.assertIsNone(rows["其他文件夹/2025归档"]["short"])
+        out, _ = self.run_cmd("folders")
+        self.assertIn("(indexed only when asked for)", out)
+
+
 class ReplyForwardMarks(unittest.TestCase):
     def setUp(self):
         self.old = ragdoll.CFG.d["data_dir"]
@@ -456,6 +626,20 @@ class Update(unittest.TestCase):
 
     def head(self):
         return self.git(self.app, "rev-parse", "HEAD")
+
+    def test_a_check_from_before_the_clone_moved_is_not_offered(self):
+        old, ragdoll.APP_DIR = ragdoll.APP_DIR, self.app
+        try:
+            found = {"behind": 2, "ahead": 0, "sha": "new", "head": self.head(), "version": "0.3.1"}
+            ragdoll.update_state({"latest": found})
+            self.assertEqual(ragdoll.update_waiting()["version"], "0.3.1")
+            ragdoll.update_state({"latest": dict(found, head="where the clone was before")})
+            self.assertIsNone(ragdoll.update_waiting())
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                ragdoll.cmd_status(None)
+            self.assertNotIn("update_available", json.loads(out.getvalue()))
+        finally:
+            ragdoll.APP_DIR = old
 
     def test_current_then_available_then_updated(self):
         self.assertEqual(ragdoll.do_update(self.app)["state"], "current")

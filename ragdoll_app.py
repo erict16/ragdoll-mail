@@ -17,6 +17,7 @@ import hashlib
 import html as htmlmod
 import imaplib
 import json
+import collections
 import mimetypes
 import os
 import re
@@ -53,6 +54,8 @@ FROZEN = bool(getattr(sys, "frozen", False))
 RELEASES_API = "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
 RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
 FOLDER_KEYS = ("inbox", "drafts", "sent", "archive", "trash", "junk")
+LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled")      # the names the app's own lists go by
+VIEW_FLAGS = ("\\noselect", "\\nonexistent", "\\all", "\\flagged", "\\important")   # not a folder to show
 FOLDER_NAMES = {
     "sent": ("sent messages", "sent", "sent items", "sent mail", "[gmail]/sent mail", "已发送", "已发送邮件"),
     "drafts": ("drafts", "draft", "[gmail]/drafts", "草稿箱", "草稿"),
@@ -391,7 +394,21 @@ DEMO = [
      [("shipping_marks.pdf", "pdf")], True, None, None),
     ("trash", 60 * 24 * 3, ("Deals Daily", "offers@example.net"), [ME], [],
      "50% off everything this weekend", "Don't miss out!", [], True, None, None),
+    ("junk", 60 * 5, ("Prize Centre", "winner@example.net"), [ME], [],
+     "You have won a gift card", "Click the link to claim your prize today.", [], False, None, None),
+    ("junk", 60 * 30, ("SEO Experts", "hello@example.org"), [ME], [],
+     "Get your website to page one", "We can bring you 10,000 visitors a month.", [], True, None, None),
+    ("Projects", 60 * 24 * 6, ("Maria Santos", "maria.santos@example.com.br"), [ME], [],
+     "Project list for next year", "Hi Alex,\n\nThe list of next year's projects is attached.\n\nMaria",
+     [("projects_2027.pdf", "pdf")], True, None, None),
+    ("Projects/Acme", 60 * 24 * 8, ("Tom Becker", "tom.becker@acme-industrial.com"), [ME], [],
+     "Acme plant 2: kick-off notes", "Hi Alex, the notes from the kick-off meeting are below.\n\nTom",
+     [], True, None, None),
+    ("Projects/Acme", 60 * 24 * 9, ("Tom Becker", "tom.becker@acme-industrial.com"), [ME], [],
+     "Acme plant 2: site layout", "Hi Alex, here is the site layout.\n\nTom",
+     [("site_layout.pdf", "pdf")], False, None, None),
 ]
+DEMO_FOLDERS = [("Projects", ""), ("Projects/Acme", "")]
 
 
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False):
@@ -438,15 +455,36 @@ class Backend:
         self.contacts = (0, {})
         self.update = None
         self.server_folders = None
+        self.found = list(DEMO_FOLDERS) if demo else []     # [(folder on the server, its flags)]
+        self.extra_at = 0                       # when Junk and the other folders were last synced
+        self.extra_now = False
+        self.news = []                          # new mail the page has yet to hear about
+        self.news_n = 0
+        self.news_mark = None
+        self.moved_in = {}                      # message-id -> when the app itself put it in the inbox
+        self.focus_at = 0                       # when the page last said its window is in front
+        self.web_notice_at = 0                  # when a page that shows the browser's own notices last asked
         self.made = set()                       # files the app wrote (only these may be revealed)
         self.demo_raw = {}
         self.thread = None
         self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
+        self.data_v = None                      # the index as last seen: changes when the sync or the CLI writes
+        self.counts = None                      # (what they were counted from, the folder counts)
+        self.pre = collections.deque()          # mail to bring in before it is opened: (folder, uidv, uid)
+        self.pre_wake = threading.Event()
+        self.pre_thread = None
+        self.pre_now = None         # the mail the head start is fetching right now
+        self.fg = 0                 # mails being fetched because somebody opened them
+        self.built = collections.OrderedDict()  # id -> the opened mail as the page gets it
         self.sched_wake = threading.Event()
         if demo:
             self.make_demo()
         self.c = R.db()
+        self.data_v = self.c.execute("pragma data_version").fetchone()[0]
         if not demo:
+            with contextlib.suppress(Exception):
+                r = self.q("select v from meta where k='folders'")
+                self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
             self.prune_cache()
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
@@ -537,8 +575,7 @@ class Backend:
     # ---- raw mail, with a disk cache
 
     def cache_path(self, r):
-        key = hashlib.sha1(("%s|%s|%s" % (r["folder"], r["uidv"], r["uid"])).encode()).hexdigest()
-        return os.path.join(R.CFG.home, "cache", key[:2], key + ".eml")
+        return R.cache_path(r["folder"], r["uidv"], r["uid"])
 
     def raw(self, i):
         folder, uid = self.parse(i)
@@ -548,17 +585,79 @@ class Backend:
             return self.demo_raw[(folder, uid)]
         r = self.row(i)
         path = self.cache_path(r)
-        with contextlib.suppress(OSError):
-            with open(path, "rb") as f:
-                return f.read()
-        raw = self.imap(lambda m: R.fetch_raw(m, folder, uid))
-        with contextlib.suppress(OSError):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".%d.tmp" % os.getpid()
-            with open(tmp, "wb") as f:
-                f.write(raw)
-            os.replace(tmp, path)
+        raw = R.cache_get(path)
+        if raw:
+            return raw
+        k = (r["folder"], r["uidv"], r["uid"])
+        self.fg += 1                            # the mail somebody is waiting for goes first
+        try:
+            end = time.time() + 30
+            while self.pre_now == k and time.time() < end:      # already on its way: do not fetch it twice
+                time.sleep(0.05)
+            raw = R.cache_get(path)
+            if not raw:
+                raw = self.imap(lambda m: R.fetch_raw(m, folder, uid))
+                R.cache_put(path, raw)
+        finally:
+            self.fg -= 1
         return raw
+
+    # ---- mail brought in ahead of time, so opening it does not wait for the server
+
+    PRE_MAX = 3 * 1024 * 1024       # a bigger mail is fetched when it is opened
+
+    def prefetch(self, rows):
+        if self.demo or not rows:
+            return
+        for r in reversed(rows):                # the first of them ends up first in line
+            k = (r["folder"], r["uidv"], r["uid"])
+            if (r["size"] or 0) <= self.PRE_MAX and k not in self.pre and not os.path.exists(R.cache_path(*k)):
+                self.pre.appendleft(k)
+        while len(self.pre) > 150:
+            self.pre.pop()
+        if self.pre_thread is None or not self.pre_thread.is_alive():
+            self.pre_thread = threading.Thread(target=self.prefetch_loop, daemon=True)
+            self.pre_thread.start()
+        self.pre_wake.set()
+
+    def prefetch_loop(self):
+        m = None
+        while not self.stopping.is_set():
+            try:
+                k = self.pre.popleft()
+            except IndexError:
+                self.pre_wake.clear()
+                if not self.pre_wake.wait(90) and m is not None:    # idle: let the connection go
+                    with contextlib.suppress(Exception):
+                        m.logout()
+                    m = None
+                continue
+            path = R.cache_path(*k)
+            if os.path.exists(path):
+                continue
+            while self.fg > 0 and not self.stopping.is_set():   # a mail is being opened: stay out of its way
+                time.sleep(0.1)
+            try:
+                if m is None:
+                    m = R.imap()
+                    with contextlib.suppress(Exception):
+                        m.sock.settimeout(60)
+                self.pre_now = k
+                R.cache_put(path, R.fetch_raw(m, k[0], k[2]))
+            except SystemExit:
+                pass                            # moved or deleted since
+            except Exception:                   # noqa: BLE001 - only a head start; opening the mail fetches it
+                self.pre_now = None
+                with contextlib.suppress(Exception):
+                    m.logout()
+                m = None
+                self.pre.clear()
+                time.sleep(5)
+            finally:
+                self.pre_now = None
+        if m is not None:
+            with contextlib.suppress(Exception):
+                m.logout()
 
     def prune_cache(self, days=90):
         root = os.path.join(R.CFG.home, "cache")
@@ -580,6 +679,56 @@ class Backend:
                 fs.append(f)
         return fs
 
+    def others(self):
+        """[(folder, label, depth)]: the server's own folders besides the standard ones."""
+        return folder_tree(self.found, set(R.CFG.folders.values()))
+
+    def extra_folders(self):
+        """Junk and the other folders: shown in the app, synced less often than the rest."""
+        have = set(self.sync_folders())
+        j = R.CFG.folders.get("junk")
+        return [f for f in ([j] if j else []) + [n for n, _, _ in self.others()] if f not in have]
+
+    def note_folders(self, m, c):
+        found = list_folders(m)
+        self.server_folders = [n for n, _ in found]
+        if found != self.found:
+            self.found = found
+            c.execute("insert or replace into meta values('folders', ?)", (json.dumps(found),))
+            c.commit()
+            self.bump()
+
+    def note_new(self, c):
+        """Unread inbox mail that came in since the last pass becomes news. The first pass only sets the mark."""
+        inbox = R.CFG.folders.get("inbox") or "INBOX"
+        top = c.execute("select coalesce(max(id),0) from msgs where folder=?", (inbox,)).fetchone()[0]
+        mark, self.news_mark = self.news_mark, top
+        now = time.time()
+        self.moved_in = {k: v for k, v in self.moved_in.items() if now - v < 900}
+        if mark is None or top <= mark:
+            return
+        rows = [r for r in c.execute("select * from msgs where folder=? and id>? and seen=0 and ts>? order by id",
+                                     (inbox, mark, now - 86400)).fetchall() if r["msgid"] not in self.moved_in]
+        if not rows:
+            return
+        fresh = []
+        for r in rows:
+            self.news_n += 1
+            j = self.row_json(r)
+            fresh.append({"n": self.news_n, "at": int(now), "id": j["id"], "from": j["from"], "subject": j["subject"]})
+        self.news = (self.news + fresh)[-20:]
+        self.bump()
+        if (not self.demo and self.prefs().get("notify", True) and now - self.focus_at > 12
+                and now - self.web_notice_at > 150):        # an open page shows its own notice
+            who = []
+            for x in fresh:
+                n = x["from"]["name"] or x["from"]["addr"]
+                if n not in who:
+                    who.append(n)
+            title = ", ".join(who[:3]) + (" +%d" % (len(who) - 3) if len(who) > 3 else "")
+            body = " · ".join(x["subject"] or "" for x in fresh[:3])
+            threading.Thread(target=system_notice, args=(title, body[:200]), daemon=True).start()
+
     def start_sync(self):
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.sync_loop, daemon=True)
@@ -596,10 +745,9 @@ class Backend:
             if not configured():
                 continue
             self.sync["running"] = True
-            before = None
+            extra = False
             try:
                 c = c or R.db()
-                before = self.fingerprint(c)
                 with R.file_lock("headers", wait=False) as got:
                     if got:
                         for attempt in (0, 1):
@@ -608,11 +756,23 @@ class Backend:
                                     m = R.imap()
                                     with contextlib.suppress(Exception):
                                         m.sock.settimeout(120)
-                                for f in self.sync_folders():
-                                    R.sync_headers(m, c, f)
-                                    if self.fingerprint(c) != before:
-                                        self.bump()
-                                        before = self.fingerprint(c)
+                                self.note_folders(m, c)
+                                todo = self.sync_folders()
+                                if self.extra_now or time.time() - self.extra_at > 300:
+                                    self.extra_now = False
+                                    todo = todo + self.extra_folders()
+                                    extra = True
+                                for f in todo:
+                                    try:
+                                        R.sync_headers(m, c, f)
+                                    except LookupError:
+                                        if f in self.sync_folders():
+                                            raise
+                                        continue        # one of the owner's folders, renamed or deleted a moment ago
+                                    if f == (R.CFG.folders.get("inbox") or "INBOX"):
+                                        self.note_new(c)
+                                if extra:
+                                    self.extra_at = time.time()
                                 break
                             except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout):
                                 with contextlib.suppress(Exception):
@@ -626,7 +786,7 @@ class Backend:
                 self.sync["last"] = int(time.time())
                 with R.file_lock("bodies", wait=False) as got:
                     if got:
-                        R.sync_bodies(c, self.sync_folders(), limit=200, workers=2, quiet=True)
+                        R.sync_bodies(c, self.sync_folders() + self.extra_folders(), limit=50, workers=2, quiet=True)   # short passes: new mail and a folder just made are not kept waiting
                         if c.execute("select 1 from msgs where has_body=0 limit 1").fetchone():
                             threading.Timer(3, self.wake.set).start()     # keep going until all are in
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
@@ -636,17 +796,17 @@ class Backend:
                 m = None
             finally:
                 self.sync["running"] = False
-                if c is not None and self.fingerprint(c) != before:
-                    self.bump()
         if m is not None:
             with contextlib.suppress(Exception):
                 m.logout()
 
-    @staticmethod
-    def fingerprint(c):
-        return tuple(c.execute("select count(*), coalesce(max(id),0), coalesce(sum(seen),0), "
-                               "coalesce(sum(has_body),0), coalesce(sum(answered),0), coalesce(sum(flagged),0), coalesce(sum(forwarded),0) "
-                               "from msgs").fetchone())
+    def look(self):
+        """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
+        with self.dblock:
+            v = self.c.execute("pragma data_version").fetchone()[0]
+        if v != self.data_v:
+            self.data_v = v
+            self.bump()
 
     def check_update(self):
         try:
@@ -660,8 +820,8 @@ class Backend:
                     self.update = {"version": v, "url": d.get("html_url") or RELEASES_PAGE}
             elif os.path.isdir(os.path.join(R.APP_DIR, ".git")):
                 R.maybe_check_later()
-                latest = R.update_state().get("latest") or {}
-                if latest.get("behind") and not latest.get("ahead"):
+                latest = R.update_waiting()
+                if latest:
                     self.update = {"version": latest.get("version"), "command": "ragdoll update"}
         except Exception:
             pass
@@ -672,15 +832,30 @@ class Backend:
         return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
-                "prefs": self.prefs()}
+                "prefs": self.prefs(), "news": self.news}
 
     def flag_folders(self):
         """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
-        return [R.CFG.folders[k] for k in ("inbox", "sent", "archive", "drafts") if R.CFG.folders.get(k)]
+        return ([R.CFG.folders[k] for k in ("inbox", "sent", "archive", "drafts") if R.CFG.folders.get(k)]
+                + [n for n, _, _ in self.others()])
 
     def folder_counts(self):
+        with self.dblock:
+            key = (self.c.execute("pragma data_version").fetchone()[0], self.c.total_changes,
+                   repr(self.found), repr(sorted(R.CFG.folders.items())))
+        try:
+            key += (os.path.getmtime(self.sched_path()),)
+        except OSError:
+            pass
+        if self.counts and self.counts[0] == key:
+            return self.counts[1]
+        out = self.count_folders()
+        self.counts = (key, out)
+        return out
+
+    def count_folders(self):
         out = []
-        for k in ("inbox", "flagged", "drafts", "scheduled", "sent", "archive", "trash"):
+        for k in ("inbox", "flagged", "drafts", "scheduled", "sent", "archive", "junk", "trash"):
             if k == "flagged":
                 fs = self.flag_folders()
                 if fs:
@@ -699,11 +874,21 @@ class Backend:
                 continue
             r = self.q("select count(*) n, coalesce(sum(seen=0),0) u from msgs where folder=?", (f,))[0]
             out.append({"key": k, "total": r["n"], "unread": r["u"]})
+        n = {r["folder"]: r for r in self.q("select folder, count(*) n, coalesce(sum(seen=0),0) u from msgs group by folder")}
+        for f, label, depth in self.others():
+            out.append({"key": f, "label": label, "depth": depth, "other": True,
+                        "total": n[f]["n"] if f in n else 0, "unread": n[f]["u"] if f in n else 0})
         return out
 
     def api_status(self, a):
+        self.look()
+        if a.get("focus"):
+            self.focus_at = time.time()
+        if a.get("web_notice"):
+            self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
-                "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update}
+                "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
+                "news": self.news}
 
     def api_sync(self, a):
         if not self.demo:
@@ -734,6 +919,8 @@ class Backend:
             p["text_size"] = a["text_size"]
         if isinstance(a.get("fmt_bar"), bool):
             p["fmt_bar"] = a["fmt_bar"]
+        if isinstance(a.get("notify"), bool):
+            p["notify"] = a["notify"]
         os.makedirs(R.CFG.home, exist_ok=True)
         with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
             json.dump(p, f)
@@ -741,20 +928,31 @@ class Backend:
 
     # ---- api: lists and reading
 
+    LIST = ("id, folder, uidv, uid, msgid, ts, frm, to_, cc, subject, atts, substr(body, 1, 3000) body, "
+            "seen, flagged, answered, forwarded, size")
+
     def api_list(self, a):
         key = a.get("folder") or "inbox"
         if key == "scheduled":
             return {"rows": self.scheduled_rows(), "more": False}
         limit = max(1, min(int_in(a, "limit", 100), 500))
         offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
+        more, params = self.list_filter(a, key)
         if key == "flagged":
             fs = self.flag_folders()
-            rows = self.q("select * from msgs where flagged=1 and folder in (%s) order by ts desc, uid desc limit ? offset ?"
-                          % ",".join("?" * len(fs)), (*fs, limit, offset)) if fs else []
+            rows = self.q("select %s from msgs where flagged=1 and folder in (%s)%s order by ts desc, uid desc limit ? offset ?"
+                          % (self.LIST, ",".join("?" * len(fs)), more), (*fs, *params, limit, offset)) if fs else []
+            if not offset:
+                self.prefetch(rows[:20])
             return {"rows": [self.row_json(r) for r in rows], "more": len(rows) == limit}
         folder = R.CFG.folders.get(key, key)
-        rows = self.q("select * from msgs where folder=? order by ts desc, uid desc limit ? offset ?",
-                      (folder, limit, offset))
+        if not self.demo and folder in self.extra_folders() and time.time() - self.extra_at > 60 and not self.extra_now:
+            self.extra_now = True               # an opened Junk or other folder is brought up to date at once
+            self.wake.set()
+        rows = self.q("select %s from msgs where folder=?%s order by ts desc, uid desc limit ? offset ?" % (self.LIST, more),
+                      (folder, *params, limit, offset))
+        if not offset and key != "drafts":
+            self.prefetch(rows[:20])
         out = [self.row_json(r) for r in rows]
         if key == "drafts":
             sched = {x["id"]: x for x in self.sched_list()}
@@ -763,6 +961,62 @@ class Backend:
                     r["sched"] = sched[r["id"]]["at"]
                     r["sched_error"] = sched[r["id"]].get("error")
         return {"rows": out, "more": len(rows) == limit}
+
+    @staticmethod
+    def list_filter(a, key):
+        """(" and ..." , params) for the list's filter: unread, starred, with a file, one person."""
+        where, params = [], []
+        if a.get("unread"):
+            where.append("seen=0")
+        if a.get("starred"):
+            where.append("flagged=1")
+        if a.get("att"):
+            where.append("atts!=''")
+        who = text_in(a, "from").strip()
+        if who:
+            pat = R.like_arg(who)
+            if key in ("sent", "drafts"):       # in these the other person is who it went to
+                where.append("(to_ like ? escape '\\' or cc like ? escape '\\')")
+                params += [pat, pat]
+            else:
+                where.append("frm like ? escape '\\'")
+                params.append(pat)
+        return "".join(" and " + w for w in where), params
+
+    def api_senders(self, a):
+        """The people most often seen in the newest mail of a list, for its filter."""
+        key = a.get("folder") or "inbox"
+        if key == "scheduled":
+            return {"people": []}
+        fs = self.flag_folders() if key == "flagged" else [R.CFG.folders.get(key, key)]
+        rows = self.q("select frm, to_ from msgs where folder in (%s)%s order by ts desc, uid desc limit 300"
+                      % (",".join("?" * len(fs)), " and flagged=1" if key == "flagged" else ""), fs) if fs else []
+        me = (R.CFG.user or "").lower()
+        count, names = {}, {}
+        for r in rows:
+            for n, ad in (R.addrs(r["to_"]) if key in ("sent", "drafts") else R.addrs(r["frm"])[:1]):
+                k = (ad or "").lower()
+                if k and k != me:
+                    count[k] = count.get(k, 0) + 1
+                    names[k] = names.get(k) or n
+        top = sorted(count, key=lambda k: -count[k])[:6]
+        return {"people": [person(names[k], k) for k in top]}
+
+    def api_demo_mail(self, a):
+        """In the demo only: one new mail comes in, the way a sync would bring it."""
+        if not self.demo:
+            fail("only in the demo")
+        with self.dblock:
+            if self.news_mark is None:
+                self.note_new(self.c)
+            ts = int(time.time())
+            raw = demo_message("inbox", ts, ("Sofia Rossi", "sofia.rossi@example.it"), [ME], [],
+                               "Delivery date for order 4502",
+                               "Hi Alex,\n\nCan you confirm the delivery date for order 4502?\n\nSofia",
+                               [], make_msgid(domain="example.com"), None, None)
+            self.demo_insert(R.CFG.folders["inbox"], raw, ts, 0, 0)
+            self.note_new(self.c)
+        return {}
 
     def api_search(self, a):
         text = text_in(a, "q").strip()[:500]
@@ -784,7 +1038,9 @@ class Backend:
         with self.dblock:
             rows = R.search_rows(self.c, words, ns)
         skip = {R.CFG.folders.get("junk")}
-        return {"rows": [self.row_json(r) for r in rows if r["folder"] not in skip]}
+        rows = [r for r in rows if r["folder"] not in skip]
+        self.prefetch(rows[:10])
+        return {"rows": [self.row_json(r) for r in rows]}
 
     def api_thread(self, a):
         r = self.row(a["id"])
@@ -792,10 +1048,33 @@ class Backend:
             rows = R.thread_rows(self.c, r)
         skip = {R.CFG.folders.get("trash"), R.CFG.folders.get("junk"), R.CFG.folders.get("drafts")} - {r["folder"]}
         rows = [x for x in rows if x["folder"] not in skip or x["id"] == r["id"]]
+        if not self.demo:       # the mails just below the opened one, then the rest of its thread
+            self.prefetch(rows[-6:][::-1])
+            self.prefetch(self.q("select folder, uidv, uid, size from msgs where folder=? and ts<=? "
+                                 "order by ts desc, uid desc limit 8", (r["folder"], r["ts"])))
         return {"subject": r["subject"] or "", "rows": [self.row_json(x) for x in rows], "id": a["id"]}
 
     def api_message(self, a):
         i = a["id"]
+        with self.dblock:
+            out = None if self.demo else self.built.get(i)
+            if out is not None:
+                self.built.move_to_end(i)
+        if out is None:
+            out = self.build_message(i)
+            if not self.demo and len(out["html"]) < 1500000:
+                with self.dblock:
+                    self.built[i] = out
+                    while len(self.built) > 40:
+                        self.built.popitem(last=False)
+        if a.get("mark", True):
+            with contextlib.suppress(ApiError):
+                r = self.row(i)
+                if not r["seen"]:
+                    self.set_flag([i], "seen", True)
+        return out
+
+    def build_message(self, i):
         msg = R.to_msg(self.raw(i))
         plain, html = R.bodies(msg)
         cids = cid_map(msg)
@@ -811,11 +1090,6 @@ class Backend:
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
                "remote": has_remote(body), "atts": [part_info(k, p) for k, p in enumerate(file_parts(msg))],
                "big": R.big_attachment_lines(R.html_to_text(html) or plain)}
-        if a.get("mark", True):
-            with contextlib.suppress(ApiError):
-                r = self.row(i)
-                if not r["seen"]:
-                    self.set_flag([i], "seen", True)
         return out
 
     def set_flag(self, ids, flag, on):
@@ -843,11 +1117,12 @@ class Backend:
         return {}
 
     def api_move(self, a):
-        """Move mails to archive, trash or inbox (dest is the folder key)."""
-        dest_key = a["to"]
-        if dest_key not in ("archive", "trash", "inbox", "junk"):
+        """Move mails to archive, trash, inbox or junk (dest is the folder key), or to one of the other folders."""
+        dest_key = a.get("to")
+        other = isinstance(dest_key, str) and dest_key in [n for n, _, _ in self.others()]
+        if not other and dest_key not in ("archive", "trash", "inbox", "junk"):
             fail("can't move to %s" % dest_key)
-        dest = R.CFG.folders.get(dest_key) or ("Archive" if dest_key == "archive" else None)
+        dest = dest_key if other else R.CFG.folders.get(dest_key) or ("Archive" if dest_key == "archive" else None)
         if not dest:
             fail("No %s folder is set." % dest_key)
         by = {}
@@ -857,6 +1132,9 @@ class Backend:
                 by.setdefault(f, []).append(u)
                 # a moved draft is no longer the one that was scheduled
                 self.sched_drop(i)
+                if dest_key == "inbox":         # mail the owner put back is not new mail
+                    for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
+                        self.moved_in[r["msgid"]] = time.time()
         if self.demo:
             for f, uids in by.items():
                 for u in uids:
@@ -866,7 +1144,11 @@ class Backend:
                         self.demo_insert(dest, raw, r[0]["ts"], r[0]["seen"], r[0]["answered"], r[0]["flagged"])
         else:
             def go(m):
-                if dest not in self.folders(m):
+                if other:
+                    self.server_folders = None
+                    if dest not in self.folders(m):
+                        fail("The folder %s is no longer on the server." % dest)
+                elif dest not in self.folders(m):
                     typ, data = m.create(R.q(dest))
                     if typ != "OK":
                         fail("Could not make the %s folder: %s" % (dest, data))
@@ -885,6 +1167,8 @@ class Backend:
             self.c.commit()
         self.bump()
         if not self.demo:
+            if (set(by) | {dest}) - set(self.sync_folders()):
+                self.extra_now = True
             self.wake.set()
         return {"moved": sum(len(x) for x in by.values())}
 
@@ -892,6 +1176,148 @@ class Backend:
         if self.server_folders is None:
             self.server_folders = [n for n, _ in list_folders(m)]
         return self.server_folders
+
+    # ---- the owner's own folders: make, rename, delete (only an empty one)
+
+    def own_folder(self, a):
+        key = a.get("key")
+        for n, label, _ in self.others():
+            if n == key:
+                return n, label
+        fail("The folder %s is no longer on the server." % key)
+
+    def own_parent(self, sep):
+        """Where a new folder goes: beside the ones already there (some servers keep them all under one fixed folder)."""
+        tops = [n for n, _, d in self.others() if d == 0]
+        if tops:
+            parents = {n.rpartition(sep)[0] for n in tops}
+            return parents.pop() if len(parents) == 1 else ""
+        holders = [n for n, flags in self.found if "\\noselect" in flags.split() and n.strip(sep)]
+        return holders[0] if len(holders) == 1 else ""
+
+    def refresh_folders(self, m):
+        found = list_folders(m)
+        self.server_folders = [n for n, _ in found]
+        self.found = found
+        self.exec("insert or replace into meta values('folders', ?)", (json.dumps(found),))
+
+    def free_name(self, name, label):
+        if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
+            fail("There is already a folder called %s." % label)
+
+    def rename_rows(self, old, new, sep):
+        """The mail already listed follows its folder to the new name (the folders inside it too)."""
+        with self.dblock:
+            names = {r[0] for r in self.c.execute("select folder from msgs union select folder from state").fetchall()}
+            for f in names:
+                if f == old or f.startswith(old + sep):
+                    to = new + f[len(old):]
+                    self.c.execute("delete from state where folder=?", (to,))
+                    self.c.execute("update msgs set folder=? where folder=?", (to, f))
+                    self.c.execute("update state set folder=? where folder=?", (to, f))
+            self.c.commit()
+
+    def api_folder_new(self, a):
+        label = folder_label(a.get("name"))
+        if self.demo:
+            base = self.own_parent("/")
+            name = base + "/" + label if base else label
+            self.free_name(name, label)
+            self.found.append((name, ""))
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                if sep in label:
+                    fail("A folder name can't have %s in it." % sep)
+                self.refresh_folders(m)
+                base = self.own_parent(sep)
+                name = base + sep + label if base else label
+                self.free_name(name, label)
+                typ, data = m.create(R.q(name))
+                if typ != "OK":
+                    fail("The mail server said: %s" % said(data))
+                with contextlib.suppress(Exception):
+                    m.subscribe(R.q(name))
+                self.refresh_folders(m)
+                return name
+            name = self.imap(go)
+        self.bump()
+        return {"key": name}
+
+    def api_folder_rename(self, a):
+        key, old = self.own_folder(a)
+        label = folder_label(a.get("name"))
+        name = key[:len(key) - len(old)] + label
+        if name == key:
+            return {"key": key}
+        if self.demo:
+            self.free_name(name, label)
+            self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
+            for (f, u) in list(self.demo_raw):
+                if f == key or f.startswith(key + "/"):
+                    self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
+            self.rename_rows(key, name, "/")
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                if sep in label:
+                    fail("A folder name can't have %s in it." % sep)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                self.free_name(name, label)
+                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+                typ, data = m.rename(R.q(key), R.q(name))
+                if typ != "OK":
+                    fail("The mail server said: %s" % said(data))
+                with contextlib.suppress(Exception):
+                    m.unsubscribe(R.q(key))
+                    m.subscribe(R.q(name))
+                self.rename_rows(key, name, sep)
+                self.refresh_folders(m)
+            self.imap(go)
+            self.extra_now = True
+            self.wake.set()
+        self.bump()
+        return {"key": name}
+
+    def api_folder_delete(self, a):
+        """Only a folder with no mail and no folders inside goes; mail is never deleted this way."""
+        key, label = self.own_folder(a)
+        if self.demo:
+            if any(n.startswith(key + "/") for n, _ in self.found):
+                fail("%s has folders inside it. Delete those first." % label)
+            if self.q("select 1 from msgs where folder=? limit 1", (key,)):
+                fail("%s still has mail in it. Move the mail out first." % label)
+            self.found = [(n, f) for n, f in self.found if n != key]
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                if any(n.startswith(key + sep) for n, _ in self.found):
+                    fail("%s has folders inside it. Delete those first." % label)
+                typ, data = m.status(R.q(key), "(MESSAGES)")
+                mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
+                if typ != "OK" or not mo:
+                    fail("The mail server said: %s" % said(data))
+                if int(mo.group(1)):
+                    fail("%s still has mail in it. Move the mail out first." % label)
+                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+                with contextlib.suppress(Exception):
+                    m.unsubscribe(R.q(key))
+                typ, data = m.delete(R.q(key))
+                if typ != "OK":
+                    fail("The mail server said: %s" % said(data))
+                self.refresh_folders(m)
+            self.imap(go)
+        with self.dblock:
+            for r in self.c.execute("select id from msgs where folder=?", (key,)).fetchall():
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.execute("delete from msgs where folder=?", (key,))
+            self.c.execute("delete from state where folder=?", (key,))
+            self.c.commit()
+        self.bump()
+        return {}
 
     def api_attachment(self, a):
         msg = R.to_msg(self.raw(a["id"]))
@@ -1445,7 +1871,7 @@ class Backend:
                 mids[thread] = mid
             raw = demo_message(fk, ts, frm, to, cc, subj, body, atts, mid, irt, refs,
                                inline=subj.startswith("Re: Site visit"))
-            self.demo_insert(R.CFG.folders[fk], raw, ts, int(seen), int(fk == "inbox" and thread == "lunch"),
+            self.demo_insert(R.CFG.folders.get(fk, fk), raw, ts, int(seen), int(fk == "inbox" and thread == "lunch"),
                              int(subj in DEMO_FLAGGED))
         self.demo_order_threads()
 
@@ -1472,6 +1898,7 @@ class Backend:
         self.stopping.set()
         self.wake.set()
         self.sched_wake.set()
+        self.pre_wake.set()
         self.drop()
 
 
@@ -1525,6 +1952,36 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
     c.commit()
 
 
+def folder_label(v):
+    """A folder name the owner typed, tidied; refuses what no server takes."""
+    name = " ".join(v.split()) if isinstance(v, str) else ""
+    if not name:
+        fail("Give the folder a name.")
+    if len(name) > 60:
+        fail("That folder name is too long.")
+    for ch in '/\\."%*':
+        if ch in name:
+            fail("A folder name can't have %s in it." % ch)
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        fail("A folder name can't have %s in it." % "control characters")
+    return name
+
+
+def folder_sep(m):
+    """The character the server puts between a folder and the folders inside it."""
+    with contextlib.suppress(Exception):
+        typ, data = m.list('""', '""')
+        for line in data or []:
+            mo = re.match(rb'\([^)]*\)\s+"(\\?.)"', line if isinstance(line, bytes) else b"")
+            if mo:
+                return mo.group(1).decode()[-1]
+    return "/"
+
+
+def said(data):
+    return b" ".join(x for x in data or [] if isinstance(x, bytes)).decode("utf-8", "replace")
+
+
 def list_folders(m):
     """[(name, lowercased flags)] from LIST."""
     typ, data = m.list()
@@ -1542,6 +1999,52 @@ def list_folders(m):
             name = re.sub(rb"\\(.)", rb"\1", name[1:-1])
         out.append((R.mutf7_decode(name.decode("utf-8", "replace")), mo.group(1).decode().lower()))
     return out
+
+
+def folder_tree(found, taken):
+    """[(folder, label, depth)] for the server folders that hold mail and are not in `taken`, parents first."""
+    every = [n for n, _ in found]
+    names = [n for n, flags in found if n not in taken and n.upper() != "INBOX" and n.lower() not in LIST_KEYS
+             and not any(x in flags.split() for x in VIEW_FLAGS)]
+
+    def parent(n, among):
+        return max((p for p in among if p != n and n.startswith(p) and n[len(p):len(p) + 1] in ("/", ".")
+                    and n[len(p) + 1:]), key=len, default=None)
+    kids = {}
+    for n in names:
+        kids.setdefault(parent(n, names), []).append(n)
+    out = []
+
+    def walk(p, depth):
+        for n in sorted(kids.get(p, []), key=str.lower):
+            above = parent(n, every)
+            out.append((n, n[len(above) + 1:] if above else n, depth))
+            walk(n, depth + 1)
+    walk(None, 0)
+    return out
+
+
+def system_notice(title, body):
+    """Tell the owner about new mail outside the window. Never raises."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["osascript", "-e", "on run argv",
+                            "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+                            "-e", "end run", title or "Ragdoll Mail", body], timeout=10, capture_output=True)
+        elif sys.platform == "win32":
+            if WINDOW.hwnd:                     # the taskbar button flashes until the window is opened
+                import ctypes
+
+                class Flash(ctypes.Structure):
+                    _fields_ = [("size", ctypes.c_uint), ("hwnd", ctypes.c_void_p), ("flags", ctypes.c_uint),
+                                ("count", ctypes.c_uint), ("timeout", ctypes.c_uint)]
+                info = Flash(ctypes.sizeof(Flash), WINDOW.hwnd, 0x3 | 0xC, 0, 0)
+                ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+        elif shutil.which("notify-send"):
+            subprocess.run(["notify-send", "-a", "Ragdoll Mail", title or "Ragdoll Mail", body], timeout=10,
+                           capture_output=True)
+    except Exception:       # noqa: BLE001 - a notice that can't be shown is not an error
+        pass
 
 
 def detect_folders(found):

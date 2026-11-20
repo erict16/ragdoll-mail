@@ -1,5 +1,5 @@
 """Offline tests of the desktop app's local server, in demo mode (no account, no network)."""
-import http.client, json, os, shutil, sys, threading, unittest
+import http.client, json, os, shutil, sys, threading, time, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll_app as A  # noqa: E402
@@ -195,6 +195,166 @@ class AppServer(unittest.TestCase):
         code, out = self.api("nope")
         self.assertEqual(code, 404)
         self.assertFalse(out["ok"])
+
+    def rows(self, folder, **more):
+        return self.api("list", dict(more, folder=folder))[1]["data"]["rows"]
+
+    def test_list_filters(self):
+        every = self.rows("inbox")
+        ids = lambda rows: [r["id"] for r in rows]
+        self.assertEqual(ids(self.rows("inbox", unread=True)), ids([r for r in every if r["unread"]]))
+        self.assertEqual(ids(self.rows("inbox", att=True)), ids([r for r in every if r["atts"]]))
+        self.assertTrue(self.rows("inbox", unread=True) and self.rows("inbox", att=True))
+        i = every[0]["id"]
+        self.api("mark", {"ids": [i], "flag": "flagged", "on": True})
+        self.assertIn(i, ids(self.rows("inbox", starred=True)))
+        self.assertTrue(all(r["flagged"] for r in self.rows("inbox", starred=True)))
+        self.api("mark", {"ids": [i], "flag": "flagged", "on": False})
+        who = every[0]["from"]["addr"]
+        one = self.rows("inbox", **{"from": who})
+        self.assertEqual(ids(one), ids([r for r in every if r["from"]["addr"] == who]))
+        both = self.rows("inbox", unread=True, **{"from": who})
+        self.assertEqual(ids(both), ids([r for r in one if r["unread"]]))
+        self.assertEqual(self.rows("inbox", **{"from": "100%_nobody"}), [])   # typed text is not a pattern
+
+    def test_senders(self):
+        people = self.api("senders", {"folder": "inbox"})[1]["data"]["people"]
+        self.assertTrue(0 < len(people) <= 6)
+        seen = {r["from"]["addr"] for r in self.rows("inbox")}
+        self.assertTrue(all(p["addr"] in seen for p in people))
+        self.assertNotIn(A.R.CFG.user, [p["addr"] for p in people])
+        self.assertEqual(self.api("senders", {"folder": "scheduled"})[1]["data"]["people"], [])
+
+    def test_junk_and_other_folders(self):
+        fs = {f["key"]: f for f in self.api("status")[1]["data"]["folders"]}
+        self.assertIn("junk", fs)
+        self.assertTrue(self.rows("junk"))
+        self.assertEqual({r["folder"] for r in self.rows("junk")}, {"junk"})
+        self.assertEqual((fs["Projects"]["other"], fs["Projects"]["depth"], fs["Projects"]["label"]), (True, 0, "Projects"))
+        self.assertEqual((fs["Projects/Acme"]["depth"], fs["Projects/Acme"]["label"]), (1, "Acme"))
+        self.assertFalse(fs["inbox"].get("other"))
+
+    def test_move_to_other_folder_and_junk(self):
+        subject = "Moved around %d" % os.getpid()
+        self.backend.demo_insert(A.R.CFG.folders["inbox"], A.demo_message(
+            "inbox", 1790000000, ("Mover", "mover@example.com"), [A.ME], [], subject, "x", [],
+            A.make_msgid(domain="example.com"), None, None), 1790000000, 1, 0)
+
+        def where(folder):
+            return [r["id"] for r in self.rows(folder) if r["subject"] == subject]
+        for dest in ("Projects/Acme", "junk", "inbox"):
+            src = next(f for f in ("inbox", "Projects/Acme", "junk") if where(f))
+            self.assertTrue(self.api("move", {"ids": where(src), "to": dest})[1]["ok"])
+            self.assertEqual(len(where(dest)), 1)
+            self.assertEqual(where(src) if src != dest else [], [])
+        self.assertTrue(where("inbox")[0].startswith("inbox:"))
+        out = self.api("move", {"ids": where("inbox"), "to": "No such folder"})[1]
+        self.assertFalse(out["ok"])
+        self.assertEqual(len(where("inbox")), 1)
+        self.api("move", {"ids": where("inbox"), "to": "trash"})
+
+    def test_folder_tree(self):
+        found = [("INBOX", ""), ("Sent Messages", "\\sent"), ("其他文件夹", "\\haschildren"),
+                 ("其他文件夹/华明印尼", ""), ("其他文件夹/2025归档", ""), ("All Mail", "\\all"),
+                 ("Gone", "\\noselect"), ("Clients.Acme", ""), ("flagged", "")]
+        self.assertEqual(A.folder_tree(found, {"Sent Messages"}), [
+            ("Clients.Acme", "Clients.Acme", 0), ("其他文件夹", "其他文件夹", 0),
+            ("其他文件夹/2025归档", "2025归档", 1), ("其他文件夹/华明印尼", "华明印尼", 1)])
+
+    def test_new_mail_is_news(self):
+        before = self.api("status")[1]["data"]["news"]
+        self.assertTrue(self.api("demo_mail")[1]["ok"])
+        news = self.api("status", {"focus": True})[1]["data"]["news"]
+        self.assertEqual(len(news), len(before) + 1)
+        x = news[-1]
+        self.assertEqual((x["subject"], x["from"]["addr"]), ("Delivery date for order 4502", "sofia.rossi@example.it"))
+        self.assertGreater(x["n"], max([b["n"] for b in before], default=0))
+        self.assertIn(x["id"], [r["id"] for r in self.rows("inbox", unread=True)])
+        self.assertEqual(self.api("boot")[1]["data"]["news"], news)     # a page opened later does not repeat it
+
+    def test_mail_put_back_is_not_news(self):
+        i = self.rows("junk")[0]["id"]
+        before = self.api("status")[1]["data"]["news"]
+        self.api("move", {"ids": [i], "to": "inbox"})
+        self.assertEqual(self.api("status")[1]["data"]["news"], before)
+
+    def test_own_folders_made_renamed_deleted(self):
+        keys = lambda: [f["key"] for f in self.api("status")[1]["data"]["folders"] if f.get("other")]
+        err = lambda name, a: self.api(name, a)[1].get("error", "")
+        self.assertEqual(self.api("folder_new", {"name": "  Tenders   2026 "})[1]["data"], {"key": "Tenders 2026"})
+        self.assertIn("Tenders 2026", keys())
+        self.assertIn("already a folder", err("folder_new", {"name": "tenders 2026"}))
+        self.assertIn("Give the folder a name", err("folder_new", {"name": "  "}))
+        self.assertIn("can't have / in it", err("folder_new", {"name": "a/b"}))
+        self.assertIn("no longer on the server", err("folder_rename", {"key": "INBOX", "name": "x"}))
+        self.assertIn("no longer on the server", err("folder_delete", {"key": "Trash"}))
+        # the mail in a folder follows it to the new name
+        i = self.rows("inbox")[-1]["id"]
+        subject = self.rows("inbox")[-1]["subject"]
+        self.api("move", {"ids": [i], "to": "Tenders 2026"})
+        self.assertEqual(self.api("folder_rename", {"key": "Tenders 2026", "name": "Tenders"})[1]["data"], {"key": "Tenders"})
+        self.assertNotIn("Tenders 2026", keys())
+        got = self.rows("Tenders")
+        self.assertEqual([r["subject"] for r in got], [subject])
+        self.assertTrue(self.api("message", {"id": got[0]["id"]})[1]["ok"])
+        # a folder with mail in it stays; an empty one goes
+        self.assertIn("still has mail", err("folder_delete", {"key": "Tenders"}))
+        self.assertIn("Tenders", keys())
+        self.api("move", {"ids": [got[0]["id"]], "to": "inbox"})
+        self.assertTrue(self.api("folder_delete", {"key": "Tenders"})[1]["ok"])
+        self.assertNotIn("Tenders", keys())
+        self.assertIn("folders inside", err("folder_delete", {"key": "Projects"}))
+        # a folder inside another keeps its place when the outer one is renamed
+        self.assertEqual(self.api("folder_rename", {"key": "Projects/Acme", "name": "Acme Ltd"})[1]["data"], {"key": "Projects/Acme Ltd"})
+        self.api("folder_rename", {"key": "Projects", "name": "Work"})
+        self.assertIn("Work/Acme Ltd", keys())
+        self.api("folder_rename", {"key": "Work", "name": "Projects"})
+        self.api("folder_rename", {"key": "Projects/Acme Ltd", "name": "Acme"})
+        self.assertIn("Projects/Acme", keys())
+
+    def test_new_folder_goes_beside_the_others(self):
+        b = A.Backend.__new__(A.Backend)
+        b.found = [("INBOX", ""), ("其他文件夹", "\\noselect \\haschildren"), ("其他文件夹/2025归档", "")]
+        self.assertEqual(b.own_parent("/"), "其他文件夹")
+        b.found = [("INBOX", ""), ("其他文件夹", "\\noselect \\haschildren")]
+        self.assertEqual(b.own_parent("/"), "其他文件夹")
+        b.found = [("INBOX", ""), ("Clients", ""), ("Clients/Acme", "")]
+        self.assertEqual(b.own_parent("/"), "")
+
+    def test_a_page_with_its_own_notices_is_noted(self):
+        self.api("status", {"web_notice": True})
+        self.assertLess(time.time() - self.backend.web_notice_at, 5)
+
+    def test_a_change_from_the_cli_reaches_the_page(self):
+        """Another connection (the CLI in a terminal) marks a mail answered: the next status call says so."""
+        rev = self.api("status")[1]["data"]["rev"]
+        self.assertEqual(self.api("status")[1]["data"]["rev"], rev)
+        row = self.api("list", {"folder": "inbox"})[1]["data"]["rows"][-1]
+        folder, uid = A.R.parse_id(row["id"])
+        c = A.R.db()
+        c.execute("update msgs set answered=1, seen=0 where folder=? and uid=?", (folder, uid))
+        c.commit()
+        c.close()
+        st = self.api("status")[1]["data"]
+        self.assertGreater(st["rev"], rev)
+        again = [r for r in self.api("list", {"folder": "inbox"})[1]["data"]["rows"] if r["id"] == row["id"]][0]
+        self.assertTrue(again["answered"])
+        self.api("mark", {"ids": [row["id"]], "flag": "seen", "on": True})
+
+    def test_counts_follow_what_the_app_does(self):
+        before = {f["key"]: f for f in self.api("status")[1]["data"]["folders"]}
+        row = [r for r in self.api("list", {"folder": "inbox"})[1]["data"]["rows"] if not r["unread"]][0]
+        self.api("mark", {"ids": [row["id"]], "flag": "seen", "on": False})
+        after = {f["key"]: f for f in self.api("status")[1]["data"]["folders"]}
+        self.assertEqual(after["inbox"]["unread"], before["inbox"]["unread"] + 1)
+        self.api("mark", {"ids": [row["id"]], "flag": "seen", "on": True})
+        self.assertEqual({f["key"]: f for f in self.api("status")[1]["data"]["folders"]}["inbox"]["unread"],
+                         before["inbox"]["unread"])
+
+    def test_notify_pref_is_checked(self):
+        self.assertIs(self.api("prefs", {"notify": False})[1]["data"]["notify"], False)
+        self.assertIs(self.api("prefs", {"notify": "yes"})[1]["data"]["notify"], False)
+        self.assertIs(self.api("prefs", {"notify": True})[1]["data"]["notify"], True)
 
 
 if __name__ == "__main__":
