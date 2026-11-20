@@ -1,8 +1,9 @@
 """Offline tests of the desktop app's local server, in demo mode (no account, no network)."""
-import contextlib, http.client, io, json, os, queue, shutil, sys, tempfile, threading, time, unittest
+import contextlib, http.client, io, json, os, queue, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll_app as A  # noqa: E402
+REAL_OPEN_PATH = A.open_path      # the Files tests put a stand-in in its place
 
 TOKEN = "test-token"
 
@@ -811,6 +812,34 @@ class Files(OwnBackend):
         A.R.cache_put(whole, b"x")
         self.b.prune_cache()
         self.assertTrue(os.path.exists(whole))
+
+    def test_opening_a_file_twice_opens_the_same_copy(self):
+        i = self.by_subject("Quote for PO-1234")
+        one = self.b.api_attachment({"id": i, "i": 1, "action": "open"})
+        with open(one["path"], "ab") as f:
+            f.write(b"changed")                         # the user worked in it
+        two = self.b.api_attachment({"id": i, "i": 1, "action": "open"})
+        self.assertEqual(one["path"], two["path"])      # Excel opens no second workbook of the same name
+        with open(two["path"], "rb") as f:
+            self.assertTrue(f.read().endswith(b"changed"))
+        self.assertEqual(self.opened, [(one["path"], False)] * 2)
+        self.assertFalse([n for n in os.listdir(os.path.dirname(one["path"])) if n.endswith(".part")])
+
+    def test_the_name_picks_the_file_when_the_list_moved(self):
+        i = self.by_subject("Quote for PO-1234")
+        out = self.b.api_attachment({"id": i, "i": 0, "name": "Delivery_schedule.xlsx", "action": "open"})
+        self.assertEqual(out["name"], "Delivery_schedule.xlsx")
+        out = self.b.api_attachment({"id": i, "i": 7, "name": "Quote_PO-1234_signed.pdf", "action": "open"})
+        self.assertEqual(out["name"], "Quote_PO-1234_signed.pdf")
+        self.assertFalse(self.b.call("attachment", {"id": i, "i": 0, "name": "gone.pdf", "action": "open"})[1]["ok"])
+
+    def test_a_file_no_app_opens_says_so(self):
+        if sys.platform != "darwin":
+            self.skipTest("macOS open")
+        self.patch(A.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, b"", b"No application knows how to open it."))
+        with self.assertRaises(A.ApiError) as e:
+            REAL_OPEN_PATH("/tmp/x.weird")
+        self.assertIn("No application", str(e.exception))
 
     def test_all_files_are_saved_to_downloads(self):
         i = self.by_subject("Quote for PO-1234")
