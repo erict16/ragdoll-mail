@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ragdoll Mail：免费的 Mac / Windows 邮件客户端，腾讯企业邮箱也能秒搜</title>
+<meta name="description" content="免费开源的 Mac 和 Windows 邮件软件。本地索引，搜索秒出结果。支持腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud 和任何 IMAP 邮箱。邮件只在你电脑上，断网也能搜。">
+<link rel="canonical" href="https://erict16.github.io/ragdoll-mail/zh/">
+<link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/">
+<link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/">
+<link rel="alternate" hreflang="x-default" href="https://erict16.github.io/ragdoll-mail/">
+<link rel="icon" href="../img/icon-256.png">
+<link rel="apple-touch-icon" href="../img/icon-256.png">
+<meta name="theme-color" content="#fbf9f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Ragdoll Mail：免费的 Mac / Windows 邮件客户端，腾讯企业邮箱也能秒搜">
+<meta property="og:description" content="免费开源的 Mac 和 Windows 邮件软件。本地索引，搜索秒出结果。支持腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud 和任何 IMAP 邮箱。邮件只在你电脑上，断网也能搜。">
+<meta property="og:url" content="https://erict16.github.io/ragdoll-mail/zh/">
+<meta property="og:image" content="https://erict16.github.io/ragdoll-mail/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="../style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Ragdoll Mail", "operatingSystem": "macOS, Windows", "applicationCategory": "CommunicationApplication", "description": "免费开源的 Mac 和 Windows 邮件软件。本地索引，搜索秒出结果。支持腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud 和任何 IMAP 邮箱。邮件只在你电脑上，断网也能搜。", "url": "https://erict16.github.io/ragdoll-mail/zh/", "downloadUrl": "https://github.com/erict16/ragdoll-mail/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "image": "https://erict16.github.io/ragdoll-mail/img/og.png", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "腾讯企业邮箱有没有搜索好用的 Mac / Windows 客户端？", "acceptedAnswer": {"@type": "Answer", "text": "有，就是这个。我们拿一个真实的企业邮箱试过，里面有 6,442 封邮件。邮箱自带的搜索不管输入什么词，都返回 4,988 封，连随手编的词也一样。Ragdoll Mail 只返回真正含这个词的邮件，用时不到 0.1 秒。"}}, {"@type": "Question", "name": "我的邮件安全吗？", "acceptedAnswer": {"@type": "Answer", "text": "邮件只存在两个地方：你的电脑，和你自己的邮箱服务器。软件不会把任何东西发给我们，我们根本没有服务器。"}}, {"@type": "Question", "name": "密码存在哪里？", "acceptedAnswer": {"@type": "Answer", "text": "存在系统自带的密码库里：Mac 的“钥匙串”，Windows 的“凭据管理器”。不会写进任何文件。"}}, {"@type": "Question", "name": "登录要用哪个密码？", "acceptedAnswer": {"@type": "Answer", "text": "很多邮箱要给邮件软件单独设一个密码：腾讯企业邮箱叫“客户端专用密码”，QQ 邮箱和 163 叫“授权码”，Gmail、iCloud 和 Fastmail 叫 app password。在邮箱网页版的设置里生成。"}}, {"@type": "Question", "name": "没有网能用吗？", "acceptedAnswer": {"@type": "Answer", "text": "看已经收下来的邮件、搜索邮件：可以。发邮件和收新邮件要联网。"}}, {"@type": "Question", "name": "真的免费吗？", "acceptedAnswer": {"@type": "Answer", "text": "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"}}]}]</script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="../"><img src="../img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
+  <nav>
+    <a class="hide-s" href="#features">功能</a>
+    <a class="hide-s" href="#ai">AI 助手</a>
+    <a class="hide-s" href="#questions">常见问题</a>
+    <a href="../" hreflang="en">English</a>
+    <a href="https://github.com/erict16/ragdoll-mail">GitHub</a>
+  </nav>
+  <a class="btn primary" data-dl href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg">下载</a>
+</div></header>
+
+<main>
+<div class="hero"><div class="wrap">
+  <img class="icon" src="../img/icon.webp" alt="Ragdoll Mail" width="96" height="96">
+  <div class="pill">免费<b></b>开源<b></b>Mac 和 Windows</div>
+  <h1>邮件，<em>一搜就到</em>。</h1>
+  <p class="lead">用你现在的邮箱登录就行。腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud，还有任何 IMAP 邮箱都能用。</p>
+  <div class="cta"><a class="btn primary" data-os="mac" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Mac 版 <small>M 系列芯片</small></a><a class="btn " data-os="win" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Windows 版 <small>Windows 10 / 11</small></a></div>
+  <p class="first-open">还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。</p>
+</div>
+  <div class="shot">
+    <picture>
+      <source srcset="../img/hero-dark.webp" media="(prefers-color-scheme: dark)">
+      <img src="../img/hero-light.webp" alt="Ragdoll Mail 的收件箱，打开了一封带两个附件的邮件" width="1800" height="1161" fetchpriority="high">
+    </picture>
+  </div>
+</div>
+
+<section id="search"><div class="wrap">
+  <div class="center reveal">
+    <div class="kicker">搜索</div>
+    <h2>邮箱自带的搜索什么都给你。我们只给你要找的那封。</h2>
+    <p class="sub">同样的词，两边一起搜。在一个有 6,442 封邮件的真实腾讯企业邮箱里，它自带的搜索每次都返回 4,988 封，连随手编的词也一样。</p>
+  </div>
+  <div class="race reveal" aria-label="搜索">
+    <div class="race-q"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span class="typed"></span><span class="caret"></span></div>
+    <div class="race-cols">
+      <div class="race-col theirs"><h3><span class="dot"></span>邮箱网页版搜索</h3>
+        <div class="count">0</div><div class="count-note"></div><div class="rows blur"></div></div>
+      <div class="race-col ours"><h3><span class="dot"></span>Ragdoll Mail</h3>
+        <div class="count">0</div><div class="count-note"></div><div class="rows"></div></div>
+    </div>
+    <div class="race-foot">左边：腾讯企业邮箱自带的搜索，在一个有 6,442 封邮件的真实邮箱里测的。右边：Ragdoll Mail 的示例邮箱。</div>
+  </div>
+  <script type="application/json" id="race-data">{"theirs": 4988, "theirsNote": "封，不管搜什么词", "searching": "正在搜索…", "fast": "不到 0.1 秒，只有含这个词的邮件", "none": "没有邮件含这个词，本来就该是 0。", "words": [{"word": "PO-1234", "rows": [["Jane Doe", "Quote for PO-1234"], ["To: Jane Doe", "Re: Quote for PO-1234"], ["Tom Becker", "Packing list for PO-1234"]]}, {"word": "图纸", "rows": [["Li Ming", "北京ABC项目 — 图纸确认"]]}, {"word": "zqxv", "rows": []}], "noise": [["GitHub", "Release v0.5.0 published"], ["Northwind Billing", "Your invoice INV-0006 is ready"], ["Sara Kim", "Lunch on Thursday?"]]}</script>
+</div></section>
+
+<section id="features"><div class="wrap">
+  <div class="reveal">
+    <div class="kicker">为真实的邮件而做</div>
+    <h2>安静、快，而且不容易出错。</h2>
+  </div>
+  <div class="grid">
+    <div class="tile t-wide reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></div><h3>每个词、每封邮件，一下就找到</h3><p>标题、人名、附件名和全文都能搜。中文、日文、韩文都行，断网也能搜。</p><div class="peek"><img src="../img/search-light.webp" alt="" loading="lazy" width="1800" height="1161"></div></div>
+    <div class="tile t-narrow reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><h3>邮件只在你手里</h3><p>软件只和你自己的邮件服务器说话，中间没有别家的云，也不用注册我们的账号。密码存在系统的钥匙串或凭据管理器里。</p><div class="path"><span>你的电脑</span><i></i><span>你的邮件服务器</span></div><div class="path-x">中间没有别的服务器</div></div>
+    <div class="tile t-narrow reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg></div><h3>不容易发错</h3><p>点了发送，30 秒内还能撤回。写了“附件”却没加附件、正文里还留着 [姓名]，都会先拦一下。</p><div class="undo">正在发送…<span class="bar"><i></i></span><a href="#features">撤回</a></div><div class="warn">你写了“附件”，但还没有加附件。</div></div>
+    <div class="tile t-wide reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg></div><h3>想怎么写就怎么写</h3><p>字体、列表、链接、签名都有。回复会带上之前的邮件和图片。可以马上发，也可以定到今晚或周一早上九点。</p><div class="peek peek-r"><img src="../img/compose-light.webp" alt="" loading="lazy" width="1800" height="1161"></div></div>
+    <div class="tile t-third reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg></div><h3>中文邮件不乱码</h3><p>老系统发来的中文名字和附件名，都能正常显示。</p></div>
+    <div class="tile t-third reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/></svg></div><h3>每个操作都有快捷键</h3><p>C 写邮件，R 回复，E 归档。按 ? 看全部。</p></div>
+    <div class="tile t-third reveal"><div class="ic"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></div><h3>不会改动你的邮箱</h3><p>文件夹和邮件跟网页版一模一样。手机照常用。</p></div>
+  </div>
+</div></section>
+
+<section id="ai"><div class="wrap">
+  <div class="grid" style="margin-top:0;align-items:center">
+    <div class="reveal" style="grid-column:span 5">
+      <div class="kicker">AI 助手</div>
+      <h2>AI 写草稿，你来点发送。</h2>
+      <p class="sub">Claude Code、Codex 这些能跑命令的 AI，可以用 <code>ragdoll</code> 命令帮你搜邮件、写回复。草稿会在 App 里打开，你不点发送，什么都不会发出去。</p>
+      <p class="sub" style="font-size:15.5px">在 App 里装命令：设置 → 命令行 → 安装。 <a href="https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md" style="color:var(--accent-ink)">看命令行说明（英文） →</a></p>
+    </div>
+    <div class="reveal" style="grid-column:span 7"><div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term" role="img" aria-label="AI 助手"><span class="y">you  </span> <span class="c">›</span> 回复 Jane，附上签好的报价单。
+<span class="p">$</span> ragdoll search jane quote --json
+<span class="p">$</span> ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
+<span class="p">$</span> ragdoll check drafts:14 --reply
+  <span class="p">CHECK OK</span>
+<span class="p">$</span> ragdoll open drafts:14
+<span class="y">agent</span> <span class="c">›</span> 草稿已经在 Ragdoll Mail 里打开了，你看好了就发。</div></div></div>
+  </div>
+</div></section>
+
+<section id="works"><div class="wrap center reveal">
+  <div class="kicker">支持的邮箱</div>
+  <h2>用你现在的邮箱就行。</h2>
+  <div class="chips"><span class="chip hl">腾讯企业邮箱</span><span class="chip">QQ 邮箱</span><span class="chip">163 邮箱</span><span class="chip">Gmail</span><span class="chip">iCloud</span><span class="chip">Fastmail</span><span class="chip">任何 IMAP 邮箱</span></div>
+</div></section>
+
+<section id="questions"><div class="wrap">
+  <div class="center reveal">
+    <div class="kicker">常见问题</div>
+    <h2>你可能想问。</h2>
+  </div>
+  <div class="faq">
+    <details><summary>腾讯企业邮箱有没有搜索好用的 Mac / Windows 客户端？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>有，就是这个。我们拿一个真实的企业邮箱试过，里面有 6,442 封邮件。邮箱自带的搜索不管输入什么词，都返回 4,988 封，连随手编的词也一样。Ragdoll Mail 只返回真正含这个词的邮件，用时不到 0.1 秒。</p></details><details><summary>我的邮件安全吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>邮件只存在两个地方：你的电脑，和你自己的邮箱服务器。软件不会把任何东西发给我们，我们根本没有服务器。</p></details><details><summary>密码存在哪里？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>存在系统自带的密码库里：Mac 的“钥匙串”，Windows 的“凭据管理器”。不会写进任何文件。</p></details><details><summary>登录要用哪个密码？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>很多邮箱要给邮件软件单独设一个密码：腾讯企业邮箱叫“客户端专用密码”，QQ 邮箱和 163 叫“授权码”，Gmail、iCloud 和 Fastmail 叫 app password。在邮箱网页版的设置里生成。</p></details><details><summary>没有网能用吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>看已经收下来的邮件、搜索邮件：可以。发邮件和收新邮件要联网。</p></details><details><summary>真的免费吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。</p></details>
+  </div>
+</div></section>
+
+<div class="end"><div class="wrap reveal">
+  <img src="../img/icon.webp" alt="" width="72" height="72" loading="lazy">
+  <h2 style="margin:0 auto">用你自己的邮箱试试。</h2>
+  <p class="sub" style="margin:14px auto 0">免费，不用注册，没有广告。</p>
+  <div class="cta" style="animation:none"><a class="btn primary" data-os="mac" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Mac 版 <small>M 系列芯片</small></a><a class="btn " data-os="win" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Windows 版 <small>Windows 10 / 11</small></a></div>
+</div></div>
+</main>
+
+<footer><div class="wrap">
+  <span class="grow">Ragdoll Mail · MIT</span>
+  <a href="https://github.com/erict16/ragdoll-mail">源代码</a>
+  <a href="https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md">命令行</a>
+  <a href="https://github.com/erict16/ragdoll-mail/issues">反馈问题</a>
+  <a href="../" hreflang="en">English</a>
+</div></footer>
+<script src="../main.js" defer></script>
+</body>
+</html>
