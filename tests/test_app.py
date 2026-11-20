@@ -157,6 +157,17 @@ class AppServer(unittest.TestCase):
             self.assertEqual(self.api("prefs", {"folded": bad})[1]["data"]["folded"], ["@mine", "Projects"])
         self.api("prefs", {"folded": []})
 
+    def test_prefs_widths_and_sidebar(self):
+        out = self.api("prefs", {"list_width": 420, "side_width": 260, "side_hidden": True})[1]["data"]
+        self.assertEqual((out["list_width"], out["side_width"], out["side_hidden"]), (420, 260, True))
+        # not a whole number in range, or not a true/false: the saved value stays
+        for bad in ({"list_width": "420px;color:red"}, {"list_width": 9999}, {"side_width": 1.5}, {"side_width": -3},
+                    {"side_width": True}, {"side_width": "260"}, {"side_hidden": "yes"}):
+            out = self.api("prefs", bad)[1]["data"]
+            self.assertEqual((out["list_width"], out["side_width"], out["side_hidden"]), (420, 260, True))
+        out = self.api("prefs", {"side_width": 0, "side_hidden": False})[1]["data"]
+        self.assertEqual((out["side_width"], out["side_hidden"]), (0, False))
+
     def test_flagged_list_and_count(self):
         rows = self.api("list", {"folder": "inbox"})[1]["data"]["rows"]
         i = next(r["id"] for r in rows if not r["flagged"])

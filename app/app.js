@@ -279,9 +279,25 @@ let tipEl = null, tipTimer = null;
 // narrow windows: the sidebar is a drawer, opened from the folder button in the list header (see style.css)
 const RAIL = matchMedia("(max-width: 860px)");
 const sideOpen = (on) => { $("#app").classList.add("side-moves"); $("#app").classList.toggle("side-open", on); };
+// the sidebar hidden (the button at its top, or Cmd+\): it becomes the same drawer as in a narrow window, and its
+// button moves to the start of the list header to bring it back
 function placeCompose() {
-  $("#app").classList.remove("side-open", "side-moves");     // no slide when the window only changes width
-  if (RAIL.matches) $(".list-head").append($("#compose-btn")); else $(".side-top").append($("#compose-btn"));
+  const app = $("#app"), drawer = RAIL.matches || !!PREFS.side_hidden, btn = $("#side-btn");
+  app.classList.remove("side-open", "side-moves");     // no slide when the window only changes width
+  app.classList.toggle("drawer", drawer);
+  if (drawer) $(".list-head").append($("#compose-btn")); else $(".side-top").append($("#compose-btn"));
+  btn.hidden = RAIL.matches;
+  if (drawer) $(".list-head").prepend(btn); else $(".side-top").prepend(btn);
+  const tip = t(drawer ? "side_show" : "side_hide");
+  Object.assign(btn.dataset, { tip, key: MOD + "\\" });
+  btn.setAttribute("aria-label", tip);
+}
+function toggleSide() {
+  if (RAIL.matches) { sideOpen(!$("#app").classList.contains("side-open")); return; }
+  PREFS.side_hidden = !PREFS.side_hidden;
+  tipEl?.remove(); tipEl = null;
+  placeCompose();
+  api("prefs", { side_hidden: PREFS.side_hidden }).catch(() => {});
 }
 RAIL.addEventListener("change", placeCompose);
 document.addEventListener("mouseover", (e) => {
@@ -400,7 +416,8 @@ function renderNav() {
     nav.append(b);
   }
   applyFold();
-  $("#account-addr").textContent = S.boot.demo ? t("demo") : S.boot.user;
+  const who_ = S.boot.demo ? t("demo") : S.boot.user, acct = $("#account");
+  acct.dataset.tip = who_; acct.setAttribute("aria-label", who_);
   const up = $("#update");
   up.hidden = !S.update;
   if (S.update) up.innerHTML = icon("download") + `<span>${esc(t("update_to", "v" + S.update.version))}</span>`;
@@ -1350,15 +1367,37 @@ const frames = new Set();
 const WEBKIT = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
 const SANDBOX = "allow-same-origin allow-popups allow-popups-to-escape-sandbox" + (WEBKIT ? " allow-scripts" : "");
 
+// Chinese mail often names Windows fonts (宋体, 等线, 微软雅黑...). A Mac has none of them, and the text fell back to
+// the browser's serif. These names are read as the system's Chinese sans font instead (PingFang on a Mac, YaHei on
+// Windows): the same shapes as the rest of the app, and no thin serif in long Chinese text.
+const CJK_FONTS = ["宋体", "SimSun", "新宋体", "NSimSun", "等线", "DengXian", "等线 Light", "DengXian Light", "微软雅黑", "Microsoft YaHei",
+  "黑体", "SimHei", "仿宋", "FangSong", "仿宋_GB2312", "FangSong_GB2312"];
+const CJK_FACES = CJK_FONTS.map((n) =>
+  `@font-face{font-family:"${n}";font-weight:100 500;src:local("PingFangSC-Regular"),local("PingFang SC Regular"),local("Microsoft YaHei"),local("Noto Sans CJK SC Regular")}` +
+  `@font-face{font-family:"${n}";font-weight:600 900;src:local("PingFangSC-Semibold"),local("PingFang SC Semibold"),local("Microsoft YaHei Bold"),local("Noto Sans CJK SC Bold")}`).join("");
+// long lines are hard to follow: the text column stops at about 44 characters' width (.rd-root), unless the mail
+// needs more room (a wide table or picture, a layout wider than that); then it gets the reader's whole width
+function fitColumn(d) {
+  const root = d.querySelector(".rd-root");
+  if (!root || root.classList.contains("rd-wide")) return;
+  const cap = root.clientWidth;
+  const cols = (tb) => Math.max(0, ...[...tb.rows].slice(0, 8).map((r) => r.cells.length));
+  if (root.scrollWidth > cap + 1 ||
+      [...root.querySelectorAll("table")].some((tb) => tb.offsetWidth >= cap - 1 && cols(tb) > 3) ||
+      [...d.images].some((i) => i.naturalWidth > cap && i.offsetWidth >= cap - 1)) root.classList.add("rd-wide");
+}
+
 function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
-  let css = `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
+  let css = CJK_FACES + `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
+.rd-root{max-width:44em}.rd-root.rd-wide{max-width:none}p,li{text-wrap:pretty}
 img{max-width:100%!important;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:${dark ? "#8fb8ff" : "#1a5fb4"}}
 blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}
 .rd-plain{white-space:pre-wrap;font-size:${textSize()}px}.rd-quote{color:${dark ? "#9a9a9a" : "#6e6e73"};margin-top:14px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}`;
   if (dark && !plain) {
-    css += `html,body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
+    // #191919 is the reader's dark background and what #e6e6e6 turns into, so the space beside the capped column matches
+    css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
@@ -1432,17 +1471,18 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d) return;
     minText(d);
     if (quote) collapseQuote(st);
+    fitColumn(d);
     fit();
     // the frame's own observer: it goes away with the frame; one fit per frame at most
     try {
       let q = 0;
       const ro = new d.defaultView.ResizeObserver(() => {
         if (!frame.isConnected) { ro.disconnect(); return; }
-        if (!q) q = requestAnimationFrame(() => { q = 0; shapeImgs(d); fit(); });
+        if (!q) q = requestAnimationFrame(() => { q = 0; shapeImgs(d); fitColumn(d); fit(); });
       });
       ro.observe(d.body);
     } catch { /* old engine */ }
-    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fit(); });
+    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fitColumn(d); fit(); });
     shapeImgs(d);
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
@@ -2296,6 +2336,7 @@ function zoneChoices() {
 function relabel() {
   if (!S.boot) return;
   $("#compose-btn").dataset.tip = t("compose");
+  placeCompose();
   $("#search").placeholder = t("search");
   $("#search-btn").dataset.tip = t("search");
   $("#banner-btn").textContent = t("settings");
@@ -2382,7 +2423,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], [MOD + "\\", "side_toggle"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -2407,6 +2448,7 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
+  if (mod && e.key === "\\") { e.preventDefault(); toggleSide(); return; }
   if (mod && !e.altKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
     e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
   }
@@ -2475,6 +2517,38 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
       api("prefs", { list_width: $("#list-col").offsetWidth }).catch(() => {});
     };
     addEventListener("mousemove", move); addEventListener("mouseup", up);
+  });
+})();
+
+// the sidebar's width: drag its right edge (180 to 360 pixels); a double-click goes back to the default width
+(() => {
+  const grip = $("#side-grip"), app = $("#app");
+  const SIDE_MIN = 180, SIDE_MAX = 360;
+  grip.addEventListener("mousedown", (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    const x0 = e.clientX, w0 = $(".side").offsetWidth;
+    let x = x0, q = 0;
+    const kids = [...$("#pane").children];
+    for (const k of kids) k.style.width = k.offsetWidth + "px";
+    app.classList.add("side-sizing");
+    const apply = () => { q = 0; app.style.setProperty("--side-pick", Math.round(Math.max(SIDE_MIN, Math.min(SIDE_MAX, w0 + x - x0))) + "px"); };
+    const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
+    const up = () => {
+      removeEventListener("mousemove", move); removeEventListener("mouseup", up);
+      if (q) { cancelAnimationFrame(q); apply(); }
+      app.classList.remove("side-sizing");
+      for (const k of kids) k.style.width = "";
+      if (x === x0) return;
+      PREFS.side_width = $(".side").offsetWidth;
+      api("prefs", { side_width: PREFS.side_width }).catch(() => {});
+    };
+    addEventListener("mousemove", move); addEventListener("mouseup", up);
+  });
+  grip.addEventListener("dblclick", () => {
+    app.style.removeProperty("--side-pick");
+    PREFS.side_width = 0;
+    api("prefs", { side_width: 0 }).catch(() => {});
   });
 })();
 
@@ -2565,6 +2639,8 @@ function start(boot) {
   $("#compose-btn").dataset.key = "C";
   $("#compose-btn").onclick = () => { sideOpen(false); openCompose({ mode: "new" }); };
   $("#here-btn").onclick = () => sideOpen(true);
+  $("#side-btn").innerHTML = icon("panel-left");
+  $("#side-btn").onclick = toggleSide;
   $("#side-scrim").onclick = () => sideOpen(false);
   placeCompose();
   $("#account").onclick = accountMenu;
@@ -2594,5 +2670,6 @@ function start(boot) {
   if (!b.prefs) try { PREFS = await api("prefs", {}); } catch { /* defaults */ }
   setLocale(PREFS);
   if (PREFS.list_width) $("#app").style.setProperty("--list-w", PREFS.list_width + "px");
+  if (PREFS.side_width) $("#app").style.setProperty("--side-pick", PREFS.side_width + "px");
   if (!b.configured) showSetup(); else start(b);
 })();

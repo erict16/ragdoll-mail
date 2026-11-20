@@ -26,7 +26,7 @@
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
           "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
-  --side-w: 232px;
+  --side-def: 232px;
   --head-h: 52px;
   color-scheme: light;
 }
@@ -80,11 +80,18 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ---------- layout */
 /* the list's width is set on .app alone and not passed down, so a drag of the line restyles one element, not the page */
 @property --list-w { syntax: "<length>"; inherits: false; initial-value: 372px; }
-.app { display: grid; grid-template-columns: var(--side-w) clamp(280px, var(--list-w), calc(100vw - var(--side-w) - 400px)) 0 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
-.side { min-height: 0; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; padding: 0 10px 10px; }
+/* the sidebar's width: the one dragged to (--side-pick, set in app.js) or the default; none while it is a drawer */
+.app { --side-w: var(--side-pick, var(--side-def));
+  display: grid; grid-template-columns: var(--side-w) clamp(280px, var(--list-w), calc(100vw - var(--side-w) - 400px)) 0 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
+.side { position: relative; min-height: 0; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; padding: 0 10px 10px; }
 .side-top { height: var(--head-h); flex: none; display: flex; align-items: center; margin: 0 -10px; padding: 0 10px 0 14px; }
 .native.mac:not(.fullscreen) .side-top { padding-left: 88px; }
 .side-top .grow { align-self: stretch; }
+/* the sidebar's right edge: drag to make it wider or narrower, double-click for the default width */
+.side-grip { position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; z-index: 3; }
+.app.side-sizing, .app.side-sizing * { cursor: col-resize !important; user-select: none; }
+.app.side-sizing iframe { pointer-events: none; }
+.app.side-sizing .pane { overflow-x: hidden; }
 .nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; min-height: 0; overflow-y: auto; margin-inline: -10px; padding-inline: 10px; }
 .nav-item { flex: none; }
 .nav-item.other { padding-left: calc(10px + var(--depth, 0) * 16px); }
@@ -121,9 +128,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .nav-sec .nav-sec-add { position: absolute; right: 4px; opacity: 0; transition: opacity .15s; }
 .nav-sec:hover .nav-sec-add, .nav-sec-add:focus-visible { opacity: 1; }
 .nav-item .count:empty { display: none; }
-.account { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 10px; border-radius: 8px; color: var(--text-2); text-align: left; flex: none; transition: background-color .15s; }
-.account:hover { background: var(--hover); }
-.account-addr { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.account { margin: 4px 0 0 4px; }
 .update-pill { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); text-align: left; font-size: 12px; }
 .update-pill:hover { border-color: var(--line-2); }
 
@@ -426,7 +431,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .setup-card .btn.primary { width: 100%; height: 36px; margin-top: 6px; }
 
 /* plain-text mail inside the frame is styled by the frame itself (app.js) */
-@media (max-width: 1100px) { :root { --side-w: 200px; } }
+@media (max-width: 1100px) { :root { --side-def: 200px; } }
 /* switching light/dark eases over instead of flashing */
 .theming, .theming * { transition: background-color .3s ease, border-color .3s ease, color .3s ease, fill .3s ease !important; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -523,40 +528,45 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 /* narrow windows: the sidebar is a drawer; the button in the list header names the folder and opens it */
 .here-btn, .side-scrim { display: none; }
 .nav-item.new { animation: enter .24s var(--ease); }
+/* the sidebar as a drawer: in narrow windows, and when it is hidden (app.js sets .drawer); it slides in from the
+   folder button in the list header */
+.app.drawer { --side-w: 0px; }
+.app.drawer .list-col { grid-column: 2; }
+.app.drawer .splitter { grid-column: 3; }
+.app.drawer .reader { grid-column: 4; }
+.app.drawer .side { position: fixed; z-index: 45; inset: 0 auto 0 0; width: min(280px, 84vw); padding-top: 10px; transform: translateX(-104%); visibility: hidden; }
+.app.drawer.side-moves .side { transition: transform .26s var(--ease), visibility 0s .26s; }
+.app.drawer.side-open .side { transform: none; visibility: visible; box-shadow: var(--shadow); }
+.app.drawer.side-open.side-moves .side { transition: transform .26s var(--ease); }
+.app.drawer .side-top { display: none; }
+.native.mac:not(.fullscreen) .app.drawer .side-top { display: flex; }
+.native.mac:not(.fullscreen) .app.drawer .side { padding-top: 0; }
+.native.mac:not(.fullscreen) .app.drawer .list-head { padding-left: 88px; }
+.app.drawer .side-scrim { display: block; position: fixed; inset: 0; z-index: 44; background: rgba(0,0,0,.22); opacity: 0; pointer-events: none; }
+.app.drawer.side-moves .side-scrim { transition: opacity .22s ease-out; }
+:root[data-theme="dark"] .app.drawer .side-scrim { background: rgba(0,0,0,.5); }
+.app.drawer.side-open .side-scrim { opacity: 1; pointer-events: auto; }
+/* same lines as the rows below: the box starts 10px in, the folder's name 34px in, its icon in the 24px between */
+.app.drawer .here-btn { display: inline-flex; align-items: center; gap: 4px; flex: none; position: relative; height: 34px; max-width: 42%; margin: 0 6px 0 0; padding: 0 10px 0 4px; border-radius: 8px; color: var(--text); font-weight: 600; transition: background-color .15s; }
+.app.drawer .here-btn:hover { background: var(--hover); }
+.app.drawer .here-btn:active .i { transform: scale(.92); }
+.app.drawer .here-btn .i { color: var(--text-2); transition: transform .2s var(--ease); }
+.app.drawer .here-btn .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.app.drawer .here-btn.dot::after { content: ""; position: absolute; top: 6px; left: 17px; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 2px var(--bg); }
+.app.drawer .list-head #compose-btn { margin-left: 2px; }
+.app.drawer .head-title { display: none; }
+.app.drawer .search { margin-left: auto; }
+.app.drawer .side-grip { display: none; }
+#side-btn[hidden] { display: none; }
+.list-head #side-btn { margin-right: 2px; }
 @media (max-width: 860px) {
-  :root { --side-w: 0px; }
-  .list-col { grid-column: 2; }
-  .splitter { grid-column: 3; }
-  .reader { grid-column: 4; }
-  .side { position: fixed; z-index: 45; inset: 0 auto 0 0; width: min(280px, 84vw); padding-top: 10px; transform: translateX(-104%); visibility: hidden; }
-  .app.side-moves .side { transition: transform .26s var(--ease), visibility 0s .26s; }
-  .app.side-open .side { transform: none; visibility: visible; box-shadow: var(--shadow); }
-  .app.side-open.side-moves .side { transition: transform .26s var(--ease); }
-  .side-top { display: none; }
-  .native.mac:not(.fullscreen) .side-top { display: flex; }
-  .native.mac:not(.fullscreen) .side { padding-top: 0; }
-  .native.mac:not(.fullscreen) .list-head { padding-left: 88px; }
-  .side-scrim { display: block; position: fixed; inset: 0; z-index: 44; background: rgba(0,0,0,.22); opacity: 0; pointer-events: none; }
-  .app.side-moves .side-scrim { transition: opacity .22s ease-out; }
-  :root[data-theme="dark"] .side-scrim { background: rgba(0,0,0,.5); }
-  .app.side-open .side-scrim { opacity: 1; pointer-events: auto; }
-  /* same lines as the rows below: the box starts 10px in, the folder's name 34px in, its icon in the 24px between */
-  .here-btn { display: inline-flex; align-items: center; gap: 4px; flex: none; position: relative; height: 34px; max-width: 42%; margin: 0 6px 0 0; padding: 0 10px 0 4px; border-radius: 8px; color: var(--text); font-weight: 600; transition: background-color .15s; }
-  .here-btn:hover { background: var(--hover); }
-  .here-btn:active .i { transform: scale(.92); }
-  .here-btn .i { color: var(--text-2); transition: transform .2s var(--ease); }
-  .here-btn .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .here-btn.dot::after { content: ""; position: absolute; top: 6px; left: 17px; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 2px var(--bg); }
-  .list-head #compose-btn { margin-left: 2px; }
-  .head-title { display: none; }
-  .search { margin-left: auto; }
   .toolbar { padding: 0 12px; }
   .doc, .compose { padding-left: 20px; padding-right: 10px; }
 }
 @media (max-width: 680px) {
   .app { grid-template-columns: var(--side-w) minmax(0, 1fr); }
   .splitter { display: none; }
-  .list-col, .reader { grid-column: 2; grid-row: 1; }
+  .app.drawer .list-col, .app.drawer .reader { grid-column: 2; grid-row: 1; }
   .list-col { border-right: 0; }
   .app.reading .list-col, .app:not(.reading) .reader { display: none; }
   .app.reading .reader { animation: enter .22s var(--ease); }

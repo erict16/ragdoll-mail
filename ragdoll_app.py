@@ -500,8 +500,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     html = R.text_to_html(body)
     if inline:
         html += '<div><br></div><div><img src="cid:photo1@demo" width="480" height="300" alt="site photo"></div>'
-    msg.add_alternative('<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px">%s</div>' % html,
-                        subtype="html")
+    # Chinese mail from Windows names 宋体, as real mail from China often does
+    font = "宋体,SimSun" if re.search(r"[\u4e00-\u9fff]", body) else "Helvetica,Arial,sans-serif"
+    msg.add_alternative('<div style="font-family:%s;font-size:14px">%s</div>' % (font, html), subtype="html")
     if inline:
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
@@ -1044,7 +1045,15 @@ class Backend:
 
     def api_prefs(self, a):
         p = self.prefs()
-        p.update({k: v for k, v in a.items() if k in ("theme", "list_width", "sidebar")})
+        p.update({k: v for k, v in a.items() if k in ("theme", "sidebar")})
+        # widths in pixels (the page puts them in its style): whole numbers in a sane range; 0 is the default width
+        lw, sw = a.get("list_width"), a.get("side_width")
+        if type(lw) is int and 200 <= lw <= 1200:
+            p["list_width"] = lw
+        if type(sw) is int and (sw == 0 or 140 <= sw <= 400):
+            p["side_width"] = sw
+        if isinstance(a.get("side_hidden"), bool):
+            p["side_hidden"] = a["side_hidden"]
         if a.get("lang") in LANGS:
             p["lang"] = a["lang"]
         if isinstance(a.get("tz"), str) and re.fullmatch(r"system|[A-Za-z][A-Za-z0-9_+\-/]{0,63}", a["tz"]):
