@@ -41,6 +41,13 @@ It was made for one problem. On many mailboxes, and on Tencent Exmail most of al
 1. **Download** the app from the [latest release](https://github.com/erict16/ragdoll-mail/releases/latest):
    - Mac (M1 or newer): `ragdoll-mail-mac.dmg`
    - Windows 10 or 11: `ragdoll-mail-windows.zip`
+
+   Or, on a Mac with [Homebrew](https://brew.sh) (this also installs the `ragdoll` command):
+   ```sh
+   brew tap erict16/tap
+   brew trust erict16/tap
+   brew install --cask ragdoll-mail
+   ```
 2. **Open it.** We have not paid Apple or Microsoft for a signature yet, so the system asks once:
    - Mac: when macOS says it could not check the app, open **System Settings → Privacy & Security**, scroll down and press **Open Anyway**. (On older macOS: right-click the app and choose **Open**.)
    - Windows: choose **More info**, then **Run anyway**.

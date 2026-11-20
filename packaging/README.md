@@ -12,11 +12,14 @@ This points the cask and the winget files at the version in `pyproject.toml`.
 
 ## Homebrew (Mac)
 
-One time: make the public repo `erict16/homebrew-tap` and copy `homebrew/Casks/ragdoll-mail.rb`
-into its `Casks/` folder. After that, people install with:
+The tap is the public repo [erict16/homebrew-tap](https://github.com/erict16/homebrew-tap). After each
+release, run `bump.py` and copy `homebrew/Casks/ragdoll-mail.rb` into its `Casks/` folder. People install with
+(Homebrew asks once to trust a tap that is not its own):
 
 ```bash
-brew install --cask erict16/tap/ragdoll-mail
+brew tap erict16/tap
+brew trust erict16/tap
+brew install --cask ragdoll-mail
 ```
 
 This also gives them the `ragdoll` command. The main Homebrew list (homebrew/cask) needs an app

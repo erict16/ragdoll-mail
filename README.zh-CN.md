@@ -41,6 +41,13 @@ Ragdoll Mail 是一个收发邮件的软件，和苹果自带的“邮件”、O
 1. **下载。** 到[最新版本页面](https://github.com/erict16/ragdoll-mail/releases/latest)下载：
    - Mac（M1 及更新的机型）：`ragdoll-mail-mac.dmg`
    - Windows 10 / 11：`ragdoll-mail-windows.zip`
+
+   也可以在 Mac 上用 [Homebrew](https://brew.sh) 安装（会一起装好 `ragdoll` 命令）：
+   ```sh
+   brew tap erict16/tap
+   brew trust erict16/tap
+   brew install --cask ragdoll-mail
+   ```
 2. **打开。** 我们还没有向苹果和微软购买签名，所以第一次打开时系统会问一次：
    - Mac：提示“无法验证”时，打开 **系统设置 → 隐私与安全性**，往下拉，点 **仍要打开**。（旧版 macOS：右键点软件，选 **打开**。）
    - Windows：点 **更多信息**，再点 **仍要运行**。
