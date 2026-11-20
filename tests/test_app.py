@@ -958,6 +958,24 @@ class DockBadge(OwnBackend):
         self.assertIsNone(self.b.badge_n)                           # so it is shown once there is one
 
 
+
+
+class GuessServers(OwnBackend):
+    def test_known_domains_bring_their_port(self):
+        self.assertEqual(self.b.api_guess_servers({"user": "a@icloud.com"})["smtp_port"], 587)
+        self.assertEqual(self.b.api_guess_servers({"user": "a@qq.com"}),
+                         {"imap_host": "imap.qq.com", "smtp_host": "smtp.qq.com", "smtp_port": 465})
+
+    def test_company_domain_asks_who_receives_its_mail(self):
+        asked = []
+        self.patch(A.R, "servers_from_mx", lambda d: asked.append(d) or
+                   {"imap_host": "imap.exmail.qq.com", "smtp_host": "smtp.exmail.qq.com", "smtp_port": 465})
+        self.b.demo = False
+        self.assertEqual(self.b.api_guess_servers({"user": "eric@company.com"})["imap_host"], "imap.exmail.qq.com")
+        self.assertEqual(asked, ["company.com"])
+        self.patch(A.R, "servers_from_mx", lambda d: None)
+        self.assertEqual(self.b.api_guess_servers({"user": "eric@company.com"})["imap_host"], "imap.company.com")
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1207,3 +1207,68 @@ class PasswordFromShell(unittest.TestCase):
     def test_odd_variable_names_are_never_put_in_a_command(self):
         self.assertIsNone(ragdoll.shell_env("X; rm -rf ~"))
         self.assertEqual(self.calls, [])
+
+
+class ServersFromMx(unittest.TestCase):
+    """A company address (name@company.com) finds its mail service from the domain's MX records."""
+    MAC = ("Server:\t\t192.168.1.1\nAddress:\t192.168.1.1#53\n\nNon-authoritative answer:\n"
+           "example.com\tmail exchanger = 10 mxbiz2.qq.com.\nexample.com\tmail exchanger = 5 mxbiz1.qq.com.\n")
+    WIN = ("Server:  router\nAddress:  192.168.1.1\n\nNon-authoritative answer:\n"
+           "example.com\tMX preference = 10, mail exchanger = mx2.zoho.eu\n"
+           "example.com\tMX preference = 5, mail exchanger = mx.zoho.eu\n")
+
+    def setUp(self):
+        self.saved = ragdoll.subprocess.run
+        self.out, self.calls = "", []
+
+        def run(argv, **kw):
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, self.out, "")
+        ragdoll.subprocess.run = run
+        self.addCleanup(setattr, ragdoll.subprocess, "run", self.saved)
+
+    def test_mac_output_best_first(self):
+        self.out = self.MAC
+        self.assertEqual(ragdoll.mx_hosts("example.com"), ["mxbiz1.qq.com", "mxbiz2.qq.com"])
+        self.assertEqual(ragdoll.servers_from_mx("example.com"),
+                         {"imap_host": "imap.exmail.qq.com", "smtp_host": "smtp.exmail.qq.com", "smtp_port": 465})
+
+    def test_windows_output_and_regional_hosts(self):
+        self.out = self.WIN
+        self.assertEqual(ragdoll.servers_from_mx("example.com")["imap_host"], "imap.zoho.eu")
+
+    def test_unknown_service_and_odd_domains(self):
+        self.out = "example.com\tmail exchanger = 10 mail.example.com.\n"
+        self.assertIsNone(ragdoll.servers_from_mx("example.com"))
+        self.assertEqual(ragdoll.mx_hosts("x; rm -rf ~"), [])
+        self.assertEqual(ragdoll.mx_hosts("-type=any"), [])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_no_nslookup(self):
+        def missing(*a, **k):
+            raise FileNotFoundError("nslookup")
+        ragdoll.subprocess.run = missing
+        self.assertIsNone(ragdoll.servers_from_mx("example.com"))
+
+
+class SmtpPorts(unittest.TestCase):
+    def test_587_must_switch_to_tls(self):
+        made = []
+
+        class Plain:
+            def __init__(self, host, port, timeout):
+                made.append((host, port))
+
+            def starttls(self, context):
+                raise ragdoll.smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+            def close(self):
+                made.append("closed")
+        saved = ragdoll.smtplib.SMTP
+        ragdoll.smtplib.SMTP = Plain
+        try:
+            with self.assertRaises(ragdoll.smtplib.SMTPNotSupportedError):
+                ragdoll.smtp_open("smtp.example.com", 587, 5)
+        finally:
+            ragdoll.smtplib.SMTP = saved
+        self.assertEqual(made, [("smtp.example.com", 587), "closed"])

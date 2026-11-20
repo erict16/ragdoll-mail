@@ -57,7 +57,7 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
-import json, mimetypes, os, re, shlex, smtplib, sqlite3, subprocess, sys, time, urllib.parse
+import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
@@ -2293,6 +2293,63 @@ def cmd_send(a):
     print(json.dumps(send_draft(folder, uid), ensure_ascii=False, indent=1))
 
 
+def smtp_open(host, port, timeout):
+    """465 is TLS from the first byte. 587 (iCloud and others) and 25 start plain and must switch to
+    TLS with STARTTLS before anything else; a server that cannot is refused, never used in the clear."""
+    if int(port) in (587, 25):
+        s = smtplib.SMTP(host, int(port), timeout=timeout)
+        try:
+            s.starttls(context=ssl.create_default_context())
+        except Exception:
+            with contextlib.suppress(Exception):
+                s.close()
+            raise
+        return s
+    return smtplib.SMTP_SSL(host, int(port), timeout=timeout)
+
+
+# A company domain's mail servers, from who receives its mail (its MX records):
+# (MX host pattern, IMAP host, SMTP host, SMTP port). {1} is the pattern's first group.
+MX_SERVERS = (
+    (r"mxbiz\d*\.qq\.com", "imap.exmail.qq.com", "smtp.exmail.qq.com", 465),          # Tencent Exmail
+    (r"(?:.+\.)?aspmx\.l\.google\.com|.+\.googlemail\.com|smtp\.google\.com",
+     "imap.gmail.com", "smtp.gmail.com", 465),                                       # Google Workspace
+    (r".+\.mxhichina\.com", "imap.qiye.aliyun.com", "smtp.qiye.aliyun.com", 465),     # Alibaba Mail
+    (r".+\.mxmail\.netease\.com|.*qiye163mx.*", "imap.qiye.163.com", "smtp.qiye.163.com", 465),  # NetEase
+    (r".+\.mail\.icloud\.com", "imap.mail.me.com", "smtp.mail.me.com", 587),           # iCloud custom domain
+    (r".+\.messagingengine\.com", "imap.fastmail.com", "smtp.fastmail.com", 465),       # Fastmail
+    (r"mx\d*\.zoho\.(com|eu|in|com\.au|com\.cn|jp)", "imap.zoho.{1}", "smtp.zoho.{1}", 465),  # Zoho
+    (r"mx\.yandex\.(?:net|ru)", "imap.yandex.com", "smtp.yandex.com", 465),             # Yandex 360
+)
+
+
+def mx_hosts(domain, timeout=6):
+    """The domain's mail exchangers, best first, from the system's own DNS (nslookup is on every
+    Mac and Windows). [] when it cannot tell."""
+    if not re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", domain or ""):
+        return []
+    kw = {"creationflags": 0x08000000} if sys.platform == "win32" else {}   # no console window
+    try:
+        out = subprocess.run(["nslookup", "-type=mx", domain], capture_output=True, text=True,
+                             timeout=timeout, **kw).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    found = re.findall(r"(?:MX preference = (\d+), )?mail exchanger = (?:(\d+) )?(\S+)", out or "")
+    hosts = sorted((int(a or b or 0), h.rstrip(".").lower()) for a, b, h in found)
+    return list(dict.fromkeys(h for _, h in hosts))
+
+
+def servers_from_mx(domain):
+    """{imap_host, smtp_host, smtp_port} for a domain whose mail a known service receives, else None."""
+    for mx in mx_hosts(domain):
+        for pat, imap, smtp, port in MX_SERVERS:
+            m = re.fullmatch(pat, mx)
+            if m:
+                g = (m.group(0),) + m.groups()
+                return {"imap_host": imap.format(*g), "smtp_host": smtp.format(*g), "smtp_port": port}
+    return None
+
+
 def send_draft(folder, uid, wait=3):
     """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
     answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
@@ -2315,7 +2372,7 @@ def send_draft(folder, uid, wait=3):
     del msg["Date"]
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
     out = msg.as_bytes(policy=OUT_POLICY)
-    s = smtplib.SMTP_SSL(CFG.smtp["host"], CFG.smtp["port"], timeout=300)
+    s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
     try:
         s.login(CFG.user, password())
         refused = s.sendmail(CFG.user, rcpts, out)

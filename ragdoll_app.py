@@ -65,7 +65,7 @@ FOLDER_NAMES = {
     "junk": ("junk", "spam", "junk e-mail", "junk email", "[gmail]/spam", "垃圾邮件", "垃圾箱"),
     "archive": ("archive", "archives", "归档"),
 }
-PROVIDERS = {       # domain -> (imap host, smtp host); all on 993 / 465
+PROVIDERS = {       # domain -> (imap host, smtp host[, smtp port]); IMAP on 993, SMTP on 465 unless given
     "gmail.com": ("imap.gmail.com", "smtp.gmail.com"),
     "googlemail.com": ("imap.gmail.com", "smtp.gmail.com"),
     "qq.com": ("imap.qq.com", "smtp.qq.com"),
@@ -80,6 +80,9 @@ PROVIDERS = {       # domain -> (imap host, smtp host); all on 993 / 465
     "zoho.com": ("imap.zoho.com", "smtp.zoho.com"),
     "gmx.com": ("imap.gmx.com", "mail.gmx.com"),
     "yandex.com": ("imap.yandex.com", "smtp.yandex.com"),
+    "icloud.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
+    "me.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
+    "mac.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
 }
 
 
@@ -2170,9 +2173,12 @@ class Backend:
     def api_guess_servers(self, a):
         dom = (a.get("user") or "").rpartition("@")[2].lower()
         if dom in PROVIDERS:
-            i, s = PROVIDERS[dom]
-            return {"imap_host": i, "smtp_host": s}
-        return {"imap_host": "imap." + dom if dom else "", "smtp_host": "smtp." + dom if dom else ""}
+            i, s, *port = PROVIDERS[dom]
+            return {"imap_host": i, "smtp_host": s, "smtp_port": (port or [465])[0]}
+        # a company domain: who receives its mail says whose servers it uses (Exmail, Google, ...)
+        found = None if self.demo or not dom else R.servers_from_mx(dom)
+        return found or {"imap_host": "imap." + dom if dom else "", "smtp_host": "smtp." + dom if dom else "",
+                         "smtp_port": 465}
 
     def api_test(self, a):
         """Sign in to IMAP and SMTP with these settings; find the special folders."""
@@ -2201,7 +2207,7 @@ class Backend:
             with contextlib.suppress(Exception):
                 m.logout()
         try:
-            s = smtplib.SMTP_SSL(shost, sport, timeout=20)
+            s = R.smtp_open(shost, sport, 20)
             try:
                 s.login(user, pw)
             finally:

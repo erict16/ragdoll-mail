@@ -2202,7 +2202,7 @@ async function openSettings() {
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
       if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", s.password_env)));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number", { "data-host": "smtp_port" }))));
       const res = el("div");
       const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
@@ -2384,7 +2384,7 @@ function showSetup() {
     email.addEventListener("change", async () => {
       if (!v.user.includes("@") || guessed === v.user) return;
       guessed = v.user;
-      try { const g = await api("guess_servers", { user: v.user }); v.imap_host = g.imap_host; v.smtp_host = g.smtp_host; const n = $$("#setup input[data-host]"); n.forEach((x) => { x.value = v[x.dataset.host]; }); } catch { /* typed by hand */ }
+      try { Object.assign(v, await api("guess_servers", { user: v.user })); $$("#setup input[data-host]").forEach((x) => { x.value = v[x.dataset.host] ?? ""; }); } catch { /* typed by hand */ }
     });
     f.append(lab(t("name"), inp("name")), lab(t("email"), email), lab(t("password"), inp("password", "password")));
     const dis = el("button", { class: "disclose" + (open ? " open" : ""), onclick: () => { open = !open; draw(); }, html: icon("chevron-right", "small") + esc(t("servers")) });
@@ -2408,7 +2408,7 @@ function showSetup() {
   async function signIn() {
     if (busy) return;
     if (!v.imap_host && v.user.includes("@")) {
-      try { const g = await api("guess_servers", { user: v.user }); v.imap_host = g.imap_host; v.smtp_host = g.smtp_host; } catch { /* below */ }
+      try { Object.assign(v, await api("guess_servers", { user: v.user })); } catch { /* below */ }
     }
     busy = true; err = ""; draw();
     try {
