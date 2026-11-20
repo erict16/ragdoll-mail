@@ -633,3 +633,22 @@ const MORE7 = {
   "de": { cli: "Befehlszeile", cli_install: "Installieren", cli_reinstall: "Erneut installieren", draft_ready: "Entwurf fertig: %s" },
 };
 for (const [k, v] of Object.entries(MORE7)) Object.assign(LANGS[k], v);
+
+// the warning banner over the list: what it means, and a button that names the fix
+const MORE8 = {
+  "en": { b_pw_title: "No password saved", b_pw_sub: "New mail can't come in until it is.", b_pw_btn: "Add password",
+    b_acct_title: "No account yet", b_acct_btn: "Add account", b_signin_title: "Sign-in failed",
+    b_signin_sub: "Check the address and password.", b_signin_btn: "Check", b_fix: "Settings" },
+  "zh-Hans": { b_pw_title: "还没有保存密码", b_pw_sub: "保存后才能收到新邮件。", b_pw_btn: "添加密码",
+    b_acct_title: "还没有账户", b_acct_btn: "添加账户", b_signin_title: "登录失败",
+    b_signin_sub: "请检查邮箱地址和密码。", b_signin_btn: "检查", b_fix: "设置" },
+  "zh-Hant": { b_pw_title: "尚未儲存密碼", b_pw_sub: "儲存後才能收到新郵件。", b_pw_btn: "新增密碼",
+    b_acct_title: "尚未有帳號", b_acct_btn: "新增帳號", b_signin_title: "登入失敗",
+    b_signin_sub: "請檢查郵件地址和密碼。", b_signin_btn: "檢查", b_fix: "設定" },
+  "ja": { b_pw_title: "パスワードが保存されていません", b_pw_btn: "パスワードを追加", b_signin_title: "サインインできません", b_fix: "設定" },
+  "ko": { b_pw_title: "저장된 비밀번호가 없습니다", b_pw_btn: "비밀번호 추가", b_signin_title: "로그인 실패", b_fix: "설정" },
+  "es": { b_pw_title: "No hay contraseña guardada", b_pw_btn: "Añadir contraseña", b_signin_title: "No se pudo iniciar sesión", b_fix: "Ajustes" },
+  "fr": { b_pw_title: "Aucun mot de passe enregistré", b_pw_btn: "Ajouter", b_signin_title: "Échec de la connexion", b_fix: "Réglages" },
+  "de": { b_pw_title: "Kein Passwort gespeichert", b_pw_btn: "Passwort hinzufügen", b_signin_title: "Anmeldung fehlgeschlagen", b_fix: "Einstellungen" },
+};
+for (const [k, v] of Object.entries(MORE8)) Object.assign(LANGS[k], v);

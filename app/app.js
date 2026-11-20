@@ -2359,7 +2359,6 @@ function relabel() {
   placeCompose();
   $("#search").placeholder = t("search");
   $("#search-btn").dataset.tip = t("search");
-  $("#banner-btn").textContent = t("settings");
   syncFilterUI();
   renderNav();
   renderRows();
@@ -2659,9 +2658,23 @@ function applyStatus(st) {
   renderNav();
   const b = $("#banner");
   if (st.error && !S.boot.demo) {
+    // known problems get a short title, what it means, and a button named for the fix;
+    // anything else shows its first sentence as the title and the rest below
+    const known = [[/^No password saved\./, "b_pw"], [/^No account yet\./, "b_acct"], [/^Sign-in failed\./, "b_signin"]]
+      .find(([re]) => re.test(st.error));
+    let title, sub, act;
+    if (known) {
+      const k = known[1];
+      title = t(k + "_title"); sub = STR[k + "_sub"] || ""; act = t(k + "_btn");
+    } else {
+      const text = tr(st.error), m = text.match(/^(.+?[.。])\s*(.*)$/s);
+      title = m ? m[1].replace(/[.。]$/, "") : text; sub = m ? m[2] : ""; act = t("b_fix");
+    }
+    $("#banner-title").textContent = title;
+    $("#banner-sub").textContent = sub;
+    $("#banner-sub").hidden = !sub;
+    $("#banner-btn").textContent = act;
     b.hidden = false;
-    $("#banner-text").textContent = tr(st.error);
-    $("#banner-btn").textContent = t("settings");
   } else b.hidden = true;
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
@@ -2707,7 +2720,6 @@ function start(boot) {
   $("#search").placeholder = t("search");
   Object.assign($("#search-btn").dataset, { tip: t("search"), key: MAC ? "⌘K" : "Ctrl K" });
   $("#search-btn").setAttribute("aria-label", t("search"));
-  $("#banner-btn").textContent = t("settings");
   document.querySelectorAll("[data-i]").forEach((n) => { n.innerHTML = svg(n.dataset.i); });
   renderNav();
   showEmpty();
