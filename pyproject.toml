@@ -1,6 +1,6 @@
 [project]
 name = "ragdoll-mail"
-version = "0.8.6"
+version = "0.8.7"
 description = "Free mail app for Mac and Windows with fast local search for any IMAP mailbox, plus a command line for AI agents"
 requires-python = ">=3.10"
 license = {text = "MIT"}
