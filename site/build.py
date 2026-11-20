@@ -40,7 +40,9 @@ EN = {
     "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
     "first": "Not signed by Apple or Microsoft yet. The first time, choose Open Anyway (Mac: System Settings → "
              "Privacy &amp; Security) or Run anyway (Windows: More info).",
-    "shot_alt": "Ragdoll Mail showing the inbox and an open mail with two attachments",
+    "demo": "en", "demo_name": "Ragdoll Mail in 30 seconds", "demo_len": "PT32S",
+    "shot_alt": "Ragdoll Mail in use: search finds a mail as you type, a mail with two attachments opens, a reply is "
+                "written, the send is undone, and the reply is set to go tomorrow morning",
     "s_kick": "Search", "s_h2": "Your mailbox's search gives back everything. Ours gives back the&nbsp;mail.",
     "s_sub": "We typed the same words into both. On a real Tencent Exmail mailbox with 6,442 mails, its own "
              "search returned 4,988 mails every time, even for a word we made up.",
@@ -120,7 +122,8 @@ ZH = dict(EN, **{
     "lead": "用你现在的邮箱登录就行。腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud，还有任何 IMAP 邮箱都能用。",
     "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
     "first": "还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。",
-    "shot_alt": "Ragdoll Mail 的收件箱，打开了一封带两个附件的邮件",
+    "demo": "zh", "demo_name": "30 秒看 Ragdoll Mail", "demo_len": "PT30S",
+    "shot_alt": "Ragdoll Mail 使用演示：边打字边搜到邮件，打开一封带两个附件的邮件，写回复，撤销发送，再定到明天上午发送",
     "s_kick": "搜索", "s_h2": "邮箱自带的搜索什么都给你。我们只给你要找的那封。",
     "s_sub": "同样的词，两边一起搜。在一个有 6,442 封邮件的真实腾讯企业邮箱里，它自带的搜索每次都返回 4,988 封，"
              "连随手编的词也一样。",
@@ -182,6 +185,9 @@ def page(L):
          "description": L["desc"], "url": url, "downloadUrl": REPO + "/releases/latest",
          "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": True, "image": SITE + "img/og.png",
          "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}},
+        {"@context": "https://schema.org", "@type": "VideoObject", "name": L["demo_name"], "description": L["shot_alt"],
+         "inLanguage": L["lang"], "thumbnailUrl": SITE + "media/demo-%s.webp" % L["demo"],
+         "contentUrl": SITE + "media/demo-%s.mp4" % L["demo"], "uploadDate": "2026-11-21", "duration": L["demo_len"]},
         {"@context": "https://schema.org", "@type": "FAQPage",
          "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in L["q"]]},
     ]
@@ -228,6 +234,7 @@ def page(L):
 <meta property="og:locale" content="{L['lang'].replace('-Hans', '_CN').replace('en', 'en_US')}">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="{up}style.css">
+<link rel="preload" as="image" href="{up}media/demo-{L['demo']}.webp" fetchpriority="high">
 <script type="application/ld+json">{json.dumps(ld, ensure_ascii=False)}</script>
 </head>
 <body>
@@ -253,10 +260,8 @@ def page(L):
   <p class="first-open">{L['first']}</p>
 </div>
   <div class="shot">
-    <picture>
-      <source srcset="{up}img/hero-dark.webp" media="(prefers-color-scheme: dark)">
-      <img src="{up}img/hero-light.webp" alt="{e(L['shot_alt'])}" width="1800" height="1161" fetchpriority="high">
-    </picture>
+    <video class="demo" data-src="{up}media/demo-{L['demo']}.mp4" poster="{up}media/demo-{L['demo']}.webp" width="1920" height="1200"
+      muted loop playsinline preload="none" aria-label="{e(L['shot_alt'])}"></video>
   </div>
 </div>
 
