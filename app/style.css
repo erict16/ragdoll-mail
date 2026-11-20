@@ -146,24 +146,26 @@ input, textarea, select { font: inherit; color: inherit; }
 .list-head:not(.searching) .search, .list-head.searching #search-btn { display: none; }
 /* the search button grows leftwards into the box: the glass rides on the box's left edge and settles
    to its smaller size, the words slide in a moment later. Closing shrinks the box back into the button
-   (app.js keeps it shown for those 200ms), so the glass ends exactly where the button's is. */
-.list-head.searching .search { animation: search-open .34s var(--ease); }
-.list-head.searching .search > .i { animation: search-glass .34s var(--ease); }
-.list-head.searching .search input, .list-head.searching #search-clear { animation: search-words .3s var(--ease) .07s backwards; }
-.list-head.closing .search { animation: search-close .2s cubic-bezier(.4, 0, .2, 1) forwards; }
-.list-head.closing .search > .i { animation: search-glass-out .2s cubic-bezier(.4, 0, .2, 1) forwards; }
-.list-head.closing .search input, .list-head.closing #search-clear { animation: search-words-out .1s ease-in forwards; }
-@keyframes search-open { from { flex-basis: 32px; background-color: var(--hover); border-color: transparent; box-shadow: 0 0 0 0 transparent; } }
-@keyframes search-close { to { flex-basis: 32px; background-color: transparent; border-color: transparent; box-shadow: none; } }
-@keyframes search-glass { from { transform: scale(1.143); color: var(--text-2); } }
+   (app.js keeps it shown for those 160ms), so the glass ends exactly where the button's is.
+   Opening runs on a light spring (a hair past full width, then back); closing is a plain, quicker ease. */
+.list-head.searching .search { animation: search-open .26s cubic-bezier(.34, 1.28, .5, 1); }
+.list-head.searching .search > .i { animation: search-glass .26s cubic-bezier(.34, 1.28, .5, 1); }
+.list-head.searching .search input, .list-head.searching #search-clear { animation: search-words .2s cubic-bezier(.2, .8, .2, 1) .05s backwards; }
+.list-head.closing .search { animation: search-close .16s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search > .i { animation: search-glass-out .16s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search input, .list-head.closing #search-clear { animation: search-words-out .08s ease-in forwards; }
+@keyframes search-open { from { flex-basis: 32px; height: 32px; background-color: var(--hover); border-color: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes search-close { to { flex-basis: 32px; height: 32px; background-color: transparent; border-color: transparent; box-shadow: none; } }
+@keyframes search-glass { from { transform: scale(1.143) rotate(-12deg); color: var(--text-2); } }
 @keyframes search-glass-out { to { transform: scale(1.143); color: var(--text-2); } }
-@keyframes search-words { from { opacity: 0; transform: translateX(8px); } }
-@keyframes search-words-out { to { opacity: 0; } }
+@keyframes search-words { from { opacity: 0; transform: translateX(6px); filter: blur(2px); } }
+@keyframes search-words-out { to { opacity: 0; transform: translateX(-3px); } }
 @media (prefers-reduced-motion: reduce) { .list-head .search, .list-head .search * { animation: none !important; } }
-.search { flex: 0 1 220px; margin-left: 8px; overflow: hidden; display: flex; align-items: center; gap: 7px; height: 32px; min-width: 0; margin-right: 2px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
+.search { flex: 0 1 180px; margin-left: 8px; overflow: hidden; display: flex; align-items: center; gap: 6px; height: 28px; min-width: 0; margin-right: 2px; padding: 0 3px 0 8px; border-radius: 7px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
 .search:focus-within { background: var(--bg); border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .search > .i { width: 14px; height: 14px; }
-.search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; }
+.search .icon-btn.tiny { width: 20px; height: 20px; border-radius: 5px; }
+.search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; font-size: 13px; }
 .search input::placeholder { color: var(--text-3); }
 kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; flex: none; font: 11px/1 var(--font); color: var(--text-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
 .banner { margin: 0 10px 6px; padding: 8px 8px 8px 4px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-text); display: flex; align-items: flex-start; gap: 4px; font-size: 12px; }
@@ -247,6 +249,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
 .icon-btn.tiny .i { width: 14px; height: 14px; }
 .icon-btn.on { color: var(--text); background: var(--sel); }
+/* "mark as unread": the envelope carries the list's unread dot on its corner, the corner cut away round it */
+.icon-btn.unread-mark .i { -webkit-mask: radial-gradient(circle 5px at 14.5px 2.5px, transparent 96%, #000 100%); mask: radial-gradient(circle 5px at 14.5px 2.5px, transparent 96%, #000 100%); }
+.icon-btn.unread-mark::after { content: ""; position: absolute; left: 19px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); animation: pop-in .22s var(--ease); pointer-events: none; }
+.icon-btn.unread-mark:active:not(:disabled)::after { transform: scale(.9); }
 .btn { height: 30px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--line-2); font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none;
   background: var(--raised); color: var(--text); box-shadow: 0 1px 1px rgba(0,0,0,.04); transition: background-color .15s, border-color .15s, transform .12s var(--ease), opacity .2s; }
 .btn .i { color: var(--text-2); }

@@ -1054,7 +1054,7 @@ function showSearch(on) {
   if (!head.classList.contains("searching") || searchShut) return;
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return head.classList.remove("searching");
   head.classList.add("closing");
-  searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 200);
+  searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 160);
 }
 function syncSearchUI() {
   if (dragFocus.held) return;         // a column is being dragged: the search stays as it is
@@ -1139,7 +1139,7 @@ function renderToolbar() {
         : iconBtn("archive", t("archive_it"), () => moveMail(ids, "archive"), { key: "E" }),
       iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
       iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), { key: "V" }),
-      iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U" }),
+      iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U", cls: anyUnread ? "" : "unread-mark" }),
       iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on" : "" }),
     );
     return;
@@ -1154,7 +1154,7 @@ function renderToolbar() {
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
-    iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
+    iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
   );
 }
