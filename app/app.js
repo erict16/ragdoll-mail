@@ -1165,11 +1165,6 @@ function renderToolbar() {
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
   );
-  end.append(
-    iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id }), { key: "R", disabled: !has }),
-    iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id }), { key: "A", disabled: !has }),
-    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id }), { key: "F", disabled: !has }),
-  );
 }
 
 let threadSeq = 0;
@@ -1258,8 +1253,14 @@ function msgNode(r, expanded) {
   const toLine = el("div", { class: "msg-to" }, (t("to") + " ") + to.map(who).join(", "));
   const snip = el("div", { class: "msg-snip" }, r.snippet);
   whoBox.append(expanded ? toLine : snip);
-  // reply / reply all / forward live in the toolbar only; it acts on the message clicked last
+  // reply / reply all / forward sit on each open message's own header (the top right of the window stays free for
+  // the window buttons on Windows); the keys R, A and F act on the message clicked last
+  const acts = () => el("div", { class: "msg-acts" },
+    iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id: r.id }), { key: "R" }),
+    iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id: r.id }), { key: "A" }),
+    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id: r.id }), { key: "F" }));
   head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts) }, expanded ? longTime(r.ts) : shortTime(r.ts)));
+  if (expanded) head.append(acts());
   node.append(head);
   head.addEventListener("click", (e) => {
     if (e.target.closest("button")) return;
@@ -1267,6 +1268,7 @@ function msgNode(r, expanded) {
       node.classList.remove("collapsed");
       whoBox.replaceChildren(whoBox.firstChild, toLine);
       head.querySelector(".msg-date").textContent = longTime(r.ts);
+      head.append(acts());
       loadBody(node, r);
       S.focus = r.id; renderToolbar();
     } else if (e.target.closest(".msg-to")) {
