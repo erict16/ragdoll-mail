@@ -78,6 +78,8 @@ input, textarea, select { font: inherit; color: inherit; }
    darker there, and is gone a moment after; its 10px stays, so nothing shifts */
 ::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
 .scrolling::-webkit-scrollbar-thumb { background-color: var(--line-2); }
+/* WebKit redraws a box's scrollbar only when the box's own style changes, not its scrollbar's alone */
+.scrolling { --sb-on: 1; }
 ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
 
 /* ---------- layout */
@@ -266,9 +268,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
 .icon-btn.tiny .i { width: 14px; height: 14px; }
 .icon-btn.on { color: var(--text); background: var(--sel); }
-/* "mark as unread": the envelope carries the list's unread dot on its corner, the corner cut away round it */
-.icon-btn.unread-mark .i { -webkit-mask: radial-gradient(circle 5px at 14.5px 2.5px, transparent 96%, #000 100%); mask: radial-gradient(circle 5px at 14.5px 2.5px, transparent 96%, #000 100%); }
-.icon-btn.unread-mark::after { content: ""; position: absolute; left: 19px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); animation: pop-in .22s var(--ease); pointer-events: none; }
+/* "mark as unread": the envelope carries a small dot on its corner, in the icon's own gray (the corner cut away round
+   it), so it reads as part of the icon and darkens with it on hover, not as a second unread mark */
+.icon-btn.unread-mark .i { -webkit-mask: radial-gradient(circle 4.5px at 14.5px 2.5px, transparent 96%, #000 100%); mask: radial-gradient(circle 4.5px at 14.5px 2.5px, transparent 96%, #000 100%); }
+.icon-btn.unread-mark::after { content: ""; position: absolute; left: 19.5px; top: 7.5px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; pointer-events: none; }
 .icon-btn.unread-mark:active:not(:disabled)::after { transform: scale(.9); }
 .btn { height: 30px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--line-2); font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none;
   background: var(--raised); color: var(--text); box-shadow: 0 1px 1px rgba(0,0,0,.04); transition: background-color .15s, border-color .15s, transform .12s var(--ease), opacity .2s; }
