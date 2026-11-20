@@ -1,5 +1,6 @@
 // ragdoll-mail desktop app. Talks to ragdoll_app.py over /api/<name> (JSON, X-Token header).
 import { ICONS } from "./icons.js";
+import { FILE_ICONS, FILE_EXT } from "./fileicons.js";
 import { LANGS, LANG_NAMES } from "./i18n.js";
 
 // ---------------------------------------------------------------- basics
@@ -225,23 +226,11 @@ function size(n) {
   if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
   return (n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0) + " MB";
 }
-// an attachment's tile: the common kinds each have their own colour (Word blue, Excel green, PowerPoint
-// orange, PDF red, drawings, pictures, archives), as in Office and the system's own file icons
-const FILE_KINDS = [
-  ["word", "W", ["doc", "docx", "docm", "dot", "dotx", "rtf", "odt", "pages", "wps"]],
-  ["excel", "X", ["xls", "xlsx", "xlsm", "xlsb", "csv", "numbers", "ods", "et"]],
-  ["ppt", "P", ["ppt", "pptx", "pptm", "pps", "ppsx", "key", "odp", "dps"]],
-  ["pdf", "PDF", ["pdf"]],
-  ["cad", "CAD", ["dwg", "dxf", "dwf", "step", "stp", "igs", "iges"]],
-  ["img", "file-image", ["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tif", "tiff", "svg"]],
-  ["zip", "file-archive", ["zip", "rar", "7z", "gz", "tar", "tgz"]],
-];
+// an attachment's icon: Word, Excel, PowerPoint, PDF, drawings, pictures, archives and more each have
+// their own coloured file icon (Material Design Icons, in fileicons.js)
 function fileTile(name) {
-  const x = (name.split(".").pop() || "").toLowerCase();
-  const k = FILE_KINDS.find(([, , ext]) => ext.includes(x));
-  if (!k) return { cls: "att-icon", html: icon(["txt", "md", "eml", "msg"].includes(x) ? "file-text" : "file") };
-  const [kind, mark] = k;
-  return { cls: `att-icon kind kind-${kind}`, html: mark.startsWith("file-") ? icon(mark) : `<b${mark.length > 1 ? ' class="long"' : ""}>${mark}</b>` };
+  const x = (name.includes(".") ? name.split(".").pop() : "").toLowerCase();
+  return { class: "att-icon file", html: FILE_ICONS[Object.hasOwn(FILE_EXT, x) ? FILE_EXT[x] : "file"] };
 }
 const nameOf = (p) => (p && (p.name || p.addr)) || "";
 function who(p) { return p && p.addr === S.boot?.user ? t("me") : nameOf(p); }
@@ -1342,7 +1331,7 @@ function attNode(a, id) {
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
   const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name, onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
-    el("div", { class: fileTile(a.name).cls, html: fileTile(a.name).html }),
+    el("div", fileTile(a.name)),
     el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   return node;

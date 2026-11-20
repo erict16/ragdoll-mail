@@ -152,4 +152,4 @@ Ragdoll Mail 还带一个命令 `ragdoll`。Claude Code、Codex 这样的 AI 助
 
 ## 许可
 
-MIT。图标来自 [Lucide](https://lucide.dev)（ISC）。
+MIT。图标来自 [Lucide](https://lucide.dev)（ISC）；文件类型图标来自 [Material Design Icons](https://pictogrammers.com/library/mdi/)（Apache-2.0）。

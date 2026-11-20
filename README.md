@@ -152,4 +152,4 @@ Found a problem, or does your mailbox not work? [Open an issue](https://github.c
 
 ## License
 
-MIT. Icons from [Lucide](https://lucide.dev) (ISC).
+MIT. Icons from [Lucide](https://lucide.dev) (ISC); file-type icons from [Material Design Icons](https://pictogrammers.com/library/mdi/) (Apache-2.0).
