@@ -72,7 +72,10 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // Reply, reply all and forward: Remix arrow shapes drawn as a hollow, rounded outline (Apple Mail style); every other icon is Lucide.
-const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="2.5 2.5 19 19" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
+// Each arrow's frame holds the whole shape, its sharp tip and the outline's half width included, so nothing
+// is drawn outside the frame (WebKit cuts off what is); reply and forward share one size.
+const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 -0.65 25.3 25.3" };
+const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="${ARROW_BOX[n]}" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
   : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const icon = (n, cls = "") => `<span class="i ${cls}">${svg(n)}</span>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -89,6 +92,16 @@ function el(tag, attrs = {}, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
   return e;
 }
+// a box's scrollbar shows while it scrolls and goes 0.8s after it stops (style.css: .scrolling)
+const scrollQuiet = new WeakMap();
+addEventListener("scroll", (e) => {
+  const n = e.target === document ? document.scrollingElement : e.target;
+  if (!n?.classList) return;
+  n.classList.add("scrolling");
+  clearTimeout(scrollQuiet.get(n));
+  scrollQuiet.set(n, setTimeout(() => n.classList.toggle("scrolling", false), 800));
+}, { capture: true, passive: true });
+
 function iconBtn(name, tip, onclick, extra = {}) {
   return el("button", { class: "icon-btn" + (extra.cls ? " " + extra.cls : ""), "data-tip": tip, "data-key": extra.key, html: icon(name), onclick, disabled: extra.disabled, "aria-label": tip });
 }
@@ -533,15 +546,16 @@ function rowTemplate(r) {
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(folderName(r.folder))}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
-  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("forward", "small") : ""}</span>` : "";
+  const done = (r.answered ? `<span class="mk mk-a">${icon("reply", "small")}</span>` : "") +
+    (r.forwarded ? `<span class="mk mk-f">${icon("forward", "small")}</span>` : "");
   const acts = r.sched
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : (S.folder === "trash" || S.folder === "junk") && !S.query
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span><span class="who" dir="auto">${done}${esc(name)}</span>` +
+  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span>${done}<span class="who" dir="auto">${esc(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
     `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
     `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
@@ -626,23 +640,13 @@ function setStar(node, on) {
   }
 }
 
-// a new replied / forwarded mark opens its space before the name, the arrow sliding the way it points
+// a new replied / forwarded arrow comes in the way it points
 function showDone(node, replied, forwarded) {
-  const d = $(".done-ic", node);
-  if (!d || REDUCED.matches) return;
-  const w = d.offsetWidth + "px";
-  d.classList.add("opening");
-  const shut = () => d.classList.toggle("opening", false);
-  d.animate([
-    { width: "0px", marginInlineEnd: "0px", opacity: 0 },
-    { width: w, marginInlineEnd: "5px", opacity: 0, offset: 0.35 },
-    { width: w, marginInlineEnd: "5px", opacity: 1 },
-  ], { duration: 420, easing: SMOOTH }).finished.then(shut, shut);
-  const icons = $$(".i", d);
-  const slide = (n, dx) => n?.animate([{ transform: `translateX(${dx}px)` }, { transform: "none" }],
-    { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
-  if (replied) slide(icons[0], 7);
-  if (forwarded) slide(icons[icons.length - 1], -7);
+  if (REDUCED.matches) return;
+  const come = (n, dx) => n?.animate([{ opacity: 0, transform: `translateX(${dx}px) scale(.7)` }, { opacity: 1, transform: "none" }],
+    { duration: 320, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  if (replied) come($(".mk-a", node), 5);
+  if (forwarded) come($(".mk-f", node), -5);
 }
 
 // rows going away fold up before they are dropped

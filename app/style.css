@@ -68,13 +68,15 @@ input, textarea, select { font: inherit; color: inherit; }
 .grow { flex: 1; align-self: stretch; }
 .i { display: inline-flex; width: 16px; height: 16px; flex: none; }
 .i svg { width: 100%; height: 100%; stroke-width: 1.75; }
-.i svg.arrowshape { stroke-width: 1.4; overflow: visible; }
+.i svg.arrowshape { stroke-width: 1.6; }
 .i.small { width: 14px; height: 14px; }
 .i.big { width: 20px; height: 20px; }
 ::selection { background: rgba(63, 135, 132, .22); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-/* the scrollbar is always there to see and to drag, darker under the pointer */
-::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+/* as on the Mac, a scrollbar shows while its box scrolls (app.js marks it .scrolling) and under the pointer,
+   darker there, and is gone a moment after; its 10px stays, so nothing shifts */
+::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+.scrolling::-webkit-scrollbar-thumb { background-color: var(--line-2); }
 ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
 
 /* ---------- layout */
@@ -195,7 +197,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row.on.on-next { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .row.on + .row.on { border-top-left-radius: 0; border-top-right-radius: 0; }
 .row.on::before, .row.on::after, .row:hover::before, .row:hover::after, .row.on + .row::before, .row:hover + .row::before { opacity: 0; }
-.row .dot { grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
+.row .dot { grid-column: 1; grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
 .row.unread .dot { opacity: 1; transform: none; }
 .row .who { grid-column: 2; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
 /* a short date (Wed) ends on the same line as a long one: the column is as wide as the hover buttons */
@@ -211,9 +213,15 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row:hover .meta { opacity: 0; }
 .row.leaving .hover-acts { opacity: 0; }
 .row .tag { font-size: 11px; color: var(--text-2); }
-.row .done-ic { display: inline-flex; gap: 1px; margin-inline-end: 5px; vertical-align: -2px; color: var(--accent-ink); }
-/* the arrow's outline reaches past its box: clipped only while the mark slides in */
-.row .done-ic.opening { overflow: hidden; }
+/* replied and forwarded arrows stand in the left column, as on the Mac: the unread dot keeps the name's line,
+   the arrows take the lines below it, so names always start in the same place */
+.row .who { grid-row: 1; }
+.row .subj { grid-row: 2; }
+.row .snip { grid-row: 3; }
+.row .mk { grid-column: 1; grid-row: 1; justify-self: center; align-self: center; display: inline-flex; color: var(--accent-ink); }
+.row .mk .i { width: 12px; height: 12px; }
+.row.unread .mk-a, .row.has-a .mk-f { grid-row: 2; }
+.row.unread.has-a .mk-f { grid-row: 3; }
 .icon-btn.on { color: var(--text); }
 .icon-btn.on svg { fill: currentColor; }
 .rows-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 20px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }

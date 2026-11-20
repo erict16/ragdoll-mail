@@ -2735,7 +2735,10 @@ def poke_page():
     """Ask the page to look now instead of at its next poll."""
     if WINDOW.w is not None:
         with contextlib.suppress(Exception):
-            WINDOW.w.evaluate_js("window.ragdollPoll && window.ragdollPoll()")
+            # run_js hands the line to the page as it is; evaluate_js wraps it in eval(), which the
+            # page's Content-Security-Policy (script-src 'self') refuses
+            run = getattr(WINDOW.w, "run_js", None) or WINDOW.w.evaluate_js
+            run("window.ragdollPoll && window.ragdollPoll()")
 
 
 def dock_badge(n):
