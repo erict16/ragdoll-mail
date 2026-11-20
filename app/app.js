@@ -1121,7 +1121,7 @@ function renderToolbar() {
       iconBtn("calendar-clock", t("send_later"), (e) => laterMenu(e.currentTarget), { disabled: !!S.compose.busy }),
       el("span", { class: "sep" }),
       iconBtn("paperclip", t("attach"), () => pickFiles()),
-      iconBtn("type", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
+      iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
       iconBtn("trash-2", t("discard"), () => discardCompose()));
@@ -1146,7 +1146,7 @@ function renderToolbar() {
       iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
       iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), { key: "V" }),
       iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U", cls: anyUnread ? "" : "unread-mark" }),
-      iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on" : "" }),
+      iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on fill" : "" }),
     );
     return;
   }
@@ -1161,7 +1161,7 @@ function renderToolbar() {
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
-    iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
+    iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
   );
 }
 

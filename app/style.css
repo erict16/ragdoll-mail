@@ -234,7 +234,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row.unread .mk-a, .row.has-a .mk-f { grid-row: 2; }
 .row.unread.has-a .mk-f { grid-row: 3; }
 .icon-btn.on { color: var(--text); }
-.icon-btn.on svg { fill: currentColor; }
+.icon-btn.on.fill svg { fill: currentColor; }      /* a starred star is solid; other "on" buttons keep their outline */
 .rows-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 20px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }
 .rows-empty .i.big { width: 28px; height: 28px; opacity: .7; }
 .rows-more { display: flex; justify-content: center; padding: 14px; color: var(--text-3); }
