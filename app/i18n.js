@@ -588,3 +588,16 @@ const MORE4 = {
   "de": { notice_off: "macOS hat die Mitteilungen für Ragdoll Mail ausgeschaltet. Schalte „Mitteilungen erlauben“ in den Systemeinstellungen ein.", notice_open: "Systemeinstellungen öffnen" },
 };
 for (const [k, v] of Object.entries(MORE4)) Object.assign(LANGS[k], v);
+
+// the heading over the owner's own folders, and the arrow that folds them
+const MORE5 = {
+  "en": { my_folders: "Folders", fold: "Show or hide folders" },
+  "zh-Hans": { my_folders: "文件夹", fold: "展开或收起文件夹" },
+  "zh-Hant": { my_folders: "檔案夾", fold: "展開或收合檔案夾" },
+  "ja": { my_folders: "フォルダ", fold: "フォルダを表示または隠す" },
+  "ko": { my_folders: "폴더", fold: "폴더 펼치기 또는 접기" },
+  "es": { my_folders: "Carpetas", fold: "Mostrar u ocultar carpetas" },
+  "fr": { my_folders: "Dossiers", fold: "Afficher ou masquer les dossiers" },
+  "de": { my_folders: "Ordner", fold: "Ordner ein- oder ausblenden" },
+};
+for (const [k, v] of Object.entries(MORE5)) Object.assign(LANGS[k], v);

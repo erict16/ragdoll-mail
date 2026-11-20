@@ -150,6 +150,13 @@ class AppServer(unittest.TestCase):
         self.assertEqual((out["font"], out["font_size"], out["text_size"], out["fmt_bar"]), ("georgia", 16, 15, True))
         self.api("prefs", {"font": "system", "font_size": 14, "text_size": 14, "fmt_bar": False})
 
+    def test_folded_folders_pref_is_checked(self):
+        out = self.api("prefs", {"folded": ["@mine", "Projects"]})[1]["data"]
+        self.assertEqual(out["folded"], ["@mine", "Projects"])
+        for bad in ("Projects", [1], [""], ["x" * 501], ["a"] * 501):
+            self.assertEqual(self.api("prefs", {"folded": bad})[1]["data"]["folded"], ["@mine", "Projects"])
+        self.api("prefs", {"folded": []})
+
     def test_flagged_list_and_count(self):
         rows = self.api("list", {"folder": "inbox"})[1]["data"]["rows"]
         i = next(r["id"] for r in rows if not r["flagged"])

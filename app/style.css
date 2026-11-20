@@ -27,7 +27,6 @@
           "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
   --side-w: 232px;
-  --list-w: 372px;
   --head-h: 52px;
   color-scheme: light;
 }
@@ -74,10 +73,13 @@ input, textarea, select { font: inherit; color: inherit; }
 .i.big { width: 20px; height: 20px; }
 ::selection { background: rgba(63, 135, 132, .22); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
-:hover::-webkit-scrollbar-thumb { background-color: var(--line-2); }
+/* the scrollbar is always there to see and to drag, darker under the pointer */
+::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
 
 /* ---------- layout */
+/* the list's width is set on .app alone and not passed down, so a drag of the line restyles one element, not the page */
+@property --list-w { syntax: "<length>"; inherits: false; initial-value: 372px; }
 .app { display: grid; grid-template-columns: var(--side-w) clamp(280px, var(--list-w), calc(100vw - var(--side-w) - 400px)) 0 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
 .side { min-height: 0; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; padding: 0 10px 10px; }
 .side-top { height: var(--head-h); flex: none; display: flex; align-items: center; margin: 0 -10px; padding: 0 10px 0 14px; }
@@ -86,11 +88,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; min-height: 0; overflow-y: auto; margin-inline: -10px; padding-inline: 10px; }
 .nav-item { flex: none; }
 .nav-item.other { padding-left: calc(10px + var(--depth, 0) * 16px); }
-.nav-item.first { margin-top: 12px; }
 #filter-btn { flex: none; margin-left: 4px; position: relative; }
 .nav-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: 7px; color: var(--text-2); text-align: left; transition: background-color .15s, color .15s; }
 .nav-item .i { transition: transform .2s var(--ease); }
-.nav-item:active .i { transform: scale(.92); }
+.nav-item:active > .i { transform: scale(.92); }
 .nav-item:hover { background: var(--hover); }
 .nav-item.on { background: var(--sel); color: var(--text); font-weight: 500; }
 .nav-item .label { flex: 1; }
@@ -101,6 +102,25 @@ input, textarea, select { font: inherit; color: inherit; }
 .nav-item.other:hover .nav-more { display: grid; }
 .nav-item.other:hover .count { display: none; }
 .nav-item.drop { background: var(--sel); box-shadow: inset 0 0 0 1.5px var(--text-3); }
+/* folding: the heading over the owner's folders and the arrow on a folder with folders inside.
+   A folded row shrinks to nothing (the -1px takes back the list's gap), then hides. */
+.nav-item.other { overflow: hidden; transition: background-color .15s, color .15s, height .22s var(--ease), margin .22s var(--ease), opacity .16s; }
+.nav-item.other.gone { height: 0; margin-top: -1px; opacity: 0; visibility: hidden; pointer-events: none; transition: background-color .15s, color .15s, height .22s var(--ease), margin .22s var(--ease), opacity .12s, visibility 0s .22s; }
+.nav-fold { display: grid; place-items: center; flex: none; width: 20px; height: 20px; margin-right: -5px; border-radius: 5px; color: var(--text-3); }
+.nav-fold:hover { background: var(--hover); color: var(--text); }
+.nav-fold .i, .nav-sec-btn .i { transform: rotate(90deg); transition: transform .22s var(--ease), opacity .15s; }
+.nav-item.folded .nav-fold .i, .nav-sec.folded .nav-sec-btn .i { transform: none; }
+.nav-item.other:hover .nav-fold { margin-left: -6px; }
+.nav-sec { flex: none; position: relative; display: flex; align-items: center; height: 28px; margin-top: 12px; padding: 0 10px; color: var(--text-3); font-size: 12px; font-weight: 500; }
+.nav-sec-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; height: 100%; color: inherit; text-align: left; transition: color .15s; }
+.nav-sec-btn:hover { color: var(--text-2); }
+.nav-sec-btn .i { opacity: 0; }
+.nav-sec:hover .nav-sec-btn .i, .nav-sec.folded .nav-sec-btn .i, .nav-sec-btn:focus-visible .i { opacity: 1; }
+.nav-sec-btn .count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.nav-sec:hover .nav-sec-btn .count { visibility: hidden; }
+.nav-sec .nav-sec-add { position: absolute; right: 4px; opacity: 0; transition: opacity .15s; }
+.nav-sec:hover .nav-sec-add, .nav-sec-add:focus-visible { opacity: 1; }
+.nav-item .count:empty { display: none; }
 .account { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 10px; border-radius: 8px; color: var(--text-2); text-align: left; flex: none; transition: background-color .15s; }
 .account:hover { background: var(--hover); }
 .account-addr { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
@@ -111,11 +131,31 @@ input, textarea, select { font: inherit; color: inherit; }
 /* two lines on each side, the same down the whole list. Boxes (notice, a row's highlight) start 10px in
    and end 10px in. Text (notice words, names, subjects) starts 24px inside its box, with the small
    mark of that box (warning sign, unread dot) centred in those 24px; text and glyphs end 8px inside.
-   The search box has the same space on its left as above it: 12px from the column's edge and from the window's top. */
+   The header names the folder on the names' line (34px in); the search button opens a short search box in its own
+   place, beside the name, which stays while it holds words. */
 .list-head { height: var(--head-h); display: flex; align-items: center; padding: 0 10px; flex: none; position: relative; }
 .head-drag { position: absolute; inset: 0 0 auto 0; height: 10px; }
 .head-drag.low { inset: auto 0 0 0; }
-.search { flex: 1; display: flex; align-items: center; gap: 8px; height: 28px; min-width: 0; margin-left: 2px; padding: 0 4px 0 7px; border-radius: 8px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
+.head-title { flex: 1; min-width: 0; margin-left: 24px; font-size: 15px; font-weight: 600; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#search-btn { margin-left: auto; margin-right: 2px; }
+.list-head:not(.searching) .search, .list-head.searching #search-btn { display: none; }
+/* the search button grows leftwards into the box: the glass rides on the box's left edge and settles
+   to its smaller size, the words slide in a moment later. Closing shrinks the box back into the button
+   (app.js keeps it shown for those 200ms), so the glass ends exactly where the button's is. */
+.list-head.searching .search { animation: search-open .34s var(--ease); }
+.list-head.searching .search > .i { animation: search-glass .34s var(--ease); }
+.list-head.searching .search input, .list-head.searching #search-clear { animation: search-words .3s var(--ease) .07s backwards; }
+.list-head.closing .search { animation: search-close .2s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search > .i { animation: search-glass-out .2s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search input, .list-head.closing #search-clear { animation: search-words-out .1s ease-in forwards; }
+@keyframes search-open { from { flex-basis: 32px; background-color: var(--hover); border-color: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes search-close { to { flex-basis: 32px; background-color: transparent; border-color: transparent; box-shadow: none; } }
+@keyframes search-glass { from { transform: scale(1.143); color: var(--text-2); } }
+@keyframes search-glass-out { to { transform: scale(1.143); color: var(--text-2); } }
+@keyframes search-words { from { opacity: 0; transform: translateX(8px); } }
+@keyframes search-words-out { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .list-head .search, .list-head .search * { animation: none !important; } }
+.search { flex: 0 1 220px; margin-left: 8px; overflow: hidden; display: flex; align-items: center; gap: 7px; height: 32px; min-width: 0; margin-right: 2px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
 .search:focus-within { background: var(--bg); border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .search > .i { width: 14px; height: 14px; }
 .search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; }
@@ -128,20 +168,26 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 /* the scrollbar's 10px is always kept (overflow-y: scroll), so nothing shifts when a list grows past the window */
 .rows { flex: 1; overflow-y: scroll; outline: 0; padding: 2px 0 24px 10px; }
 
-.row { position: relative; display: grid; grid-template-columns: 12px 1fr auto; column-gap: 6px; padding: 10px 8px 11px 6px; border-radius: 9px; transition: background-color .15s, border-radius .18s var(--ease); }
-.row::after { content: ""; position: absolute; left: 24px; right: 8px; bottom: 0; height: 1px; background: var(--line); transition: opacity .15s; }
+/* rows out of sight skip layout and paint (content-visibility), so a long list scrolls as fast as a short one */
+.row { position: relative; display: grid; grid-template-columns: 12px 1fr auto; column-gap: 6px; padding: 10px 8px 11px 6px; border-radius: 9px; transition: background-color .15s, border-radius .18s var(--ease); content-visibility: auto; contain-intrinsic-size: auto 72px; }
+/* the line between two rows is drawn on the lower row's top edge: hiding it only ever looks at the row
+   itself and the one before it, which is cheap (a rule that looks at the next row's hover redoes the whole
+   list on every hover change, and hover changes on every scrolled frame) */
+.row::before, .row:last-child::after { content: ""; position: absolute; left: 24px; right: 8px; top: 0; height: 1px; background: var(--line); transition: opacity .15s; }
+.row:last-child::after { top: auto; bottom: 0; }
+.row:first-child::before { display: none; }
 .row.leaving { overflow: hidden; pointer-events: none; }
-.row.leaving::after { opacity: 0; }
+.row.leaving::before, .row.leaving::after, .row.leaving + .row::before { opacity: 0; }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--sel); }
 /* the row a right-click menu is about */
 .row.ctx { background: var(--hover); box-shadow: inset 0 0 0 1.5px var(--line-2); }
-.row.ctx::after, .row:has(+ .row.ctx)::after { opacity: 0; }
-/* selected mails next to each other make one block: only the run's first and last corners are round */
-/* a hovered row beside the block joins it the same way, so the two never meet as two round boxes */
-.row.on:has(+ .row.on), .row.on:has(+ .row:hover), .row:hover:has(+ .row.on) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-.row.on + .row.on, .row.on + .row:hover, .row:hover + .row.on { border-top-left-radius: 0; border-top-right-radius: 0; }
-.row.on::after, .row:hover::after, .row:has(+ .row.on)::after, .row:has(+ .row:hover)::after { opacity: 0; }
+.row.ctx::before, .row.ctx::after, .row.ctx + .row::before { opacity: 0; }
+/* selected mails next to each other make one block: only the run's first and last corners are round.
+   The "next row is selected" mark comes from app.js (.on-next), not from :has(), for the same reason. */
+.row.on.on-next { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.row.on + .row.on { border-top-left-radius: 0; border-top-right-radius: 0; }
+.row.on::before, .row.on::after, .row:hover::before, .row:hover::after, .row.on + .row::before, .row:hover + .row::before { opacity: 0; }
 .row .dot { grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
 .row.unread .dot { opacity: 1; transform: none; }
 .row .who { grid-column: 2; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
@@ -169,6 +215,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .splitter::before { content: ""; position: absolute; inset: 0 -4px; cursor: col-resize; }
 .splitter::after { content: ""; position: absolute; inset: 0 -1px; background: var(--line-2); opacity: 0; transition: opacity .15s; pointer-events: none; }
 .splitter:hover::after { opacity: 1; transition-delay: .25s; }
+/* while the line moves: the mail does not catch the pointer, and what does not fit is cut until release */
+.app.resizing, .app.resizing * { cursor: col-resize !important; user-select: none; }
+.app.resizing iframe { pointer-events: none; }
+.app.resizing .pane { overflow-x: hidden; }
+.app.resizing .splitter::after { opacity: 1; transition-delay: 0s; }
 
 /* ---------- reader */
 .reader { min-height: 0; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
@@ -233,6 +284,17 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .att { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; background: var(--sunk); border: 1px solid var(--line); min-width: 0; text-align: left; position: relative; transition: background-color .15s, border-color .15s, opacity .2s; }
 .att:hover { border-color: var(--line-2); background: var(--sel); }
 .att-icon { width: 32px; height: 32px; border-radius: 7px; background: var(--bg); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--text-2); flex: none; }
+/* a coloured tile for the common kinds (fileTile in app.js): a white letter or picture on the kind's colour */
+.att-icon.kind { border-color: transparent; color: #fff; box-shadow: inset 0 0 0 1px rgb(0 0 0 / .08); }
+.att-icon.kind b { font: 700 16px/1 var(--font); letter-spacing: -.02em; }
+.att-icon.kind b.long { font-size: 9.5px; letter-spacing: .02em; }
+.att-icon.kind-word { background: #2563c9; }
+.att-icon.kind-excel { background: #16834a; }
+.att-icon.kind-ppt { background: #d0512b; }
+.att-icon.kind-pdf { background: #dc3a33; }
+.att-icon.kind-cad { background: #0e8291; }
+.att-icon.kind-img { background: #8a5cd6; }
+.att-icon.kind-zip { background: #c98c12; }
 .att-text { flex: 1; min-width: 0; }
 .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .att-size { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -494,9 +556,8 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
   .here-btn .label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .here-btn.dot::after { content: ""; position: absolute; top: 6px; left: 17px; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 2px var(--bg); }
   .list-head #compose-btn { margin-left: 2px; }
-  #search-kbd { display: none; }
-  /* the folder's button stands before the search box here and keeps the lines */
-  .search { margin-left: 0; }
+  .head-title { display: none; }
+  .search { margin-left: auto; }
   .toolbar { padding: 0 12px; }
   .doc, .compose { padding-left: 20px; padding-right: 10px; }
 }
