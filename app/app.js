@@ -631,11 +631,13 @@ function showDone(node, replied, forwarded) {
   const d = $(".done-ic", node);
   if (!d || REDUCED.matches) return;
   const w = d.offsetWidth + "px";
+  d.classList.add("opening");
+  const shut = () => d.classList.toggle("opening", false);
   d.animate([
     { width: "0px", marginInlineEnd: "0px", opacity: 0 },
     { width: w, marginInlineEnd: "5px", opacity: 0, offset: 0.35 },
     { width: w, marginInlineEnd: "5px", opacity: 1 },
-  ], { duration: 420, easing: SMOOTH });
+  ], { duration: 420, easing: SMOOTH }).finished.then(shut, shut);
   const icons = $$(".i", d);
   const slide = (n, dx) => n?.animate([{ transform: `translateX(${dx}px)` }, { transform: "none" }],
     { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
