@@ -318,8 +318,11 @@ function menu(anchor, items, { above = false } = {}) {
   $("#layer").append(catcher, m);
   const r = anchor.getBoundingClientRect();
   m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
-  m.style.top = (above ? r.top - m.offsetHeight - 6 : r.bottom + 6) + "px";
+  const top = above ? r.top - m.offsetHeight - 6 : r.bottom + 6;
+  m.style.top = Math.max(8, Math.min(top, innerHeight - m.offsetHeight - 8)) + "px";
 }
+// a menu that opens where the mouse is (right-click)
+const atPoint = (e) => ({ getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY - 6 }) });
 function sheet(node, { wide = false, onclose } = {}) {
   closeLayer();
   const box = el("div", { class: "sheet" + (wide ? " wide" : ""), role: "dialog" }, node);
@@ -796,6 +799,34 @@ $("#rows").addEventListener("click", async (e) => {
   }
   pickRow(row.dataset.id, e);
 });
+// right-click on a row: the actions of the toolbar, for that row (or the selection it is part of)
+$("#rows").addEventListener("contextmenu", (e) => {
+  const row = e.target.closest(".row");
+  if (!row) return;
+  e.preventDefault();
+  const id = row.dataset.id, at = atPoint(e);
+  if (!isSel(id)) selectRow(id);
+  const ids = S.multi.size > 1 && S.multi.has(id) ? [...S.multi] : [id];
+  const rows = ids.map(rowOf).filter(Boolean);
+  if (!rows.length) return;
+  const one = rows.length === 1 ? rows[0] : null;
+  if (one?.sched) return menu(at, [{ icon: "calendar-x", label: t("dont_send"), run: () => dontSend(one) }]);
+  const items = [];
+  if (one && one.folder !== "drafts") items.push(
+    { icon: "reply", label: t("reply"), key: "R", run: () => openCompose({ mode: "reply", id }) },
+    { icon: "reply-all", label: t("replyall"), key: "A", run: () => openCompose({ mode: "replyall", id }) },
+    { icon: "forward", label: t("forward"), key: "F", run: () => openCompose({ mode: "forward", id }) }, "-");
+  const anyUnread = rows.some((x) => x.unread), allFlagged = rows.every((x) => x.flagged);
+  const back = rows.every((x) => x.folder === "trash") ? "trash" : rows.every((x) => x.folder === "junk") ? "junk" : null;
+  items.push(
+    { icon: anyUnread ? "mail-open" : "mail", label: anyUnread ? t("read") : t("unread"), key: "U", run: () => markMail(ids, "seen", anyUnread) },
+    { icon: allFlagged ? "star-off" : "star", label: allFlagged ? t("unflag") : t("flag"), key: "S", run: () => markMail(ids, "flagged", !allFlagged) }, "-",
+    back ? { icon: "inbox", label: backLabel(back), run: () => moveMail(ids, "inbox") }
+      : { icon: "archive", label: t("archive_it"), key: "E", run: () => moveMail(ids, "archive") });
+  if (back !== "trash") items.push({ icon: "trash-2", label: t("trash_it"), key: "#", run: () => moveMail(ids, "trash") });
+  items.push({ icon: "folder-input", label: t("move_to"), key: "V", run: () => moveMenu(at, ids) });
+  menu(at, items);
+});
 // a Shift-click picks a range, not text
 $("#rows").addEventListener("mousedown", (e) => { if (e.shiftKey && e.target.closest(".row")) e.preventDefault(); });
 $("#rows").addEventListener("scroll", () => {
@@ -1088,12 +1119,8 @@ function msgNode(r, expanded) {
   const toLine = el("div", { class: "msg-to" }, (t("to") + " ") + to.map(who).join(", "));
   const snip = el("div", { class: "msg-snip" }, r.snippet);
   whoBox.append(expanded ? toLine : snip);
+  // reply / reply all / forward live in the toolbar only; it acts on the message clicked last
   head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts) }, expanded ? longTime(r.ts) : shortTime(r.ts)));
-  const acts = el("div", { class: "msg-acts" },
-    iconBtn("reply", t("reply"), (e) => { e.stopPropagation(); openCompose({ mode: "reply", id: r.id }); }),
-    iconBtn("reply-all", t("replyall"), (e) => { e.stopPropagation(); openCompose({ mode: "replyall", id: r.id }); }),
-    iconBtn("forward", t("forward"), (e) => { e.stopPropagation(); openCompose({ mode: "forward", id: r.id }); }));
-  head.append(acts);
   node.append(head);
   head.addEventListener("click", (e) => {
     if (e.target.closest("button")) return;
@@ -1121,10 +1148,18 @@ async function loadBody(node, r) {
   if (body) return;
   body = el("div", { class: "msg-body" }, el("div", { class: "rows-more" }, el("span", { html: icon("loader-circle", "spin") })));
   node.append(body);
+  // read the moment it opens: the server marks it at once, even while a big mail is still coming in
+  const wasUnread = r.unread;
+  if (wasUnread) { r.unread = false; markRow(r.id, { unread: false }); if (S.focus === r.id) renderToolbar(); }
+  const req = api("message", { id: r.id });
+  if (wasUnread) setTimeout(refreshCounts, 150);
   let m;
-  try { m = await api("message", { id: r.id }); }
-  catch (e) { body.replaceChildren(el("div", { class: "form" }, el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) }))); return; }
-  if (r.unread) { r.unread = false; markRow(r.id, { unread: false }); refreshCounts(); if (S.focus === r.id) renderToolbar(); }
+  try { m = await req; }
+  catch (e) {
+    if (wasUnread) { r.unread = true; markRow(r.id, { unread: true }); refreshCounts(); if (S.focus === r.id) renderToolbar(); }
+    body.replaceChildren(el("div", { class: "form" }, el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) }))); return;
+  }
+  if (wasUnread) refreshCounts();
   body.replaceChildren();
   node._msg = m;
   renderBody(body, m);
@@ -1132,6 +1167,12 @@ async function loadBody(node, r) {
 
 function renderBody(body, m) {
   body.replaceChildren();
+  // attachments sit right under the mail's header, above the text
+  if (m.atts.length) {
+    const atts = el("div", { class: "atts" });
+    for (const a of m.atts) atts.append(attNode(a, m.id));
+    body.append(atts);
+  }
   const remote = m.remote && S.showImages.has(m.id);
   if (m.remote && !remote) {
     body.append(el("div", { class: "imgs-bar" }, el("span", { html: icon("image", "small") }), el("span", {}, t("images_hidden")), el("span", { class: "grow" }),
@@ -1139,11 +1180,6 @@ function renderBody(body, m) {
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
-  if (m.atts.length) {
-    const atts = el("div", { class: "atts" });
-    for (const a of m.atts) atts.append(attNode(a, m.id));
-    body.append(atts);
-  }
 }
 
 function attNode(a, id) {
@@ -1188,6 +1224,35 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
 }
 
+// a picture worth enlarging: not an icon, a spacer or a tracking pixel
+const bigImg = (img) => img.naturalWidth >= 48 && img.naturalHeight >= 32;
+// Mail often gives a picture a fixed height (width="900" height="500", or a style in inches); when the reader is
+// narrower, max-width shrinks only the width and the picture is squashed. Let the height follow the width again.
+function shapeImg(img) {
+  if (!img.complete || !bigImg(img)) return;
+  img.style.cursor = img.closest("a[href]") ? "" : "zoom-in";
+  const w = img.clientWidth, h = img.clientHeight;
+  if (!w || !h) return;
+  const want = img.naturalWidth / img.naturalHeight;
+  if (Math.abs(w / h - want) / want > 0.03) img.style.setProperty("height", "auto", "important");
+}
+function shapeImgs(d) { for (const img of d.images) shapeImg(img); }
+// a picture at full size over the app: click or Esc closes it; a picture larger than the window opens fitted,
+// a click on it shows it at its real size (scroll to look around)
+function viewImage(src) {
+  if (!src) return;
+  const img = el("img", { src, alt: "" });
+  const born = Date.now();
+  const box = el("div", { class: "img-view", onclick: (e) => {
+    if (Date.now() - born < 350) return; // the release of the press that opened it
+    if (e.target === img && (img.naturalWidth > innerWidth - 48 || img.naturalHeight > innerHeight - 48)) box.classList.toggle("full");
+    else closeLayer();
+  } }, img);
+  const sync = () => { if (img.naturalWidth <= innerWidth - 48 && img.naturalHeight <= innerHeight - 48) img.style.cursor = "zoom-out"; };
+  if (img.complete) sync(); else img.addEventListener("load", sync);
+  closeLayer();
+  $("#layer").append(box);
+}
 function mailFrame(html, { plain = false, remote = false, quote = false, sig = false } = {}) {
   const wrap = el("div");
   const frame = el("iframe", { class: "frame" + (sig ? " sig-frame" : ""), sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer", title: "mail" });
@@ -1214,11 +1279,12 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
       let q = 0;
       const ro = new d.defaultView.ResizeObserver(() => {
         if (!frame.isConnected) { ro.disconnect(); return; }
-        if (!q) q = requestAnimationFrame(() => { q = 0; fit(); });
+        if (!q) q = requestAnimationFrame(() => { q = 0; shapeImgs(d); fit(); });
       });
       ro.observe(d.body);
     } catch { /* old engine */ }
-    for (const img of d.images) if (!img.complete) img.addEventListener("load", fit);
+    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fit(); });
+    shapeImgs(d);
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
       if (!a) return;
@@ -1230,6 +1296,13 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
     d.addEventListener("keydown", (e) => onKey(e));
+    // a picture opens on the press: the release inside the frame does not always arrive, so a click would be lost
+    d.addEventListener("mousedown", (e) => {
+      const img = e.target;
+      if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || img.tagName !== "IMG" || !bigImg(img) || img.closest("a[href]")) return;
+      e.preventDefault();
+      viewImage(img.currentSrc || img.src);
+    });
   });
   setTimeout(fit, 400);
   frame.srcdoc = frameDoc(html, { plain, remote, dark: isDark() });
