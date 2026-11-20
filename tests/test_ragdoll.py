@@ -1,5 +1,5 @@
 """Offline tests: python -m unittest discover -s tests"""
-import contextlib, email, io, json, os, shutil, sqlite3, subprocess, sys, tempfile, unittest
+import base64, contextlib, email, io, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, time, unittest
 from email import policy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -784,6 +784,281 @@ class Rename(unittest.TestCase):
     def test_old_import_name(self):
         import hmail
         self.assertIs(hmail, ragdoll)
+
+class TextFixes(unittest.TestCase):
+    """A base64 text cut mid-way, Tencent's entities in plain text, and the one-time repair of old rows."""
+    TEXT = "Dear Ms. Linh, thank you for the order. We will ship the goods next week as agreed."
+
+    def cut_mail(self, keep):
+        b64 = base64.b64encode(self.TEXT.encode()).decode()[:keep]
+        return email.message_from_bytes(
+            ("From: a@b.c\r\nContent-Type: text/plain; charset=utf-8\r\n"
+             "Content-Transfer-Encoding: base64\r\n\r\n" + b64).encode(), policy=policy.default)
+
+    def test_base64_text_cut_one_character_too_far_is_read(self):
+        msg = self.cut_mail(61)                 # 61 % 4 == 1: the email module gives it back undecoded
+        self.assertEqual(ragdoll.b64_cut(msg), self.TEXT.encode()[:45])
+        self.assertEqual(ragdoll.part_text(msg), self.TEXT[:45])
+        self.assertTrue(ragdoll.body_text(msg).startswith("Dear Ms. Linh"))
+
+    def test_base64_text_that_is_whole_is_left_alone(self):
+        msg = self.cut_mail(60)
+        self.assertIsNone(ragdoll.b64_cut(msg))
+        self.assertEqual(ragdoll.part_text(msg), self.TEXT[:45])
+        plain = email.message_from_bytes(b"Content-Type: text/plain\r\n\r\nabcde", policy=policy.default)
+        self.assertIsNone(ragdoll.b64_cut(plain))
+
+    def test_cut_inside_a_character_does_not_fail(self):
+        b64 = base64.b64encode("订单已收到，谢谢。".encode()).decode()[:9]     # 6 bytes: two characters
+        msg = email.message_from_bytes(
+            ("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n" + b64).encode(),
+            policy=policy.default)
+        self.assertEqual(ragdoll.part_text(msg), "订单")
+
+    def test_entities_in_plain_text(self):
+        self.assertEqual(ragdoll.plain_text("Hi John,&nbsp;price &gt; 100 &amp; rising"), "Hi John, price > 100 & rising")
+        self.assertEqual(ragdoll.plain_text("use &lt;b&gt; for bold"), "use &lt;b&gt; for bold")
+        self.assertEqual(ragdoll.plain_text("no entities here"), "no entities here")
+
+    def test_old_rows_are_repaired_once(self):
+        old_dir = ragdoll.CFG.d["data_dir"]
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        raw = base64.b64encode((self.TEXT * 2).encode()).decode()
+
+        def add(c, uid, body):
+            cur = c.execute(
+                "insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
+                "answered,has_body) values('INBOX',1,?,?,'','',1700000000,'a@b.c','me@example.com','','s','',?,1,0,0,1)",
+                (uid, "<%d@x>" % uid, body))
+            c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,'s','a@b.c','',\'\',?)",
+                      (cur.lastrowid, body))
+
+        def row(c, uid):
+            return c.execute("select body, has_body from msgs where uid=?", (uid,)).fetchone()
+        try:
+            c = ragdoll.db()
+            add(c, 1, raw)
+            add(c, 2, "Hi John,&nbsp;see &gt; below")
+            add(c, 3, "A normal text that stays as it is, with enough words to be longer than sixty characters.")
+            c.execute("delete from meta where k='body_fix'")       # as an index from 0.8.0 is
+            c.commit()
+            c.close()
+            c = ragdoll.db()
+            self.assertEqual(tuple(row(c, 1)), ("", 0))            # the next sync reads it again
+            self.assertEqual(tuple(row(c, 2)), ("Hi John, see > below", 1))
+            self.assertEqual(row(c, 3)["has_body"], 1)
+            self.assertTrue(row(c, 3)["body"].startswith("A normal text"))
+            self.assertEqual(c.execute("select v from meta where k='body_fix'").fetchone()["v"], "2")
+            self.assertTrue(c.execute("select 1 from fts where fts match 'below'").fetchone())
+            add(c, 4, raw)
+            add(c, 5, "later&nbsp;text")
+            c.commit()
+            c.close()
+            c = ragdoll.db()                                        # the mark is there: nothing is touched
+            self.assertEqual(tuple(row(c, 4)), (raw, 1))
+            self.assertEqual(tuple(row(c, 5)), ("later&nbsp;text", 1))
+            c.close()
+        finally:
+            shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+            ragdoll.CFG.d["data_dir"] = old_dir
+
+
+BIG_STRUCTURE = (b'(("TEXT" "HTML" ("CHARSET" "utf-8") NIL NIL "7BIT" 60 2 NIL NIL NIL) '
+                 b'("IMAGE" "PNG" ("NAME" "p.png") "<pic1@x>" NIL "BASE64" 300000 NIL ("ATTACHMENT" ("FILENAME" "p.png")) NIL) '
+                 b'("APPLICATION" "PDF" ("NAME" "big.pdf") NIL NIL "BASE64" 400000 NIL ("ATTACHMENT" ("FILENAME" "big.pdf")) NIL) '
+                 b'"MIXED" ("BOUNDARY" "B") NIL NIL)')
+BIG_PARTS = {
+    "HEADER": b"From: Linh <linh@cust.vn>\r\nTo: me@example.com\r\nSubject: Drawing\r\nMIME-Version: 1.0\r\n"
+              b"X-Ragdoll-Part: 9\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n",
+    "1.MIME": b"Content-Type: text/html; charset=utf-8\r\n\r\n",
+    "1": b"<p>See the picture.</p><img src=\"cid:pic1@x\">",
+    "2.MIME": b"Content-Type: image/png; name=\"p.png\"\r\nContent-ID: <pic1@x>\r\n"
+              b"Content-Disposition: attachment; filename=\"p.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+    "2": b"iVBORw0KGgo=",
+    # the sender's own X-Ragdoll-Part must not be taken for ours
+    "3.MIME": b"Content-Type: application/pdf; name=\"big.pdf\"\r\nX-Ragdoll-Part: 1] BODY[\r\n"
+              b"Content-Disposition: attachment; filename=\"big.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+    "3": b"JVBERi0xLjQ=",
+}
+
+
+class BigMailServer(FakeIMAP):
+    """Answers FETCH for one mail (UID 7) from BIG_STRUCTURE and BIG_PARTS, the way imaplib hands it over."""
+    def __init__(self, structure=BIG_STRUCTURE, parts=BIG_PARTS, blind=0):
+        super().__init__(["INBOX"])
+        self.structure, self.parts, self.blind, self.noops = structure, parts, blind, 0
+
+    def noop(self):
+        self.noops += 1
+        self.blind = 0                  # now the connection sees the mail that just came in
+        return "OK", [b""]
+
+    def uid(self, cmd, *args):
+        self.calls.append(("uid", cmd) + args)
+        if cmd != "FETCH" or args[0] != "7" or self.blind:
+            return "OK", [None]
+        if "BODYSTRUCTURE" in args[1]:
+            return "OK", [b"1 (UID 7 BODYSTRUCTURE " + self.structure + b")"]
+        if args[1] == "(BODY.PEEK[])":
+            return "OK", [(b"1 (UID 7 BODY[] {5}", b"whole"), b")"]
+        data = []
+        for k, name in enumerate(re.findall(r"BODY\.PEEK\[([^\]]+)\]", args[1])):
+            lit = self.parts[name]
+            data.append((b"%sBODY[%s] {%d}" % (b" " if k else b"1 (UID 7 ", name.encode(), len(lit)), lit))
+        return "OK", data + [b")"]
+
+    def fetches(self):
+        return [c for c in self.calls if c[:2] == ("uid", "FETCH")]
+
+
+class LightMail(unittest.TestCase):
+    """A big mail without its big files, the single file fetched later, and a mail the connection has not seen yet."""
+
+    def test_structure_is_read(self):
+        bs = ragdoll.fetch_items([b"1 (UID 7 BODYSTRUCTURE " + BIG_STRUCTURE + b")"], 7)[b"BODYSTRUCTURE"]
+        parts, multis = ragdoll.leaves(bs)
+        self.assertEqual(multis, [""])
+        self.assertEqual([p[:3] for p in parts], [("1", "text", "html"), ("2", "image", "png"), ("3", "application", "pdf")])
+        self.assertEqual(parts[1][3:], (False, "base64", 300000, "pic1@x"))    # marked as a file: not "shown"
+        self.assertEqual(parts[2][5:], (400000, ""))
+        self.assertEqual(ragdoll.fetch_items([b"1 (UID 8 BODYSTRUCTURE " + BIG_STRUCTURE + b")"], 7), {})
+
+    def test_parse_keeps_literals_and_quotes(self):
+        got = ragdoll.imap_parse([(b'1 (UID 7 BODY[1.MIME] {5}', b"a (b)"), b' X "q \\"r\\"" NIL)'])
+        self.assertEqual(got, [b"1", [b"UID", b"7", b"BODY[1.MIME]", b"a (b)", b"X", b'q "r"', None]])
+
+    def test_single_part_mail_is_not_made_light(self):
+        self.assertIsNone(ragdoll.leaves(ragdoll.imap_parse([b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 10 1)'])[0]))
+        m = BigMailServer(structure=b'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 10 1)')
+        self.assertIsNone(ragdoll.fetch_light(m, "INBOX", 7))
+
+    def test_big_file_is_left_out_and_the_picture_in_the_body_is_not(self):
+        m = BigMailServer()
+        raw = ragdoll.fetch_light(m, "INBOX", 7)
+        msg = ragdoll.to_msg(raw)
+        self.assertNotIn("X-Ragdoll-Part", msg)                     # the one the sender put in the mail header
+        html, pic, pdf = msg.get_payload()
+        self.assertIn("cid:pic1@x", ragdoll.part_text(html))
+        # the body shows it, though it is marked as a file and over the size for files: it came with the mail
+        self.assertEqual(pic.get_payload(decode=True), base64.b64decode("iVBORw0KGgo="))
+        self.assertIsNone(pic["X-Ragdoll-Part"])
+        self.assertEqual(pdf.get_all("X-Ragdoll-Part"), ["3"])      # ours only, not the sender's
+        self.assertEqual(pdf["X-Ragdoll-Size"], str(int(400000 * 57 / 78)))
+        self.assertEqual(ragdoll.fname(pdf), "big.pdf")
+        self.assertFalse(pdf.get_payload().strip())
+        asked = " ".join(c[3] for c in m.fetches())
+        self.assertIn("BODY.PEEK[2]", asked)
+        self.assertNotIn("BODY.PEEK[3]", asked)
+
+    def test_picture_the_body_does_not_show_stays_out(self):
+        parts = dict(BIG_PARTS, **{"1": b"<p>No picture here.</p>"})
+        m = BigMailServer(parts=parts)
+        html, pic, pdf = ragdoll.to_msg(ragdoll.fetch_light(m, "INBOX", 7)).get_payload()
+        self.assertEqual(pic["X-Ragdoll-Part"], "2")
+        self.assertNotIn("BODY.PEEK[2]", " ".join(c[3] for c in m.fetches()))
+
+    def test_structure_that_cannot_be_read_falls_back_to_the_whole_mail(self):
+        # a part with too few fields
+        self.assertIsNone(ragdoll.fetch_light(BigMailServer(structure=b'(("TEXT") "MIXED")'), "INBOX", 7))
+        # no boundary to build it with
+        parts = dict(BIG_PARTS, HEADER=b"From: a@b.c\r\nContent-Type: multipart/mixed\r\n\r\n")
+        self.assertIsNone(ragdoll.fetch_light(BigMailServer(parts=parts), "INBOX", 7))
+        # the server gave no header at all
+        self.assertIsNone(ragdoll.fetch_light(BigMailServer(parts=dict(BIG_PARTS, HEADER=b"")), "INBOX", 7))
+
+        class Odd(BigMailServer):
+            def uid(self, cmd, *args):
+                if cmd == "FETCH" and "BODYSTRUCTURE" in args[1]:
+                    return "OK", [b"1 (UID 7 BODYSTRUCTURE (((NIL NIL) NIL) 5))"]
+                return super().uid(cmd, *args)
+        self.assertIsNone(ragdoll.fetch_light(Odd(), "INBOX", 7))
+
+    def test_mail_the_connection_has_not_seen_is_asked_for_again(self):
+        m = BigMailServer(blind=1)
+        self.assertEqual(ragdoll.fetch_raw(m, "INBOX", 7), b"whole")
+        self.assertEqual((m.noops, len(m.fetches())), (1, 2))
+        m = BigMailServer(blind=1)
+        self.assertEqual(ragdoll.fetch_one(m, 7, "(UID BODYSTRUCTURE)")[b"UID"], b"7")
+        self.assertEqual(m.noops, 1)
+        m = BigMailServer(blind=1)
+        self.assertTrue(ragdoll.fetch_light(m, "INBOX", 7))
+        m = BigMailServer()
+        self.assertEqual(ragdoll.fetch_raw(m, "INBOX", 7), b"whole")
+        self.assertEqual(m.noops, 0)                                # the usual case costs nothing more
+
+    def test_mail_that_is_gone_is_still_refused(self):
+        m = BigMailServer()
+        with self.assertRaises(SystemExit):
+            ragdoll.fetch_raw(m, "INBOX", 8)
+        self.assertEqual((m.noops, len(m.fetches())), (1, 2))       # asked once more, not for ever
+
+    def test_one_part_is_fetched_with_its_headers(self):
+        m = BigMailServer()
+        raw = ragdoll.fetch_part_raw(m, "INBOX", 7, "3")
+        self.assertNotIn(b"X-Ragdoll", raw)
+        p = ragdoll.fetch_part(m, "INBOX", 7, "3")
+        self.assertEqual((ragdoll.fname(p), ragdoll.part_bytes(p)), ("big.pdf", b"%PDF-1.4"))
+
+    def test_part_number_must_be_a_part_number(self):
+        for bad in ("1] BODY[", "", "1.", ".1", "1 2", "HEADER", "1\r\nA1 DELETE x", None, "1.a"):
+            m = BigMailServer()
+            with self.assertRaises(SystemExit, msg=repr(bad)):
+                ragdoll.fetch_part_raw(m, "INBOX", 7, bad)
+            self.assertEqual(m.calls, [], repr(bad))                # nothing reached the server
+        for good in ("1", "2.1", "10.2.3"):
+            self.assertTrue(ragdoll.SECTION_RE.fullmatch(good))
+
+    def test_part_file_is_kept_beside_the_light_mail(self):
+        light, part = ragdoll.light_path("INBOX", 1, 7), ragdoll.part_path("INBOX", 1, 7, "2.1")
+        self.assertEqual(os.path.dirname(light), os.path.dirname(part))
+        self.assertTrue(os.path.basename(part).startswith(os.path.basename(light)[:-len(".light.eml")] + ".part"))
+        self.assertNotEqual(part, ragdoll.part_path("INBOX", 1, 7, "2"))
+
+
+class HeldFlags(unittest.TestCase):
+    """A sync asks the server for flags; a mark the app made a moment ago may not be there yet."""
+
+    class Server(FakeIMAP):
+        def uid(self, cmd, *args):
+            self.calls.append(("uid", cmd) + args)
+            if cmd == "SEARCH":
+                return "OK", [b"1 2"]
+            return "OK", [b"1 (UID 1 FLAGS ())", b"2 (UID 2 FLAGS (\\Flagged))"]
+
+    def setUp(self):
+        self.old_dir = ragdoll.CFG.d["data_dir"]
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        self.c = ragdoll.db()
+        for uid in (1, 2):
+            self.c.execute(
+                "insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
+                "answered,has_body) values('INBOX',1,?,?,'','',1700000000,'a@b.c','me@example.com','','s','','',1,0,0,1)",
+                (uid, "<%d@x>" % uid))
+        self.c.commit()
+
+    def tearDown(self):
+        self.c.close()
+        shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+        ragdoll.CFG.d["data_dir"] = self.old_dir
+
+    def flags(self):
+        return [tuple(r) for r in self.c.execute("select seen, flagged from msgs order by uid")]
+
+    def test_server_flags_win_when_nothing_is_held(self):
+        ragdoll.sync_headers(self.Server(["INBOX"]), self.c, "INBOX")
+        self.assertEqual(self.flags(), [(0, 0), (0, 1)])
+
+    def test_mark_on_its_way_is_not_undone(self):
+        asked = []
+
+        def held(folder, since):
+            asked.append((folder, since))
+            return {1: {"seen": 1}, 2: {"flagged": 0}}
+        ragdoll.sync_headers(self.Server(["INBOX"]), self.c, "INBOX", held=held)
+        self.assertEqual(self.flags(), [(1, 0), (0, 0)])            # the rest still follows the server
+        self.assertEqual(asked[0][0], "INBOX")
+        self.assertLessEqual(asked[0][1], time.time())
+
 
 if __name__ == "__main__":
     unittest.main()

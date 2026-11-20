@@ -8,7 +8,7 @@ VERSION = re.search(r'^__version__ = "([^"]+)"', open("ragdoll.py", encoding="ut
 # 1024 grid (824 px tile, room for the shadow); Windows keeps the full-size one.
 ICON = "assets/icon-mac.png" if sys.platform == "darwin" else "assets/icon.png"
 
-a = Analysis(["ragdoll_app.py"], datas=[("app", "app")], hiddenimports=["ragdoll"],
+a = Analysis(["ragdoll_app.py"], datas=[("app", "app")], hiddenimports=["ragdoll"] + (["UserNotifications"] if sys.platform == "darwin" else []),
              excludes=["tkinter", "unittest", "pydoc"])
 pyz = PYZ(a.pure)
 

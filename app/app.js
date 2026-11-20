@@ -304,14 +304,34 @@ document.addEventListener("mouseover", (e) => {
 });
 document.addEventListener("mousedown", () => { clearTimeout(tipTimer); if (tipEl) { tipEl.remove(); tipEl = null; } }, true);
 
-function closeLayer() { for (const n of [...$("#layer").children]) leave(n, 160); }
+function closeLayer() {
+  for (const n of [...$("#layer").children]) leave(n, 160);
+  for (const n of $$(".row.ctx")) n.classList.remove("ctx");
+}
+// keys while a menu is open: arrows walk it, Enter runs the item, and the letter shown beside an item runs that item
+function menuKey(e) {
+  const m = $("#layer .menu:not(.out)");
+  if (!m) return false;
+  const items = $$("button", m), k = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const d = e.key === "ArrowDown" ? 1 : -1;
+    items[k < 0 ? (d > 0 ? 0 : items.length - 1) : (k + d + items.length) % items.length]?.focus();
+    return true;
+  }
+  if (e.key === "Home" || e.key === "End") { e.preventDefault(); items[e.key === "Home" ? 0 : items.length - 1]?.focus(); return true; }
+  if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1) return false;
+  const hit = items.find((b) => b.dataset.k === e.key.toUpperCase());
+  if (hit) { e.preventDefault(); hit.click(); return true; }
+  return false;
+}
 function menu(anchor, items, { above = false } = {}) {
   closeLayer();
   const m = el("div", { class: "menu" + (above ? " above" : ""), role: "menu" });
   for (const it of items) {
     if (it === "-") m.append(el("hr"));
     else if (it.note) m.append(el("div", { class: "menu-note" }, it.note));
-    else m.append(el("button", { onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + `<span class="label">${esc(it.label)}</span>` +
+    else m.append(el("button", { role: "menuitem", "data-k": it.key && it.key.length === 1 ? it.key : null, onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + `<span class="label">${esc(it.label)}</span>` +
       (it.on ? icon("check", "small on-mark") : it.key ? `<span class="grow"></span><kbd>${esc(it.key)}</kbd>` : it.hint ? `<span class="grow"></span><span class="hint">${esc(it.hint)}</span>` : "") }));
   }
   const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
@@ -364,6 +384,8 @@ function renderNav() {
       seenOther = true;
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
       $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); folderMenu(b, f); });
+    } else if (READ_ALL_IN.includes(f.key)) {
+      b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
     }
     if (["archive", "trash", "inbox", "junk"].includes(f.key) || f.other) {
       b.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("x-ragdoll/ids")) { e.preventDefault(); b.classList.add("drop"); } });
@@ -418,8 +440,21 @@ async function deleteFolder(f) {
     await refreshCounts();
   } catch (e) { fail(e); }
 }
+// every unread mail of a folder becomes read; the list on screen follows at once
+async function readAll(key) {
+  try {
+    await api("mark_all_read", { folder: key });
+    if (S.folder === key && !S.query) await loadList({ quiet: true });
+    await refreshCounts();
+  } catch (e) { fail(e); }
+}
+const READ_ALL_IN = ["inbox", "flagged", "archive", "junk", "trash"];
 function folderMenu(anchor, f) {
+  const all = { icon: "mail-open", label: t("read_all"), run: () => readAll(f.key) };
+  if (!f.other) return menu(anchor, [all]);
   menu(anchor, [
+    all,
+    "-",
     { icon: "pencil", label: t("rename_folder"), run: () => renameFolder(f) },
     { icon: "trash-2", label: t("delete_folder"), run: () => deleteFolder(f) },
     "-",
@@ -454,11 +489,11 @@ function rowTemplate(r) {
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
   const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("arrow-right", "small") : ""}</span>` : "";
   const acts = r.sched
-    ? `<button class="icon-btn tiny" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
+    ? `<button class="icon-btn tiny" tabindex="-1" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : (S.folder === "trash" || S.folder === "junk") && !S.query
-    ? `<button class="icon-btn tiny" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
-    : `<button class="icon-btn tiny" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
-      `<button class="icon-btn tiny" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
+    ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
+    : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
+      `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
   return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
     `<span class="dot"></span><span class="who" dir="auto">${done}${esc(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
@@ -805,12 +840,13 @@ $("#rows").addEventListener("contextmenu", (e) => {
   if (!row) return;
   e.preventDefault();
   const id = row.dataset.id, at = atPoint(e);
-  if (!isSel(id)) selectRow(id);
   const ids = S.multi.size > 1 && S.multi.has(id) ? [...S.multi] : [id];
+  // the menu is about this row; it is not opened (that would mark it read and close a mail being written)
+  const mark = () => { if (!isSel(id)) row.classList.add("ctx"); };
   const rows = ids.map(rowOf).filter(Boolean);
   if (!rows.length) return;
   const one = rows.length === 1 ? rows[0] : null;
-  if (one?.sched) return menu(at, [{ icon: "calendar-x", label: t("dont_send"), run: () => dontSend(one) }]);
+  if (one?.sched) { menu(at, [{ icon: "calendar-x", label: t("dont_send"), run: () => dontSend(one) }]); return mark(); }
   const items = [];
   if (one && one.folder !== "drafts") items.push(
     { icon: "reply", label: t("reply"), key: "R", run: () => openCompose({ mode: "reply", id }) },
@@ -826,6 +862,7 @@ $("#rows").addEventListener("contextmenu", (e) => {
   if (back !== "trash") items.push({ icon: "trash-2", label: t("trash_it"), key: "#", run: () => moveMail(ids, "trash") });
   items.push({ icon: "folder-input", label: t("move_to"), key: "V", run: () => moveMenu(at, ids) });
   menu(at, items);
+  mark();
 });
 // a Shift-click picks a range, not text
 $("#rows").addEventListener("mousedown", (e) => { if (e.shiftKey && e.target.closest(".row")) e.preventDefault(); });
@@ -1172,6 +1209,16 @@ function renderBody(body, m) {
     const atts = el("div", { class: "atts" });
     for (const a of m.atts) atts.append(attNode(a, m.id));
     body.append(atts);
+    if (m.atts.length > 1) {
+      const all = el("button", { class: "link-btn atts-all", html: icon("download", "small") + `<span>${esc(t("save_all"))}</span>`, onclick: async () => {
+        all.disabled = true;
+        try {
+          const r = await api("save_all", { id: m.id });
+          toast(t("saved_n", r.count), { action: { label: t("show"), run: () => api("reveal", { path: r.path }).catch(fail) }, ms: 5000 });
+        } catch (e) { fail(e); } finally { all.disabled = false; }
+      } });
+      body.append(all);
+    }
   }
   const remote = m.remote && S.showImages.has(m.id);
   if (m.remote && !remote) {
@@ -1209,9 +1256,14 @@ const QUOTE_SEL = ".gmail_quote, .gmail_extra, #divRplyFwdMsg, blockquote[type=c
   "#mail-editor-reference-message-container, .moz-cite-prefix, #isForwardContent, #origbody, .protonmail_quote, div[id^=reply-intro]";
 const QUOTE_TEXT = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件)|发件人[:：]|寄件者[:：]|From:\s|Von:\s|De\s?:\s|Từ:\s|在\s?.{3,80}写道[:：]|On .{5,160} wrote:)/i;
 const frames = new Set();
+// WebKit (the Mac app) runs no listener inside a sandboxed frame that lacks allow-scripts, not even one this page
+// attaches: a click on a link or a picture did nothing there. The mail's own scripts stay off either way: the
+// backend strips them (page_html) and the frame's policy has script-src 'none'.
+const WEBKIT = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent);
+const SANDBOX = "allow-same-origin allow-popups allow-popups-to-escape-sandbox" + (WEBKIT ? " allow-scripts" : "");
 
 function frameDoc(html, { plain, remote, dark }) {
-  const csp = `default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
+  const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
   let css = `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
 img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:${dark ? "#8fb8ff" : "#1a5fb4"}}
@@ -1255,7 +1307,7 @@ function viewImage(src) {
 }
 function mailFrame(html, { plain = false, remote = false, quote = false, sig = false } = {}) {
   const wrap = el("div");
-  const frame = el("iframe", { class: "frame" + (sig ? " sig-frame" : ""), sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer", title: "mail" });
+  const frame = el("iframe", { class: "frame" + (sig ? " sig-frame" : ""), sandbox: SANDBOX, referrerpolicy: "no-referrer", title: "mail" });
   wrap.append(frame);
   const st = { html, plain, remote, quote, frame, wrap, hidden: [], toggle: null };
   frames.add(st);
@@ -1265,6 +1317,15 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d.body) return;
     // the body's own height: the document's grows with the frame and would never shrink
     const root = d.querySelector(".rd-root") || d.body;
+    // measured again only when the reader's width changed or a picture arrived, so this cannot loop
+    const w = frame.clientWidth;
+    if (w && (w !== st.w || st.redo)) {
+      st.w = w; st.redo = false;
+      root.style.zoom = "";
+      const need = Math.max(d.documentElement.scrollWidth, d.body.scrollWidth);
+      // not below 0.72: smaller than that the words are too small to read, so a very wide mail scrolls sideways
+      if (need > w + 4) root.style.zoom = Math.max(0.72, w / need).toFixed(3);
+    }
     const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (d.defaultView?.scrollY || 0)));
     if (frame.style.height !== h + "px") frame.style.height = h + "px";
   };
@@ -1283,7 +1344,7 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
       });
       ro.observe(d.body);
     } catch { /* old engine */ }
-    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fit(); });
+    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); st.redo = true; fit(); });
     shapeImgs(d);
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
@@ -1296,6 +1357,29 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
     d.addEventListener("keydown", (e) => onKey(e));
+    const linkOf = (e) => {
+      const a = e.target.closest?.("a[href]"), href = a?.getAttribute("href") || "";
+      if (/^mailto:/i.test(href)) return { mail: decodeURIComponent(href.slice(7).split("?")[0]) };
+      return /^https?:/i.test(href) ? { url: a.href } : null;
+    };
+    d.addEventListener("mouseover", (e) => { const l = linkOf(e); linkTip(frame, l ? l.url || l.mail : ""); });
+    d.documentElement.addEventListener("mouseleave", () => linkTip(frame, ""));
+    d.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const l = linkOf(e), img = e.target.tagName === "IMG" && bigImg(e.target) ? e.target : null;
+      const sel = String(d.getSelection?.() || "").trim();
+      const items = [];
+      if (l?.url) items.push({ icon: "external-link", label: t("open_link"), run: () => api("open_url", { url: l.url }).catch(fail) },
+        { icon: "copy", label: t("copy_link"), run: () => copyText(l.url) });
+      if (l?.mail) items.push({ icon: "square-pen", label: t("compose"), run: () => openCompose({ mode: "new", to: [{ name: "", addr: l.mail.split(",")[0].trim().toLowerCase() }] }) },
+        { icon: "copy", label: t("copy_addr"), run: () => copyText(l.mail) });
+      if (img) items.push({ icon: "image", label: t("open_picture"), run: () => viewImage(img.currentSrc || img.src) });
+      if (sel) items.push({ icon: "copy", label: t("copy"), run: () => copyText(sel) });
+      if (!items.length) return;
+      const r = frame.getBoundingClientRect();
+      linkTip(frame, "");
+      menu(atPoint({ clientX: r.left + e.clientX, clientY: r.top + e.clientY }), items);
+    });
     // a picture opens on the press: the release inside the frame does not always arrive, so a click would be lost
     d.addEventListener("mousedown", (e) => {
       const img = e.target;
@@ -1309,6 +1393,26 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
   const obs = new MutationObserver(() => { if (!wrap.isConnected) { frames.delete(st); obs.disconnect(); } });
   requestAnimationFrame(() => obs.observe(document.body, { childList: true, subtree: true }));
   return { node: wrap, frame, st };
+}
+
+// where a link goes, shown at the foot of the reader while the pointer is on it
+let linkTipEl = null;
+function linkTip(frame, text) {
+  if (linkTipEl) { linkTipEl.remove(); linkTipEl = null; }
+  if (!text || !frame?.isConnected) return;
+  const r = frame.getBoundingClientRect();
+  linkTipEl = el("div", { class: "tip link-tip", style: `left:${Math.max(8, r.left)}px;max-width:${Math.max(160, Math.min(r.width, 620))}px` }, text);
+  document.body.append(linkTipEl);
+}
+document.addEventListener("mousemove", () => { if (linkTipEl) linkTip(null, ""); }, { passive: true });
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = el("textarea", { style: "position:fixed;opacity:0" });
+    ta.value = text; document.body.append(ta); ta.select();
+    try { document.execCommand("copy"); } finally { ta.remove(); }
+  }
+  toast(t("copied"));
 }
 
 function refreshFrames() {
@@ -1967,8 +2071,7 @@ async function openSettings() {
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
       if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", "RAGDOLL_PASSWORD")));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))),
-        lab(t("require_cc"), inp("require_cc", "text", "boss@example.com")));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
       const res = el("div");
       const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
@@ -1999,7 +2102,7 @@ async function openSettings() {
     } else if (tab === "notify") {
       const seg = el("div", { class: "seg" });
       for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
-        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) askNotice(); draw(); } }, t(lab)));
+        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } draw(); } }, t(lab)));
       }
       body.append(el("h2", {}, t("notifications")), el("div", { class: "form" },
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg)));
@@ -2026,7 +2129,7 @@ async function openSettings() {
   };
   async function save() {
     grab();
-    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "require_cc", "signature"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
+    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "signature"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
     if (!changed) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
@@ -2190,7 +2293,7 @@ function onKey(e) {
   if (mod && !e.altKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
     e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
   }
-  if (layerOpen()) { if (e.key === "Escape") { closeLayer(); } return; }
+  if (layerOpen()) { if (e.key === "Escape") closeLayer(); else menuKey(e); return; }
   if (e.key === "Escape" && $("#app").classList.contains("side-open")) { e.preventDefault(); sideOpen(false); return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }

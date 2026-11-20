@@ -1,12 +1,12 @@
 [project]
 name = "ragdoll-mail"
-version = "0.8.0"
-description = "Mail CLI for one IMAP/SMTP mailbox with a local search index, built for AI agents"
+version = "0.8.1"
+description = "Free mail app for Mac and Windows with fast local search for any IMAP mailbox, plus a command line for AI agents"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 
 [project.optional-dependencies]
-app = ["pywebview>=5"]
+app = ["pywebview>=5", "pyobjc-framework-UserNotifications; sys_platform == 'darwin'"]
 
 [project.scripts]
 ragdoll = "ragdoll:main"

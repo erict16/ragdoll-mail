@@ -54,14 +54,14 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
-import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time
+import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -407,8 +407,11 @@ def q(folder):
 
 def imap():
     need_account()
-    m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"])
+    # a server that does not answer must not hold the caller (the app's one connection) for minutes
+    m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], timeout=15)
     m.login(CFG.user, password())
+    with contextlib.suppress(Exception):
+        m.sock.settimeout(None)         # signing in is quick, a big mail is not: reads wait as before
     try:        # imaplib keeps the pre-login list; MOVE and UIDPLUS often appear only after login
         typ, data = m.capability()
         if typ == "OK" and data and data[0]:
@@ -496,12 +499,32 @@ def flags_of(blob):
     return int("\\Seen" in f), int("\\Flagged" in f), int("\\Answered" in f)
 
 
+def look_again(m):
+    """A mail that came in after this connection opened its folder is not in the connection's view
+    yet, and a FETCH of it answers nothing: NOOP lets the server show it."""
+    m.noop()
+    getattr(m, "untagged_responses", {}).pop("FETCH", None)
+
+
+def fetch_one(m, uid, items):
+    """{item name: value} of a UID FETCH for one mail; asked once more when the answer is empty."""
+    for again in (False, True):
+        typ, data = m.uid("FETCH", str(uid), items)
+        got = fetch_items(data, uid)
+        if got or again:
+            return got
+        look_again(m)
+
+
 def fetch_raw(m, folder, uid):
     use(m, folder)
-    typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
-    for item in data:
-        if isinstance(item, tuple):
-            return item[1]
+    for again in (False, True):
+        typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        for item in data:
+            if isinstance(item, tuple):
+                return item[1]
+        if not again:
+            look_again(m)
     die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
 
 
@@ -509,6 +532,9 @@ def fetch_raw(m, folder, uid):
 
 LIGHT_MIN = 1536 * 1024     # a mail this big is opened light
 LEAVE_OUT = 256 * 1024      # a file part this big stays on the server until it is opened
+SHOWN_MAX = 11 * 1024 * 1024    # an image shown in the body comes with the mail up to this size
+SECTION_RE = re.compile(r"[0-9]+(\.[0-9]+)*")       # an IMAP body section: 2, 1.3, ...
+OURS_RE = re.compile(rb"(?im)^X-Ragdoll-[^\r\n]*\r?\n(?:[ \t][^\r\n]*\r?\n)*")
 
 
 def imap_parse(data):
@@ -554,8 +580,8 @@ def fetch_items(data, uid):
 
 
 def leaves(bs, sec=""):
-    """BODYSTRUCTURE -> [(section, type, subtype, shown in the body, encoding, octets)] for its leaves,
-    and the sections of its multiparts; None when the mail is a single part."""
+    """BODYSTRUCTURE -> [(section, type, subtype, shown in the body, encoding, octets, Content-ID)] for
+    its leaves, and the sections of its multiparts; None when the mail is a single part."""
     if not bs or not isinstance(bs, list):
         return None
     if isinstance(bs[0], list):
@@ -581,23 +607,34 @@ def leaves(bs, sec=""):
     disp = next((low(x[0]) for x in bs[7:] if isinstance(x, list) and x and isinstance(x[0], bytes)
                  and low(x[0]) in ("inline", "attachment")), "")
     shown = bs[3] is not None and disp != "attachment"     # a Content-ID alone does not: Outlook gives every file one
-    return [(sec, low(bs[0]), low(bs[1]), shown, low(bs[5]), size)], []
+    return [(sec, low(bs[0]), low(bs[1]), shown, low(bs[5]), size, low(bs[3]).strip().strip("<>"))], []
 
 
 def keep_part(typ, shown, size):
     if typ in ("text", "message"):
         return True
     if shown:                                   # an image shown in the body
-        return size <= 11 * 1024 * 1024
+        return size <= SHOWN_MAX
     return size <= LEAVE_OUT
+
+
+def cid_refs(html):
+    """The Content-IDs the HTML body shows (its cid: links)."""
+    return {urllib.parse.unquote(x).strip("<>") for x in re.findall(r"""(?i)cid:<?([^"'\s>)]+)""", html or "")}
 
 
 def fetch_light(m, folder, uid):
     """The mail with its big file parts left empty, or None when that would not help. A part left out
     keeps its own headers and gains X-Ragdoll-Part (its IMAP section) and X-Ragdoll-Size (its bytes)."""
+    try:
+        return light_mail(m, folder, uid)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None         # a structure this does not know: the caller fetches the whole mail
+
+
+def light_mail(m, folder, uid):
     use(m, folder)
-    typ, data = m.uid("FETCH", str(uid), "(UID BODYSTRUCTURE)")
-    found = leaves((fetch_items(data, uid).get(b"BODYSTRUCTURE")))
+    found = leaves(fetch_one(m, uid, "(UID BODYSTRUCTURE)").get(b"BODYSTRUCTURE"))
     if not found:
         return None
     parts, multis = found
@@ -622,7 +659,8 @@ def fetch_light(m, folder, uid):
     leaf = {p[0] for p in parts}
 
     def hdr_block(h, extra=b""):
-        return h.rstrip(b"\r\n") + b"\r\n" + extra + b"\r\n"
+        # an X-Ragdoll header that came with the mail is not ours: only the ones added here count
+        return OURS_RE.sub(b"", h.rstrip(b"\r\n") + b"\r\n") + extra + b"\r\n"
 
     def build(sec):
         if sec in leaf:
@@ -640,21 +678,42 @@ def fetch_light(m, folder, uid):
                        if x and (x.startswith(sec + ".") if sec else True)}, key=int)
         body = b"".join(b"--" + b.encode() + b"\r\n" + build("%s.%s" % (sec, k) if sec else k) + b"\r\n" for k in kids)
         return (hdr_block(h) if sec else b"") + body + b"--" + b.encode() + b"--\r\n"
-    try:
-        return hdr_block(head[""]) + build("")
-    except (ValueError, KeyError):
-        return None
+    raw = hdr_block(head[""]) + build("")
+    # a picture the body shows can be marked as a file (Content-Disposition: attachment) and so was
+    # left out: it would show blank. Bring in the ones the HTML refers to after all.
+    maybe = [p for p in out if p[6] and p[5] <= SHOWN_MAX and (p[1] == "image" or p[1:3] == ("application", "octet-stream"))]
+    if maybe:
+        refs = cid_refs(bodies(to_msg(raw))[1])
+        more = [p for p in maybe if p[6] in refs]
+        if more:
+            got.update(fetch_one(m, uid, "(UID %s)" % " ".join("BODY.PEEK[%s]" % p[0] for p in more)))
+            for p in more:
+                if item("BODY[%s]" % p[0]):
+                    del left[p[0]]
+            raw = hdr_block(head[""]) + build("")
+    return raw
+
+
+def fetch_part_raw(m, folder, uid, sec):
+    """One part of a mail, its MIME headers and body as they are on the server."""
+    if not SECTION_RE.fullmatch(str(sec)):      # it goes into the IMAP command as it is
+        die("bad part number %r" % (sec,))
+    use(m, folder)
+    got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
+    mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
+    if not isinstance(mime, bytes) or not isinstance(body, bytes):
+        die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
+    return OURS_RE.sub(b"", mime.rstrip(b"\r\n") + b"\r\n") + b"\r\n" + body
 
 
 def fetch_part(m, folder, uid, sec):
     """One part of a mail (its MIME headers and body) as a message, for a file left out of a light mail."""
-    use(m, folder)
-    typ, data = m.uid("FETCH", str(uid), "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
-    got = fetch_items(data, uid)
-    mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
-    if not isinstance(mime, bytes) or not isinstance(body, bytes):
-        die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
-    return to_msg(mime.rstrip(b"\r\n") + b"\r\n\r\n" + body)
+    return to_msg(fetch_part_raw(m, folder, uid, sec))
+
+
+def part_path(folder, uidv, uid, sec):
+    """Where a file fetched by itself (fetch_part_raw) is kept, beside the light mail it belongs to."""
+    return cache_path(folder, uidv, uid)[:-4] + ".part%s.eml" % sec
 
 
 def light_path(folder, uidv, uid):
@@ -803,13 +862,38 @@ def html_to_text(h):
     return re.sub(r"\n\s*\n+", "\n\n", h).strip()
 
 
+def b64_cut(p):
+    """The bytes of a base64 part whose end is missing, or None. The index reads only the start of a
+    mail; when the cut leaves one base64 character too many, the email module gives the text back
+    undecoded, and the preview showed "RGVhciBNcy4g..."."""
+    if (p.get("Content-Transfer-Encoding") or "").strip().lower() != "base64":
+        return None
+    s = p.get_payload()
+    if not isinstance(s, str):
+        return None
+    s = re.sub(r"[^A-Za-z0-9+/]", "", s)
+    if len(s) % 4 != 1:
+        return None
+    try:
+        return base64.b64decode(s[:-1] + "=" * (-(len(s) - 1) % 4))
+    except ValueError:
+        return None
+
+
 def part_text(p):
     """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...)."""
-    try:
-        return nfc(p.get_content())
-    except Exception:
-        pass
-    payload = p.get_payload(decode=True) or b""
+    payload = b64_cut(p)
+    if payload is None:
+        try:
+            return nfc(p.get_content())
+        except Exception:
+            pass
+        payload = p.get_payload(decode=True) or b""
+    else:
+        try:        # the cut can also split the last character: drop it rather than fail on it
+            return nfc(payload.decode(p.get_content_charset() or "utf-8", "ignore"))
+        except LookupError:
+            pass
     for cs, err in ((p.get_content_charset() or "utf-8", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
         try:
             return nfc(payload.decode(cs, err))
@@ -841,9 +925,20 @@ def bodies(msg):
     return plain, html
 
 
+ENTITY_RE = re.compile(r"&(?:nbsp|amp|lt|gt|quot|#\d{2,5});")
+
+
+def plain_text(plain):
+    """Tencent's mailers write HTML entities into the plain text part ("Hi John,&nbsp;"); turn them
+    back into characters. Only a text that has &nbsp; is treated so: elsewhere "&lt;" may be meant."""
+    if "&nbsp;" in plain:
+        plain = ENTITY_RE.sub(lambda mo: htmlmod.unescape(mo.group()), plain).replace("\xa0", " ")
+    return plain
+
+
 def body_text(msg):
     plain, html = bodies(msg)
-    return plain.strip() or html_to_text(html)
+    return plain_text(plain).strip() or html_to_text(html)
 
 
 def new_text(text):
@@ -1015,6 +1110,24 @@ def db():
             c.execute("delete from msgs where id=?", (r["id"],))
         c.execute("insert or replace into meta values('charset_fix', ?)", (str(len(bad)),))
         c.commit()
+    if not c.execute("select 1 from meta where k='body_fix'").fetchone():
+        # 0.8.0 and older: a base64 text cut at the wrong place was stored undecoded (the next sync
+        # reads those again), and the entities of Tencent's plain texts were left as they came
+        n = 0
+        for r in c.execute("select id, body from msgs where has_body=1 and body!=''").fetchall():
+            b = r["body"]
+            if len(b) > 60 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", b[:400]) and " " not in b[:400].strip():
+                c.execute("update msgs set body='', has_body=0 where id=?", (r["id"],))
+                c.execute("update fts set body='' where rowid=?", (r["id"],))
+            elif "&nbsp;" in b:
+                b = plain_text(b)
+                c.execute("update msgs set body=? where id=?", (b, r["id"]))
+                c.execute("update fts set body=? where rowid=?", (b, r["id"]))
+            else:
+                continue
+            n += 1
+        c.execute("insert or replace into meta values('body_fix', ?)", (str(n),))
+        c.commit()
     return c
 
 
@@ -1141,8 +1254,10 @@ def header_row(seg):
             "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
 
 
-def sync_headers(m, c, folder, full_flags=False, workers=1):
-    """New mail headers, flags and deletions for one folder. Returns new row count."""
+def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
+    """New mail headers, flags and deletions for one folder. Returns new row count.
+    held(folder, since) -> {uid: {"seen": 1, ...}}: flags the caller has changed that the server may
+    not have had when it was asked at `since`; they stay as the caller set them."""
     try:
         uidv = select(m, folder)
     except LookupError:
@@ -1165,12 +1280,17 @@ def sync_headers(m, c, folder, full_flags=False, workers=1):
     known = sorted(u for u in server if u in local)
     check = known if full_flags else known[-300:]
     for i in range(0, len(check), 500):
+        asked = time.time()
         typ, data = m.uid("FETCH", ",".join(map(str, check[i:i + 500])), "(UID FLAGS)")
+        mine = held(folder, asked) if held else {}
         for seg in segments(data):
             uid = seg_uid(seg)
             if uid in local:
+                seen, flagged, answered = flags_of(b"".join(seg))
+                if uid in mine:     # a mail just read in the app must not turn unread again
+                    seen, flagged = mine[uid].get("seen", seen), mine[uid].get("flagged", flagged)
                 c.execute("update msgs set seen=?, flagged=?, answered=? where id=?",
-                          (*flags_of(b"".join(seg)), local[uid]))
+                          (seen, flagged, answered, local[uid]))
     c.commit()
     new = sorted((u for u in server if u not in local), reverse=True)
     chunks = [new[i:i + 100] for i in range(0, len(new), 100)]
