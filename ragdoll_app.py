@@ -1408,6 +1408,17 @@ class Backend:
         threading.Thread(target=system_notice, args=("Ragdoll Mail", text_in(a, "body")[:200]), daemon=True).start()
         return {"ok": True}
 
+    def api_notice_state(self, a):
+        """Whether macOS lets the app show notices, for the line in Settings."""
+        return {"state": "" if self.demo or WINDOW.w is None else mac_notice_state()}
+
+    def api_notice_settings(self, a):
+        """Open the system's page where the owner allows notices. The switch itself is theirs."""
+        if self.demo or WINDOW.w is None or sys.platform != "darwin":
+            return {"ok": False}
+        mac_notice_page()
+        return {"ok": True}
+
     def api_mark_all_read(self, a):
         """Every unread mail of a list becomes read: the index now, the server in the background.
         {"folder": the list's key, as for api_list} -> {"count": how many were unread}."""
@@ -2371,9 +2382,11 @@ def mac_notice(title, body):
     app to the front (one sent through osascript shows Script Editor's icon). True when it was
     handed to macOS. Only the built app: run from the source, "the app" is Python.
 
-    macOS takes these only from an app signed with a certificate. A build without one (ad-hoc
-    signed, as ours is today) is refused with "Notifications are not allowed for this application"
-    (seen on macOS 26), and the notice then goes out through osascript."""
+    The app needs no certificate for this: an ad-hoc signed build is asked like any other (seen on
+    macOS 26), as long as it runs from a normal place such as /Applications. macOS asks the owner
+    once. If the answer was no, or the question was closed without an answer, macOS keeps "not
+    allowed" and refuses with "Notifications are not allowed for this application"; the notice then
+    goes out through osascript, and Settings shows how to allow them (mac_notice_state)."""
     if not getattr(sys, "frozen", False):
         return False
     try:
@@ -2398,7 +2411,7 @@ def mac_notice(title, body):
             with contextlib.suppress(Exception):
                 if ok:
                     show()
-                elif err is not None:       # refused: a build with no certificate
+                elif err is not None:       # not allowed in System Settings
                     osa_notice(title, body)
 
         center.requestAuthorizationWithOptions_completionHandler_(
@@ -2409,6 +2422,43 @@ def mac_notice(title, body):
 
 
 MAC_NOTICES = SimpleNamespace(delegate=None, lock=threading.Lock())
+MAC_NOTICE_PAGE = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+
+
+def mac_notice_state():
+    """What macOS has for this app's notices: "on", "off" (the owner said no, or closed the question),
+    "ask" (not asked yet), or "" when it cannot be told (not the built Mac app)."""
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return ""
+    try:
+        import UserNotifications as UN
+        center = UN.UNUserNotificationCenter.currentNotificationCenter()
+        if center is None:
+            return ""
+        got, box = threading.Event(), []
+
+        def answer(settings):
+            with contextlib.suppress(Exception):
+                box.append(int(settings.authorizationStatus()))
+            got.set()
+
+        center.getNotificationSettingsWithCompletionHandler_(answer)
+        if not got.wait(3) or not box:
+            return ""
+        return {0: "ask", 1: "off"}.get(box[0], "on")
+    except Exception:       # noqa: BLE001 - only a hint in Settings
+        return ""
+
+
+def mac_notice_page():
+    """Open System Settings at Notifications, at this app's own row where macOS supports that."""
+    page = MAC_NOTICE_PAGE
+    with contextlib.suppress(Exception):
+        from Foundation import NSBundle
+        ident = NSBundle.mainBundle().bundleIdentifier()
+        if ident:
+            page += "?id=" + str(ident)
+    subprocess.run(["open", page], timeout=10, capture_output=True)
 
 
 def mac_notice_delegate(UN):

@@ -1266,7 +1266,7 @@ function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
   let css = `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
-img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:${dark ? "#8fb8ff" : "#1a5fb4"}}
+img{max-width:100%!important;height:auto}table{max-width:100%}pre{white-space:pre-wrap}a{color:${dark ? "#8fb8ff" : "#1a5fb4"}}
 blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}
 .rd-plain{white-space:pre-wrap;font-size:${textSize()}px}.rd-quote{color:${dark ? "#9a9a9a" : "#6e6e73"};margin-top:14px;padding-left:10px;border-left:2px solid ${dark ? "#444" : "#ddd"}}`;
   if (dark && !plain) {
@@ -1289,6 +1289,24 @@ function shapeImg(img) {
   if (Math.abs(w / h - want) / want > 0.03) img.style.setProperty("height", "auto", "important");
 }
 function shapeImgs(d) { for (const img of d.images) shapeImg(img); }
+// Mail often sets its own text very small (8pt notes, 7pt tables). Nothing in a mail is shown smaller than this:
+// 12px, or the reader's own text size when that is set smaller. Text under 6px is left alone: mail hides lines that way.
+function minText(d) {
+  const min = Math.min(12, textSize()), seen = new Set(), view = d.defaultView;
+  if (!d.body || !view) return;
+  const tw = d.createTreeWalker(d.body, NodeFilter.SHOW_TEXT);
+  for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+    const e = n.parentElement;
+    if (!e || seen.has(e) || !n.nodeValue.trim()) continue;
+    seen.add(e);
+    if (e.closest("sub,sup")) continue;
+    const cs = view.getComputedStyle(e), px = parseFloat(cs.fontSize);
+    if (!(px >= 6 && px < min)) continue;
+    e.style.setProperty("font-size", min + "px", "important");
+    // a line height set for the small text would now cut the larger text
+    if (parseFloat(cs.lineHeight) < min * 1.25) e.style.setProperty("line-height", "1.4", "important");
+  }
+}
 // a picture at full size over the app: click or Esc closes it; a picture larger than the window opens fitted,
 // a click on it shows it at its real size (scroll to look around)
 function viewImage(src) {
@@ -1317,15 +1335,6 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d.body) return;
     // the body's own height: the document's grows with the frame and would never shrink
     const root = d.querySelector(".rd-root") || d.body;
-    // measured again only when the reader's width changed or a picture arrived, so this cannot loop
-    const w = frame.clientWidth;
-    if (w && (w !== st.w || st.redo)) {
-      st.w = w; st.redo = false;
-      root.style.zoom = "";
-      const need = Math.max(d.documentElement.scrollWidth, d.body.scrollWidth);
-      // not below 0.72: smaller than that the words are too small to read, so a very wide mail scrolls sideways
-      if (need > w + 4) root.style.zoom = Math.max(0.72, w / need).toFixed(3);
-    }
     const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (d.defaultView?.scrollY || 0)));
     if (frame.style.height !== h + "px") frame.style.height = h + "px";
   };
@@ -1333,6 +1342,7 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
   frame.addEventListener("load", () => {
     const d = frame.contentDocument;
     if (!d) return;
+    minText(d);
     if (quote) collapseQuote(st);
     fit();
     // the frame's own observer: it goes away with the frame; one fit per frame at most
@@ -1344,7 +1354,7 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
       });
       ro.observe(d.body);
     } catch { /* old engine */ }
-    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); st.redo = true; fit(); });
+    for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fit(); });
     shapeImgs(d);
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
@@ -2102,10 +2112,27 @@ async function openSettings() {
     } else if (tab === "notify") {
       const seg = el("div", { class: "seg" });
       for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
-        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } draw(); } }, t(lab)));
+        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } } draw(); } }, t(lab)));
       }
-      body.append(el("h2", {}, t("notifications")), el("div", { class: "form" },
-        el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg)));
+      const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg));
+      body.append(el("h2", {}, t("notifications")), form);
+      // macOS keeps its own switch for the app; when it is off, say so and lead to it
+      const check = async () => {
+        if (!window.pywebview || PREFS.notify === false) return;
+        const r = await api("notice_state").catch(() => null);
+        if (!form.isConnected) return;
+        const old = $(".notice-off", form);
+        if (r?.state !== "off") { old?.remove(); return; }
+        if (old) return;
+        form.append(el("div", { class: "msg-warn notice-off" }, el("span", {}, t("notice_off")),
+          el("button", { class: "btn", onclick: () => api("notice_settings").catch(fail) }, t("notice_open"))));
+        // back from System Settings: the line goes once the switch is on
+        const back = () => { if (!form.isConnected) { window.removeEventListener("focus", back); return; } check(); };
+        window.addEventListener("focus", back);
+      };
+      // a moment after the switch here: macOS may be asking its question right now
+      setTimeout(check, noticeAsked ? 1500 : 0);
+      noticeAsked = false;
     } else if (tab === "region") {
       const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
         setPref({ lang: val }); setLocale(PREFS); relabel(); relabelSheet();
@@ -2355,6 +2382,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
 // ---------------------------------------------------------------- status
 
 // new mail while the window is not in front: the browser's own notice, and a click on it opens the mail
+let noticeAsked = false; // Settings just switched notices on
 const canNotice = () => "Notification" in window && Notification.permission === "granted" && PREFS.notify !== false;
 function askNotice() {
   if (!("Notification" in window) || Notification.permission !== "default" || PREFS.notify === false) return;

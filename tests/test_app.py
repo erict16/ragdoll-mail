@@ -356,6 +356,19 @@ class AppServer(unittest.TestCase):
         self.assertIs(self.api("prefs", {"notify": "yes"})[1]["data"]["notify"], False)
         self.assertIs(self.api("prefs", {"notify": True})[1]["data"]["notify"], True)
 
+    def test_notice_state_outside_the_mac_app(self):
+        # only the built Mac app can ask macOS; anywhere else there is nothing to tell and nothing to open
+        self.assertEqual(self.api("notice_state")[1]["data"]["state"], "")
+        self.assertIs(self.api("notice_settings")[1]["data"]["ok"], False)
+        self.assertEqual(A.mac_notice_state(), "")
+
+    def test_a_mail_is_never_shrunk(self):
+        # 0.8.1 zoomed a whole mail out when one picture or table was wider than the reader: 14px text became 10px
+        js = open(os.path.join(os.path.dirname(A.__file__), "app", "app.js"), encoding="utf-8").read()
+        self.assertNotIn("style.zoom", js)
+        self.assertIn("img{max-width:100%!important", js)
+        self.assertIn("minText(d);", js)
+
 def no_server():
     raise OSError("the tests have no mail server")
 
