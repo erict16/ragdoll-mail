@@ -13,8 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>下载 Mac 版</b></a> ·
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>下载 Windows 版</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><b>下载 Mac 版</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><b>下载 Windows 版</b></a> ·
+  <a href="https://erict16.github.io/ragdoll-mail/zh/"><b>官网</b></a> ·
   <a href="README.md"><b>English</b></a>
 </p>
 
@@ -43,7 +44,7 @@ Ragdoll Mail 是一个收发邮件的软件，和苹果自带的“邮件”、O
 2. **打开。** 我们还没有向苹果和微软购买签名，所以第一次打开时系统会问一次：
    - Mac：提示“无法验证”时，打开 **系统设置 → 隐私与安全性**，往下拉，点 **仍要打开**。（旧版 macOS：右键点软件，选 **打开**。）
    - Windows：点 **更多信息**，再点 **仍要运行**。
-3. **登录。** 填邮箱地址和密码。上面列出的那些邮箱，服务器设置会自动填好。
+3. **登录。** 填邮箱地址和密码。上面列出的那些邮箱，以及用腾讯企业邮箱、Google Workspace、阿里或网易企业邮箱的公司邮箱，服务器设置都会自动填好。用腾讯企业邮箱的，可以看 [腾讯企业邮箱设置指南](https://erict16.github.io/ragdoll-mail/zh/exmail/)。
 
 第一次登录后，软件要把邮箱读一遍，邮件多的话需要几分钟。这期间可以照常看邮件、写邮件。
 

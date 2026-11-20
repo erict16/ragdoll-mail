@@ -13,8 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Mac</b></a> ·
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Windows</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><b>Download for Mac</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><b>Download for Windows</b></a> ·
+  <a href="https://erict16.github.io/ragdoll-mail/"><b>Website</b></a> ·
   <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
@@ -43,7 +44,7 @@ It was made for one problem. On many mailboxes, and on Tencent Exmail most of al
 2. **Open it.** We have not paid Apple or Microsoft for a signature yet, so the system asks once:
    - Mac: when macOS says it could not check the app, open **System Settings → Privacy & Security**, scroll down and press **Open Anyway**. (On older macOS: right-click the app and choose **Open**.)
    - Windows: choose **More info**, then **Run anyway**.
-3. **Sign in** with your mail address and password. For the mailboxes named above, the app fills in the server settings by itself.
+3. **Sign in** with your mail address and password. For the mailboxes named above, and for company addresses on Tencent Exmail, Google Workspace, Alibaba or NetEase mail, the app fills in the server settings by itself. Using Exmail? See the [Exmail setup guide](https://erict16.github.io/ragdoll-mail/exmail/).
 
 The first time, the app reads your mailbox. For a big mailbox this takes a few minutes. You can read and write mail while it works.
 
