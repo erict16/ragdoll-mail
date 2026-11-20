@@ -130,17 +130,23 @@ kbd { font: 11px var(--font); color: var(--text-3); border: 1px solid var(--line
 .row.leaving::after { opacity: 0; }
 .row:hover { background: var(--hover); }
 .row.on { background: var(--sel); }
+/* selected mails next to each other make one block: only the run's first and last corners are round */
+.row.on:has(+ .row.on) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.row.on + .row.on { border-top-left-radius: 0; border-top-right-radius: 0; }
 .row.on::after, .row:hover::after, .row:has(+ .row.on)::after, .row:has(+ .row:hover)::after { opacity: 0; }
 .row .dot { grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
 .row.unread .dot { opacity: 1; transform: none; }
 .row .who { grid-column: 2; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
-.row .meta { grid-column: 3; display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row .meta { grid-column: 3; grid-row: 1; display: flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row .subj { grid-column: 2 / 4; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 1px; }
 .row.unread .subj { font-weight: 500; }
 .row .snip { grid-column: 2 / 4; color: var(--text-2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 1px; }
 .row .count-badge { font-size: 11px; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 4px; line-height: 15px; }
-.row .hover-acts { position: absolute; right: 8px; top: 6px; display: flex; gap: 2px; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; padding: 2px; box-shadow: var(--shadow); opacity: 0; transform: translateY(-2px); pointer-events: none; transition: opacity .14s, transform .18s var(--ease); }
-.row:hover .hover-acts { opacity: 1; transform: none; pointer-events: auto; }
+/* the buttons take the date's place on hover (same grid cell), so they never cover the sender or the date */
+.row .hover-acts { grid-column: 3; grid-row: 1; justify-self: end; align-self: center; margin-block: -3px; display: flex; gap: 2px; opacity: 0; pointer-events: none; transition: opacity .14s; }
+.row .meta { transition: opacity .14s; }
+.row:hover .hover-acts { opacity: 1; pointer-events: auto; }
+.row:hover .meta { opacity: 0; }
 .row.leaving .hover-acts { opacity: 0; }
 .row .tag { font-size: 11px; color: var(--text-2); }
 .row .done-ic { display: inline-flex; gap: 1px; margin-inline-end: 5px; vertical-align: -2px; color: var(--accent-ink); overflow: hidden; }
@@ -490,3 +496,10 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 .select.mini select { max-width: 118px; field-sizing: content; text-overflow: ellipsis; }
 
 .menu button .i.on-mark { margin-left: auto; color: var(--accent); }
+
+/* a picture opened from a mail */
+.img-view { position: fixed; inset: 0; background: rgba(0,0,0,.78); display: flex; align-items: center; justify-content: center; overflow: auto; padding: 24px; cursor: zoom-out; animation: fade .18s ease-out; }
+.img-view.out { animation: fade-out .14s ease-in forwards; }
+.img-view img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; box-shadow: var(--shadow-lg); background: #fff; cursor: zoom-in; }
+.img-view.full { display: block; }
+.img-view.full img { max-width: none; max-height: none; margin: auto; display: block; cursor: zoom-out; }

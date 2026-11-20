@@ -61,7 +61,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -435,10 +435,23 @@ def session():
 
 
 def select(m, folder, readonly=True):
+    m._sel = None
     typ, data = m.select(q(folder), readonly=readonly)
     if typ != "OK":
         raise LookupError("cannot open folder %s: %s" % (folder, data))
-    return int(m.response("UIDVALIDITY")[1][0])
+    uidv = int(m.response("UIDVALIDITY")[1][0])
+    m._sel = (folder, readonly, uidv)
+    return uidv
+
+
+def use(m, folder, write=False):
+    """select(), but a folder this connection already has open stays open: on Exmail a SELECT of a
+    big folder costs one to three seconds, even of the folder already open."""
+    s = getattr(m, "_sel", None)
+    if s and s[0] == folder and (not write or not s[1]):
+        getattr(m, "untagged_responses", {}).pop("FETCH", None)     # other clients' flag changes, not ours
+        return s[2]
+    return select(m, folder, readonly=not write)
 
 
 def uids_of(m):
@@ -484,12 +497,168 @@ def flags_of(blob):
 
 
 def fetch_raw(m, folder, uid):
-    select(m, folder)
+    use(m, folder)
     typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
     for item in data:
         if isinstance(item, tuple):
             return item[1]
     die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
+
+
+# ---- a big mail without its big files: what opening it needs, in a fraction of the time
+
+LIGHT_MIN = 1536 * 1024     # a mail this big is opened light
+LEAVE_OUT = 256 * 1024      # a file part this big stays on the server until it is opened
+
+
+def imap_parse(data):
+    """imaplib response data (bytes, and (head, literal) tuples) -> nested lists of bytes / None."""
+    toks = []
+    for item in data:
+        if item is None:
+            continue
+        if isinstance(item, tuple):
+            toks += re.findall(rb'\(|\)|"(?:[^"\\]|\\.)*"|\{\d+\}|[^\s()"]+', re.sub(rb"\{\d+\}$", b"", item[0]))
+            toks.append((item[1],))
+        else:
+            toks += re.findall(rb'\(|\)|"(?:[^"\\]|\\.)*"|\{\d+\}|[^\s()"]+', item)
+    out, stack = [], []
+    cur = out
+    for t in toks:
+        if isinstance(t, tuple):
+            cur.append(t[0])
+        elif t == b"(":
+            stack.append(cur)
+            cur.append([])
+            cur = cur[-1]
+        elif t == b")":
+            cur = stack.pop() if stack else out
+        elif t.startswith(b'"'):
+            cur.append(re.sub(rb'\\(.)', rb"\1", t[1:-1]))
+        elif t.upper() == b"NIL":
+            cur.append(None)
+        elif not re.fullmatch(rb"\{\d+\}", t):
+            cur.append(t)
+    return out
+
+
+def fetch_items(data, uid):
+    """{item name: value} of the FETCH response for this UID."""
+    toks = imap_parse(data)
+    for t in toks:                      # imaplib leaves "<n> (...)" of each "* <n> FETCH (...)"
+        if isinstance(t, list):
+            d = {(t[j].upper() if isinstance(t[j], bytes) else t[j]): t[j + 1] for j in range(0, len(t) - 1, 2)}
+            if d.get(b"UID") == str(uid).encode():
+                return d
+    return {}
+
+
+def leaves(bs, sec=""):
+    """BODYSTRUCTURE -> [(section, type, subtype, shown in the body, encoding, octets)] for its leaves,
+    and the sections of its multiparts; None when the mail is a single part."""
+    if not bs or not isinstance(bs, list):
+        return None
+    if isinstance(bs[0], list):
+        parts, multis = [], [sec]
+        k = 0
+        for child in bs:
+            if not isinstance(child, list):
+                break
+            k += 1
+            sub = leaves(child, "%s.%d" % (sec, k) if sec else str(k))
+            if sub is None:
+                return None
+            parts += sub[0]
+            multis += sub[1]
+        return parts, multis
+    if not sec:
+        return None
+    low = lambda v: (v or b"").decode("ascii", "replace").lower()
+    try:
+        size = int(bs[6] or 0)
+    except (ValueError, TypeError, IndexError):
+        size = 0
+    disp = next((low(x[0]) for x in bs[7:] if isinstance(x, list) and x and isinstance(x[0], bytes)
+                 and low(x[0]) in ("inline", "attachment")), "")
+    shown = bs[3] is not None and disp != "attachment"     # a Content-ID alone does not: Outlook gives every file one
+    return [(sec, low(bs[0]), low(bs[1]), shown, low(bs[5]), size)], []
+
+
+def keep_part(typ, shown, size):
+    if typ in ("text", "message"):
+        return True
+    if shown:                                   # an image shown in the body
+        return size <= 11 * 1024 * 1024
+    return size <= LEAVE_OUT
+
+
+def fetch_light(m, folder, uid):
+    """The mail with its big file parts left empty, or None when that would not help. A part left out
+    keeps its own headers and gains X-Ragdoll-Part (its IMAP section) and X-Ragdoll-Size (its bytes)."""
+    use(m, folder)
+    typ, data = m.uid("FETCH", str(uid), "(UID BODYSTRUCTURE)")
+    found = leaves((fetch_items(data, uid).get(b"BODYSTRUCTURE")))
+    if not found:
+        return None
+    parts, multis = found
+    out = [p for p in parts if not keep_part(p[1], p[3], p[5])]
+    if not out:
+        return None
+    want = ["BODY.PEEK[HEADER]"] + ["BODY.PEEK[%s.MIME]" % s for s in multis if s] + \
+           ["BODY.PEEK[%s.MIME]" % p[0] for p in parts] + ["BODY.PEEK[%s]" % p[0] for p in parts if p not in out]
+    typ, data = m.uid("FETCH", str(uid), "(UID %s)" % " ".join(want))
+    got = fetch_items(data, uid)
+
+    def item(name):
+        v = got.get(name.upper().encode())
+        return v if isinstance(v, bytes) else b""
+    head = {"": item("BODY[HEADER]")}
+    for s in multis:
+        if s:
+            head[s] = item("BODY[%s.MIME]" % s)
+    if not head[""]:
+        return None
+    left = {p[0]: p for p in out}
+    leaf = {p[0] for p in parts}
+
+    def hdr_block(h, extra=b""):
+        return h.rstrip(b"\r\n") + b"\r\n" + extra + b"\r\n"
+
+    def build(sec):
+        if sec in leaf:
+            mime = item("BODY[%s.MIME]" % sec)
+            if sec in left:
+                p = left[sec]
+                n = int(p[5] * 57 / 78) if p[4] == "base64" else p[5]
+                return hdr_block(mime, b"X-Ragdoll-Part: %s\r\nX-Ragdoll-Size: %d\r\n" % (sec.encode(), n))
+            return hdr_block(mime) + item("BODY[%s]" % sec)
+        h = head[sec]
+        b = email.message_from_bytes(hdr_block(h)).get_boundary()
+        if not b:
+            raise ValueError("no boundary")
+        kids = sorted({x[len(sec) + 1 if sec else 0:].split(".")[0] for x in leaf | set(head)
+                       if x and (x.startswith(sec + ".") if sec else True)}, key=int)
+        body = b"".join(b"--" + b.encode() + b"\r\n" + build("%s.%s" % (sec, k) if sec else k) + b"\r\n" for k in kids)
+        return (hdr_block(h) if sec else b"") + body + b"--" + b.encode() + b"--\r\n"
+    try:
+        return hdr_block(head[""]) + build("")
+    except (ValueError, KeyError):
+        return None
+
+
+def fetch_part(m, folder, uid, sec):
+    """One part of a mail (its MIME headers and body) as a message, for a file left out of a light mail."""
+    use(m, folder)
+    typ, data = m.uid("FETCH", str(uid), "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
+    got = fetch_items(data, uid)
+    mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
+    if not isinstance(mime, bytes) or not isinstance(body, bytes):
+        die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
+    return to_msg(mime.rstrip(b"\r\n") + b"\r\n\r\n" + body)
+
+
+def light_path(folder, uidv, uid):
+    return cache_path(folder, uidv, uid)[:-4] + ".light.eml"
 
 
 def cache_path(folder, uidv, uid):
@@ -1714,7 +1883,7 @@ def append_draft(m, raw):
 def delete_uid(m, folder, uid):
     """Remove one mail. UID EXPUNGE when the server has UIDPLUS, so other mails another client
     marked deleted in the same folder are not wiped with it."""
-    select(m, folder, readonly=False)
+    use(m, folder, write=True)
     typ, data = m.uid("STORE", str(uid), "+FLAGS.SILENT", "(\\Deleted)")
     if typ != "OK":
         raise imaplib.IMAP4.error("could not mark %s deleted: %s" % (make_id(folder, uid), data))
@@ -2025,7 +2194,7 @@ def mark_original(m, msg):
 
 def move_uids(m, folder, uids, dest):
     """Move UIDs within the mailbox (MOVE when the server has it, else COPY + delete)."""
-    select(m, folder, readonly=False)
+    use(m, folder, write=True)
     moved = 0
     for i in range(0, len(uids), 200):
         batch = ",".join(map(str, uids[i:i + 200]))
