@@ -1230,15 +1230,18 @@ function renderBody(body, m) {
 }
 
 function attNode(a, id) {
+  // one click at a time: a second one while the first is still on its way only opened a second copy
   const open = async () => {
+    if (node.classList.contains("busy")) return;
     node.classList.add("busy");
-    try { await api("attachment", { id, i: a.i, action: "open" }); } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
+    try { await api("attachment", { id, i: a.i, name: a.name, action: "open" }); } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
   };
   const save = async (e) => {
     e.stopPropagation();
+    if (node.classList.contains("busy")) return;
     node.classList.add("busy");
     try {
-      const r = await api("attachment", { id, i: a.i, action: "save" });
+      const r = await api("attachment", { id, i: a.i, name: a.name, action: "save" });
       toast(t("saved_to") + " · " + r.name, { action: { label: t("show"), run: () => api("reveal", { path: r.path }).catch(fail) }, ms: 5000 });
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };

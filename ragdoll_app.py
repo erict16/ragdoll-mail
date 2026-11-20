@@ -159,12 +159,22 @@ def snippet(body):
 
 def open_path(path, reveal=False):
     if sys.platform == "darwin":
-        subprocess.Popen(["open", "-R", path] if reveal else ["open", path])
+        # waits only until macOS has handed the file to an app, so a file no app opens says so
+        try:
+            r = subprocess.run(["open", "-R", path] if reveal else ["open", path], capture_output=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            return              # the app is still starting: it opens the file when it is up
+        if r.returncode:
+            fail("The Mac could not open %s: %s" % (os.path.basename(path),
+                 r.stderr.decode("utf-8", "replace").strip() or "no app opens this kind of file."))
     elif sys.platform == "win32":
         if reveal:
             subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
         else:
-            os.startfile(path)                                  # noqa: S606
+            try:
+                os.startfile(path)                              # noqa: S606
+            except OSError as e:
+                fail("Windows could not open %s: %s" % (os.path.basename(path), e.strerror or e))
     else:
         subprocess.Popen(["xdg-open", os.path.dirname(path) if reveal else path])
 
@@ -1659,8 +1669,13 @@ class Backend:
 
     def write_part(self, p, save):
         """The file written to Downloads under a name that is free there (save), or to a folder of
-        its own to open it from. Returns its path."""
+        its own to open it from. Returns its path. Opening the same file again opens the copy made the
+        first time: a second copy of the same name would not open in Excel ("a workbook with the same
+        name is already open"), and changes made in the first copy stay."""
         name = R.safe_name(R.fname(p) or "attachment")
+        data = R.part_bytes(p)
+        if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
+            name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the Mac knows which app
         if save:
             path = R.unique_path(downloads_dir(), name, set())
             n = 2
@@ -1669,17 +1684,26 @@ class Backend:
                 path = os.path.join(downloads_dir(), "%s (%d)%s" % (stem, n, ext))
                 n += 1
         else:
-            d = os.path.join(R.CFG.home, "open", secrets.token_hex(4))
+            d = os.path.join(R.CFG.home, "open", hashlib.sha256(name.encode() + b"\0" + data).hexdigest()[:12])
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, name)
-        with open(path, "wb") as f:
-            f.write(R.part_bytes(p))
+            if os.path.exists(path):
+                self.made.add(path)
+                return path
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:      # the app that opens it never sees half a file
+            f.write(data)
+        os.replace(tmp, path)
         self.made.add(path)
         return path
 
     def api_attachment(self, a):
         parts, light = self.files_of(a["id"])
         k = int(a["i"])
+        name = a.get("name")
+        # the page may show the light mail's list and this the whole mail's (or the other way): the name decides
+        if name and not (0 <= k < len(parts) and (R.fname(parts[k]) or "attachment") == name):
+            k = next((j for j, p in enumerate(parts) if (R.fname(p) or "attachment") == name), -1)
         if not 0 <= k < len(parts):
             fail("That attachment is not in the mail any more.")
         save = a.get("action") == "save"
@@ -2660,6 +2684,42 @@ def mac_clear_titlebar(w):
         stack.extend(v.subviews())
 
 
+def mac_full_frame_rate():
+    """WebKit draws a page at most 60 times a second unless told otherwise, also on a 120 Hz screen (MacBook Pro):
+    scrolling and every animation then look less smooth than in other Mac apps. The switch only counts when it is
+    set before the web view is made, and pywebview makes it, so its WebKit is handed a configuration that has it off.
+    Anything unexpected leaves pywebview as it is."""
+    try:
+        import WebKit
+        import webview.platforms.cocoa as cocoa
+        feat = next((f for f in WebKit.WKPreferences._features()
+                     if f.key() == "PreferPageRenderingUpdatesNear60FPSEnabled"), None)
+        if feat is None or getattr(cocoa.WebKit, "_ragdoll", False):
+            return
+
+        class Config:
+            @staticmethod
+            def alloc():
+                return Config()
+
+            def init(self):
+                c = WebKit.WKWebViewConfiguration.alloc().init()
+                with contextlib.suppress(Exception):
+                    c.preferences()._setEnabled_forFeature_(False, feat)
+                return c
+
+        class Kit:
+            _ragdoll = True
+            WKWebViewConfiguration = Config
+
+            def __getattr__(self, name):
+                return getattr(WebKit, name)
+
+        cocoa.WebKit = Kit()
+    except Exception:       # noqa: BLE001
+        pass
+
+
 def mac_titlebar(window):
     """Content runs under the title bar; an empty unified toolbar centres the traffic lights in the app's top bar."""
     try:
@@ -2771,6 +2831,7 @@ def run_window(url, home):
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
     if sys.platform == "darwin":
+        mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
         w.events.shown += lambda: mac_titlebar(w)
     elif sys.platform == "win32":
