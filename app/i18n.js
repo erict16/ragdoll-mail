@@ -614,3 +614,22 @@ const MORE6 = {
   "de": { side_hide: "Seitenleiste ausblenden", side_show: "Seitenleiste einblenden", side_toggle: "Seitenleiste ein- oder ausblenden" },
 };
 for (const [k, v] of Object.entries(MORE6)) Object.assign(LANGS[k], v);
+
+// the ragdoll command, hand-offs from assistants
+const MORE7 = {
+  "en": { cli: "Command line", cli_command: "The ragdoll command", cli_install: "Install", cli_reinstall: "Install again",
+    cli_done: "Installed: %s.", cli_kept: "%s is your own; it was left as it is.", cli_new_terminal: "Open a new terminal window to use it.",
+    draft_ready: "Draft ready: %s" },
+  "zh-Hans": { cli: "命令行", cli_command: "ragdoll 命令", cli_install: "安装", cli_reinstall: "重新安装",
+    cli_done: "已安装：%s。", cli_kept: "%s 是你自己建的，没有改动。", cli_new_terminal: "新开一个终端窗口就能用。",
+    draft_ready: "草稿写好了：%s" },
+  "zh-Hant": { cli: "命令列", cli_command: "ragdoll 命令", cli_install: "安裝", cli_reinstall: "重新安裝",
+    cli_done: "已安裝：%s。", cli_kept: "%s 是你自己建的，沒有改動。", cli_new_terminal: "新開一個終端機視窗就能用。",
+    draft_ready: "草稿寫好了：%s" },
+  "ja": { cli: "コマンドライン", cli_install: "インストール", cli_reinstall: "再インストール", draft_ready: "下書きができました：%s" },
+  "ko": { cli: "명령줄", cli_install: "설치", cli_reinstall: "다시 설치", draft_ready: "초안 준비됨: %s" },
+  "es": { cli: "Línea de comandos", cli_install: "Instalar", cli_reinstall: "Instalar de nuevo", draft_ready: "Borrador listo: %s" },
+  "fr": { cli: "Ligne de commande", cli_install: "Installer", cli_reinstall: "Réinstaller", draft_ready: "Brouillon prêt : %s" },
+  "de": { cli: "Befehlszeile", cli_install: "Installieren", cli_reinstall: "Erneut installieren", draft_ready: "Entwurf fertig: %s" },
+};
+for (const [k, v] of Object.entries(MORE7)) Object.assign(LANGS[k], v);

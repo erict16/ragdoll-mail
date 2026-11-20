@@ -960,3 +960,29 @@ class DockBadge(OwnBackend):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandOffs(OwnBackend):
+    def test_asks_reach_the_page_once(self):
+        R = A.R
+        rev = self.b.rev
+        R.tell_app("draft", "drafts:3", "Re: Quote")
+        R.tell_app("open", "inbox:5", "Hello")
+        fronted = []
+        old = A.bring_front
+        A.bring_front = lambda: fronted.append(1)
+        try:
+            self.b.take_asks()
+            self.b.take_asks()          # nothing new the second time
+        finally:
+            A.bring_front = old
+        asks = self.b.api_status({})["asks"]
+        self.assertEqual([(x["kind"], x["id"], x["n"]) for x in asks], [("draft", "drafts:3", 1), ("open", "inbox:5", 2)])
+        self.assertEqual(fronted, [1])  # only "open" brings the window to the front
+        self.assertGreater(self.b.rev, rev)
+        self.assertIn("asks", self.b.api_boot({}))
+
+    def test_cli_install_is_refused_in_the_demo(self):
+        with self.assertRaises(A.ApiError):
+            self.b.api_install_cli({})
+        self.assertIn("installed", self.b.api_cli_state({}))

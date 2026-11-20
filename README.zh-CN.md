@@ -144,7 +144,7 @@ Ragdoll Mail 还带一个命令 `ragdoll`。Claude Code、Codex 这样的 AI 助
 助手  › 草稿已经放进草稿箱了，要发吗？
 ```
 
-怎么安装、有哪些命令、和 Gmail API 比怎么样：看 **[命令行说明](docs/command-line.md)**（英文）。
+装命令：在 App 里点 **设置 → 命令行 → 安装**。有哪些命令、和 Gmail API 比怎么样：看 **[命令行说明](docs/command-line.md)**（英文）。
 
 ## 反馈
 

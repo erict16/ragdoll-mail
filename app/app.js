@@ -1055,6 +1055,7 @@ function showSearch(on) {
   searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 200);
 }
 function syncSearchUI() {
+  if (dragFocus.held) return;         // a column is being dragged: the search stays as it is
   const v = $("#search").value;
   $("#search-clear").hidden = !v;
   showSearch(!!v || document.activeElement === $("#search"));
@@ -2176,7 +2177,8 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"]];
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"],
+    ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
     for (const [k, ic, lab] of tabs) nav.append(el("button", { class: "nav-item" + (k === tab ? " on" : ""), onclick: () => { grab(); tab = k; drawNav(); draw(); }, html: icon(ic) + `<span class="label">${esc(t(lab))}</span>` }));
@@ -2198,7 +2200,7 @@ async function openSettings() {
       const lab = (text, ...kids) => el("label", {}, el("span", { class: "lab" }, text), ...kids);
       f.append(lab(t("name"), inp("name")), lab(t("email"), inp("user", "email")),
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
-      if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", "RAGDOLL_PASSWORD")));
+      if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", s.password_env)));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
         lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
       const res = el("div");
@@ -2252,6 +2254,27 @@ async function openSettings() {
       // a moment after the switch here: macOS may be asking its question right now
       setTimeout(check, noticeAsked ? 1500 : 0);
       noticeAsked = false;
+    } else if (tab === "cli") {
+      const form = el("div", { class: "form" });
+      body.append(el("h2", {}, t("cli")), form);
+      const drawCli = async () => {
+        const st = await api("cli_state").catch(fail);
+        if (!st || !form.isConnected) return;
+        const res = el("div");
+        const btn = el("button", { class: "btn", onclick: async () => {
+          btn.disabled = true;
+          try {
+            const r = await api("install_cli");
+            const lines = [r.kept ? t("cli_kept", r.path) : t("cli_done", r.path)];
+            if (r.path_added) lines.push(t("cli_new_terminal"));
+            res.replaceChildren(el("div", { class: r.kept ? "msg-warn" : "msg-ok", html: (r.kept ? "" : icon("circle-check")) + esc(lines.join(" ")) }));
+          } catch (e) { res.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) })); }
+          finally { btn.disabled = false; }
+        } }, st.installed ? t("cli_reinstall") : t("cli_install"));
+        form.replaceChildren(el("div", { class: "stack" }, el("span", { class: "lab" }, t("cli_command")),
+          el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, btn, res)));
+      };
+      drawCli();
     } else if (tab === "region") {
       const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
         setPref({ lang: val }); setLocale(PREFS); relabel(); relabelSheet();
@@ -2486,6 +2509,26 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
 
 // ---------------------------------------------------------------- list width
 
+// While a column edge is dragged, a text field with the caret in it is let go and given back on release.
+// In the Mac app (WebKit) a focused field has its caret placed again, and the input method asked where it
+// is, on every frame the layout changes: dragging with the search open was very slow (21st Nov 2026).
+const dragFocus = {
+  held: null, start: 0, end: 0,
+  take() {
+    const a = document.activeElement;
+    if (!a || !a.matches?.("input, textarea")) return;
+    this.held = a; this.start = a.selectionStart; this.end = a.selectionEnd;
+    a.blur();
+  },
+  give() {
+    const a = this.held;
+    this.held = null;
+    if (!a || !a.isConnected) return;
+    a.focus({ preventScroll: true });
+    try { a.setSelectionRange(this.start, this.end); } catch { /* not a text field */ }
+  },
+};
+
 (() => {
   const sp = $("#splitter"), app = $("#app");
   // one width per screen frame; the open mail keeps its width while the line moves (laying a long mail out
@@ -2496,6 +2539,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
     let x = x0, q = 0;
     const kids = [...$("#pane").children];
     for (const k of kids) k.style.width = k.offsetWidth + "px";
+    dragFocus.take();
     app.classList.add("resizing");
     const apply = () => { q = 0; app.style.setProperty("--list-w", Math.max(280, Math.min(600, w0 + x - x0)) + "px"); };
     const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
@@ -2504,6 +2548,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
       if (q) { cancelAnimationFrame(q); apply(); }
       app.classList.remove("resizing");
       for (const k of kids) k.style.width = "";
+      dragFocus.give();
       api("prefs", { list_width: $("#list-col").offsetWidth }).catch(() => {});
     };
     addEventListener("mousemove", move); addEventListener("mouseup", up);
@@ -2521,6 +2566,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
     let x = x0, q = 0;
     const kids = [...$("#pane").children];
     for (const k of kids) k.style.width = k.offsetWidth + "px";
+    dragFocus.take();
     app.classList.add("side-sizing");
     const apply = () => { q = 0; app.style.setProperty("--side-pick", Math.round(Math.max(SIDE_MIN, Math.min(SIDE_MAX, w0 + x - x0))) + "px"); };
     const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
@@ -2529,6 +2575,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
       if (q) { cancelAnimationFrame(q); apply(); }
       app.classList.remove("side-sizing");
       for (const k of kids) k.style.width = "";
+      dragFocus.give();
       if (x === x0) return;
       PREFS.side_width = $(".side").offsetWidth;
       api("prefs", { side_width: PREFS.side_width }).catch(() => {});
@@ -2581,6 +2628,23 @@ function showNews(news) {
   });
   if (!inFront() && canNotice()) notice(live, one);
 }
+// a hand-off from ragdoll in a terminal or an assistant: show this mail, or a draft is ready
+async function openMail(id) {
+  const key = id.slice(0, id.lastIndexOf(":"));
+  await openFolder(key);
+  if (rowOf(id)) selectRow(id); else openThread(id);
+}
+async function showAsks(asks) {
+  const now = Date.now() / 1000;
+  const fresh = (asks || []).filter((x) => x.n > S.asksN);
+  if (!fresh.length) return;
+  S.asksN = Math.max(...fresh.map((x) => x.n));
+  for (const x of fresh.filter((x) => now - x.at < 600)) {
+    if (x.kind === "open") await openMail(x.id);
+    else toast(t("draft_ready", x.subject || t("no_subject")), { id: "ask", ms: 12000, action: { label: t("open"), run: () => openMail(x.id) } });
+  }
+}
+window.ragdollPoll = () => refreshCounts();
 function applyStatus(st) {
   S.boot.folders = st.folders;
   S.update = st.update;
@@ -2596,6 +2660,7 @@ function applyStatus(st) {
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
+  showAsks(st.asks);
 }
 $("#banner-btn").addEventListener("click", openSettings);
 $("#update").addEventListener("click", () => {
@@ -2620,6 +2685,7 @@ else window.addEventListener("pywebviewready", nativeWindow);
 function start(boot) {
   S.boot = boot;
   S.newsN = Math.max(0, ...(boot.news || []).map((x) => x.n));
+  S.asksN = 0;        // a mail asked for before the app was open is still shown
   applyTheme(boot.theme);
   $("#app").hidden = false;
   $("#setup").hidden = true;

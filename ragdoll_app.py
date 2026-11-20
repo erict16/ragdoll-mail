@@ -536,6 +536,8 @@ class Backend:
         self.extra_now = False
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
+        self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
+        self.asks_n = 0
         self.news_mark = None
         self.moved_in = {}                      # message-id -> when the app itself put it in the inbox
         self.focus_at = 0                       # when the page last said its window is in front
@@ -571,6 +573,8 @@ class Backend:
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
+        if not demo:
+            threading.Thread(target=self.asks_loop, daemon=True).start()
 
     # ---- plumbing
 
@@ -971,7 +975,7 @@ class Backend:
         return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
-                "prefs": self.prefs(), "news": self.news}
+                "prefs": self.prefs(), "news": self.news, "asks": self.asks}
 
     def flag_folders(self):
         """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
@@ -1030,7 +1034,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news}
+                "news": self.news, "asks": self.asks}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2108,6 +2112,45 @@ class Backend:
     def upload(self, name, data):
         return self.keep_file(name or "file", data)
 
+    # ---- hand-offs from ragdoll in a terminal or an agent (ragdoll open, a new draft)
+
+    def asks_loop(self):
+        while not self.stopping.is_set():
+            with contextlib.suppress(Exception):
+                self.take_asks()
+            self.stopping.wait(1)
+
+    def take_asks(self):
+        got = R.take_asks()
+        if not got:
+            return
+        for x in got:
+            self.asks_n += 1
+            self.asks.append({"n": self.asks_n, "kind": x.get("kind") or "open", "id": x["id"],
+                              "subject": x.get("subject") or "", "at": x.get("at") or int(time.time())})
+        self.asks = self.asks[-20:]
+        self.look()
+        self.bump()
+        if any(x.get("kind") == "open" for x in got):
+            bring_front()
+        poke_page()
+
+    # ---- the ragdoll command
+
+    def api_cli_state(self, a):
+        launcher = os.path.join(os.environ.get("LOCALAPPDATA", ""), "ragdoll-mail", "bin", "ragdoll.cmd") \
+            if sys.platform == "win32" else os.path.expanduser("~/.local/bin/ragdoll")
+        return {"installed": os.path.exists(launcher), "launcher": launcher}
+
+    def api_install_cli(self, a):
+        if self.demo:
+            fail("Not in the demo.")
+        try:
+            r = R.install_cli()
+        except OSError as e:
+            fail(str(e))
+        return r
+
     # ---- settings and setup
 
     def api_settings(self, a):
@@ -2115,15 +2158,14 @@ class Backend:
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
                 "smtp_port": R.CFG.smtp.get("port", 465),
                 "signature": self.signature(), "has_password": self.has_password(),
-                "password_env": os.environ.get(R.CFG.password_env) is not None and not self.demo,
+                "password_env": R.CFG.password_env if not self.demo and (
+                    os.environ.get(R.CFG.password_env) or R._SHELL_ENV.get(R.CFG.password_env)) else "",
                 "folders": dict(R.CFG.folders), "config": config_path(), "demo": self.demo}
 
     def has_password(self):
         if self.demo:
             return True
-        if os.environ.get(R.CFG.password_env):
-            return True
-        return bool(R.CFG.user and R.keychain_get(R.CFG.user))
+        return bool(R.find_password())
 
     def api_guess_servers(self, a):
         dom = (a.get("user") or "").rpartition("@")[2].lower()
@@ -2663,6 +2705,33 @@ def system_dark():
 WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
 
 
+def bring_front():
+    """The window to the front, as when its Dock or taskbar icon is clicked."""
+    w = WINDOW.w
+    if w is None:
+        return
+    with contextlib.suppress(Exception):
+        w.restore()
+    with contextlib.suppress(Exception):
+        w.show()
+    if sys.platform == "darwin":
+        with contextlib.suppress(Exception):
+            import AppKit
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(lambda: AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True))
+    elif sys.platform == "win32" and WINDOW.hwnd:
+        with contextlib.suppress(Exception):
+            import ctypes
+            ctypes.windll.user32.SetForegroundWindow(WINDOW.hwnd)
+
+
+def poke_page():
+    """Ask the page to look now instead of at its next poll."""
+    if WINDOW.w is not None:
+        with contextlib.suppress(Exception):
+            WINDOW.w.evaluate_js("window.ragdollPoll && window.ragdollPoll()")
+
+
 def dock_badge(n):
     """The inbox's unread count on the Mac Dock icon, nothing when 0. True when it was asked for."""
     if sys.platform != "darwin" or WINDOW.w is None:        # in the browser there is no Dock icon of ours
@@ -2867,7 +2936,10 @@ def main(argv=None):
     # a plain kill still closes the mailbox and removes the demo's temp folder
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    backend = Backend(demo=a.demo)
+    try:
+        backend = Backend(demo=a.demo)
+    except R.IndexTooNew as e:
+        return too_new(str(e), a.browser)
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -2899,5 +2971,24 @@ def main(argv=None):
             shutil.rmtree(R.CFG.home, ignore_errors=True)
 
 
+def too_new(text, browser=False):
+    """This app is older than the ragdoll that last wrote the index: say so, and how to update."""
+    print(text, file=sys.stderr)
+    page = ("<!doctype html><meta charset=utf-8><body style='font:15px -apple-system,Segoe UI,sans-serif;"
+            "padding:40px;line-height:1.6'><h2 style='font-weight:500'>Please update Ragdoll Mail</h2>"
+            "<p>%s</p>" % htmlmod.escape(text))
+    if browser:
+        return 1
+    try:
+        import webview
+    except ImportError:
+        return 1
+    webview.create_window(APP_NAME, html=page, width=560, height=300)
+    webview.start()
+    return 1
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["cli"]:       # the built app is also the ragdoll command: <app> cli search ...
+        sys.exit(R.main(sys.argv[2:]))
+    sys.exit(main())

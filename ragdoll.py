@@ -33,6 +33,9 @@ is filled in two passes: headers and attachment names for every mail first
   move <id ...> --to FOLDER                 a short name (inbox, archive, junk) or a
                                             folder name from `folders`
   trash <id ...> --yes                      move to the trash folder
+  open <id>                                 show it in the Ragdoll Mail app (starts the app)
+  schedule <draft id> --at WHEN --yes       send later: "2026-11-22 09:00", "09:00" or "+2h";
+  schedule --list | <draft id> --cancel     the app sends it at that time while it is open
   update [--check] [--rollback] [--json]    get the newest ragdoll from GitHub (see below)
 
 Ids look like inbox:9255, sent:1420, drafts:3 (folder short name and IMAP UID).
@@ -54,14 +57,15 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
-import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time, urllib.parse
+import json, mimetypes, os, re, shlex, smtplib, sqlite3, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
+FROZEN = bool(getattr(sys, "frozen", False))      # inside the built Ragdoll Mail app
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -225,9 +229,35 @@ def die(msg):
     sys.exit(msg)
 
 
-def password():
-    """The mailbox password: the environment variable named by password_env (on Windows also that
-    user variable in the registry), else the system keychain (what the app saves)."""
+_SHELL_ENV = {}
+
+
+def shell_env(name):
+    """A variable the person's own login shell sets (in ~/.zshenv, say), or launchd. An app opened
+    from the Dock or Finder does not get what the shell profile exports, so the app found no password
+    although every terminal had it (21st Nov 2026). Asked once per run, never printed."""
+    if sys.platform == "win32" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""):
+        return None
+    if name in _SHELL_ENV:
+        return _SHELL_ENV[name]
+    v = None
+    quiet = {"stdin": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "timeout": 8}
+    with contextlib.suppress(Exception):
+        if sys.platform == "darwin":
+            v = subprocess.run(["launchctl", "getenv", name], stdout=subprocess.PIPE, text=True, **quiet).stdout.strip()
+        if not v:
+            sh = os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/sh")
+            if os.path.basename(sh) in ("zsh", "bash", "sh", "dash", "ksh", "fish"):
+                v = subprocess.run([sh, "-l", "-c", "printenv " + name], stdout=subprocess.PIPE, text=True,
+                                   **quiet).stdout.rstrip("\n")
+    _SHELL_ENV[name] = v or None
+    return v or None
+
+
+def find_password():
+    """The mailbox password, or None: the environment variable named by password_env (on Windows also
+    that user variable in the registry, elsewhere also what the login shell or launchd sets), else
+    the system keychain (what the app saves)."""
     name = CFG.password_env
     p = os.environ.get(name) or (name == "RAGDOLL_PASSWORD" and os.environ.get("HMAIL_PASSWORD"))
     if not p and sys.platform == "win32":
@@ -239,9 +269,16 @@ def password():
             pass
     if not p and CFG.user:
         p = keychain_get(CFG.user)
+    if not p and FROZEN:            # a terminal already has the shell's variables; only the app lacks them
+        p = shell_env(name)
+    return p or None
+
+
+def password():
+    p = find_password()
     if not p:
         die("%s is not set and no password is saved in the keychain. The mailbox owner sets it; "
-            "an agent must never type, print or store it." % name)
+            "an agent must never type, print or store it." % CFG.password_env)
     return p
 
 
@@ -1059,6 +1096,17 @@ def day_start(s, add_days=0):
 
 # ------------------------------------------------------------------ index
 
+# The index's own version, kept in meta 'schema'. Raise it only when an older ragdoll could no
+# longer read the index safely; that older copy (the app or the command line, which update apart)
+# then stops with a clear message instead of reading it wrong.
+SCHEMA_VERSION = 2
+RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
+
+
+class IndexTooNew(LookupError):
+    pass
+
+
 SCHEMA = """
 create table if not exists msgs(id integer primary key, folder text, uidv integer, uid integer,
   msgid text, irt text, refs text, ts integer, frm text, to_ text, cc text, subject text,
@@ -1085,6 +1133,13 @@ def db():
     c.execute("pragma journal_mode=wal")
     c.execute("pragma synchronous=normal")      # safe with WAL, and each commit no longer waits for the disk
     c.executescript(SCHEMA)
+    r = c.execute("select v from meta where k='schema'").fetchone()
+    have = int(r[0]) if r and str(r[0]).isdigit() else 0
+    if have > SCHEMA_VERSION:
+        c.close()
+        raise IndexTooNew("This mail index was made by a newer Ragdoll Mail (index version %d; this copy "
+                          "reads up to %d). Update this copy: the app from %s, the command line with "
+                          "`ragdoll update`." % (have, SCHEMA_VERSION, RELEASES_PAGE))
     cols = {r[1] for r in c.execute("pragma table_info(msgs)")}
     if "has_body" not in cols:     # index made by the first version: every row had its body
         c.execute("alter table msgs add column size int default 0")
@@ -1127,6 +1182,9 @@ def db():
                 continue
             n += 1
         c.execute("insert or replace into meta values('body_fix', ?)", (str(n),))
+        c.commit()
+    if have < SCHEMA_VERSION:
+        c.execute("insert or replace into meta values('schema', ?)", (str(SCHEMA_VERSION),))
         c.commit()
     return c
 
@@ -2071,6 +2129,9 @@ def cmd_draft(a):
                       "cc": msg.get("Cc", ""), "subject": subject,
                       "attachments": [fname(p) for p in attachments(msg)],
                       "preview_html": preview}, ensure_ascii=False, indent=1))
+    with contextlib.suppress(OSError):
+        if app_running():               # the app shows a short note with a button to open it
+            tell_app("draft", "%s:%d" % (CFG.short(CFG.folders["drafts"]), new_uid), subject)
 
 
 def cmd_drafts(a):
@@ -2480,7 +2541,8 @@ def update_remote():
 
 
 def update_enabled():
-    return not env("NO_UPDATE_CHECK") and CFG.d.get("update_check", True)
+    # the built app updates as a whole, from the release page (the app shows when there is one)
+    return not FROZEN and not env("NO_UPDATE_CHECK") and CFG.d.get("update_check", True)
 
 
 def update_log(text):
@@ -2774,6 +2836,8 @@ def update_notice():
 def cmd_update(a):
     if a.background_check:
         return update_check_background()
+    if FROZEN:
+        die("this ragdoll comes with the Ragdoll Mail app: get the newest app from " + RELEASES_PAGE)
     r = do_rollback(APP_DIR) if a.rollback else do_update(APP_DIR, check_only=a.check)
     if a.json:
         print(json.dumps(r, ensure_ascii=False, indent=1))
@@ -2790,6 +2854,266 @@ def cmd_update(a):
             print("By hand: " + r["by_hand"])
     if r["state"] in ("refused", "failed"):
         sys.exit(1)
+
+
+# ------------------------------------------------------------------ the app and the command line
+# The app and ragdoll share one config, one keychain entry and one index. What is here joins them
+# for a person who has only the app: the `ragdoll` command made from the app, a hand-off from an
+# agent to the app (`open`, and a note when a draft is ready), and sending later.
+
+OURS = "made by Ragdoll Mail"
+
+
+def cli_argv():
+    """How a shell starts this ragdoll: the built app's own program, or Python and this file."""
+    if FROZEN:
+        exe = sys.executable
+        if sys.platform == "win32":
+            # the window program has no console, so the release ships ragdoll.exe beside it
+            if os.path.basename(exe).lower() != "ragdoll.exe":
+                exe = os.path.join(os.path.dirname(exe), "ragdoll.exe")
+            return [exe]
+        return [exe, "cli"]
+    return [sys.executable or "python3", "-I", os.path.abspath(__file__)]
+
+
+def mac_bundle(exe=None):
+    """The .app folder this program sits in, or None."""
+    m = re.match(r"^(.*?\.app)/Contents/MacOS/", exe or sys.executable or "")
+    return m.group(1) if m else None
+
+
+def shell_profiles(home):
+    return [os.path.join(home, n) for n in (".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile")]
+
+
+def install_cli(home=None):
+    """Make the `ragdoll` command for this copy. It writes a small launcher, never over one it did
+    not make, and puts its folder on the PATH of new terminals. Returns what it did."""
+    home = home or os.path.expanduser("~")
+    argv = cli_argv()
+    if FROZEN and sys.platform == "darwin":
+        b = mac_bundle() or ""
+        if b.startswith("/Volumes/") or "/AppTranslocation/" in b:
+            raise OSError("Move Ragdoll Mail into Applications, open it from there, then try again.")
+    if FROZEN and not os.path.exists(argv[0]):
+        raise OSError("ragdoll.exe is missing next to the app. Unpack the whole download again.")
+    if sys.platform == "win32":
+        d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local"),
+                         "ragdoll-mail", "bin")
+        path = os.path.join(d, "ragdoll.cmd")
+        body = "@echo off\r\nrem %s\r\n%s %%*\r\n" % (OURS, subprocess.list2cmdline(argv))
+    else:
+        d = os.path.join(home, ".local", "bin")
+        path = os.path.join(d, "ragdoll")
+        body = "#!/bin/sh\n# %s\nexec %s \"$@\"\n" % (OURS, " ".join(shlex.quote(x) for x in argv))
+    out = {"path": path, "command": argv, "made": False, "kept": False, "path_added": None}
+    old = None
+    with contextlib.suppress(OSError):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            old = f.read()
+    if old is not None and OURS not in old:
+        out["kept"] = True              # somebody's own launcher (the README's, say): leave it alone
+    elif old != body:
+        os.makedirs(d, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(body)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+        out["made"] = True
+    out["path_added"] = add_to_path(d, home)
+    return out
+
+
+def add_to_path(d, home):
+    """Put d on the PATH of new terminals. Returns where it was added, or None when it was there."""
+    if sys.platform == "win32":
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                            winreg.KEY_READ | winreg.KEY_WRITE) as k:
+            try:
+                cur, kind = winreg.QueryValueEx(k, "Path")
+            except FileNotFoundError:
+                cur, kind = "", winreg.REG_EXPAND_SZ
+            parts = [x for x in cur.split(";") if x]
+            if any(os.path.normcase(os.path.expandvars(x)).rstrip("\\") == os.path.normcase(d) for x in parts):
+                return None
+            winreg.SetValueEx(k, "Path", 0, kind, ";".join(parts + [d]))
+        with contextlib.suppress(Exception):      # tell Explorer, so new terminals see it
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 2, 5000, None)
+        return "the user PATH"
+    rel = "$HOME/" + os.path.relpath(d, home) if d.startswith(home + os.sep) else d
+    for p in shell_profiles(home):
+        with contextlib.suppress(OSError):
+            with open(p, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            if d in text or rel in text or "~/" + os.path.relpath(d, home) in text:
+                return None
+    shell = os.path.basename(os.environ.get("SHELL") or ("/bin/zsh" if sys.platform == "darwin" else "/bin/bash"))
+    p = os.path.join(home, ".zprofile" if shell == "zsh" else ".bash_profile" if sys.platform == "darwin"
+                     else ".profile")
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('\n# %s: the ragdoll command\nexport PATH="%s:$PATH"\n' % (OURS, rel))
+    return p
+
+
+# ---- hand-off to the app: a small file in <data dir>/asks that the running app picks up
+
+def tell_app(kind, mail_id, subject=""):
+    d = os.path.join(CFG.home, "asks")
+    os.makedirs(d, exist_ok=True)
+    name = "%d-%d" % (time.time_ns(), os.getpid())
+    tmp = os.path.join(d, name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"kind": kind, "id": mail_id, "subject": subject, "at": int(time.time())}, f, ensure_ascii=False)
+    os.replace(tmp, os.path.join(d, name + ".json"))
+
+
+def take_asks(max_age=600):
+    """The hand-offs waiting for the app, oldest first; each is read once."""
+    d = os.path.join(CFG.home, "asks")
+    out = []
+    for n in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not n.endswith(".json"):
+            continue
+        p = os.path.join(d, n)
+        try:
+            with open(p, encoding="utf-8") as f:
+                x = json.load(f)
+        except (OSError, ValueError):
+            x = None
+        with contextlib.suppress(OSError):
+            os.remove(p)
+        if isinstance(x, dict) and x.get("id") and time.time() - (x.get("at") or 0) < max_age:
+            out.append(x)
+    return out
+
+
+def app_running():
+    return "app" in busy_commands()
+
+
+def start_app():
+    """Open the app (the built one when there is one)."""
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform == "darwin":
+        b = mac_bundle() if FROZEN else None
+        if not b and os.path.isdir("/Applications/Ragdoll Mail.app"):
+            b = "/Applications/Ragdoll Mail.app"
+        if b:
+            subprocess.Popen(["open", b], **quiet)
+            return
+    if FROZEN and sys.platform == "win32":
+        exe = os.path.join(os.path.dirname(sys.executable), "Ragdoll Mail.exe")
+        if os.path.exists(exe):
+            subprocess.Popen([exe], creationflags=0x00000008, **quiet)      # DETACHED_PROCESS
+            return
+    app = os.path.join(APP_DIR, "ragdoll_app.py")
+    if not os.path.exists(app):
+        raise OSError("the app is not here; open Ragdoll Mail yourself")
+    kw = {"creationflags": 0x00000008} if sys.platform == "win32" else {"start_new_session": True}
+    subprocess.Popen([sys.executable, "-I", app], **quiet, **kw)
+
+
+def cmd_open(a):
+    folder, uid = parse_id(a.id)
+    c = db()
+    r = c.execute("select subject from msgs where folder=? and uid=? order by uidv desc limit 1", (folder, uid)).fetchone()
+    tell_app("open", a.id, r["subject"] if r else "")
+    state = "running"
+    if not app_running():
+        start_app()
+        state = "started"
+    print(json.dumps({"id": a.id, "app": state}, ensure_ascii=False))
+
+
+# ---- send later. The list is the app's (scheduled.json): the app sends each mail when it is due,
+# while it is open; one that came due while it was closed goes out when it starts.
+
+def sched_path():
+    return os.path.join(CFG.home, "scheduled.json")
+
+
+def sched_read():
+    try:
+        with open(sched_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return [x for x in d if isinstance(x, dict) and x.get("id") and isinstance(x.get("at"), (int, float))]
+    except (OSError, ValueError):
+        return []
+
+
+def sched_write(items):
+    os.makedirs(CFG.home, exist_ok=True)
+    tmp = "%s.%d.tmp" % (sched_path(), os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+    os.replace(tmp, sched_path())
+
+
+def parse_when(s, now=None):
+    """'2026-11-22 09:00', '09:00' (the next one) or '+2h' / '+30m' / '+1d', in the configured time zone."""
+    now = now or dt.datetime.now(CFG.tz)
+    s = (s or "").strip()
+    m = re.fullmatch(r"\+(\d{1,5})\s*([mhd])", s)
+    if m:
+        return now + dt.timedelta(**{{"m": "minutes", "h": "hours", "d": "days"}[m.group(2)]: int(m.group(1))})
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})", s)
+    if m:
+        y, mo, d, h, mi = map(int, m.groups())
+        return dt.datetime(y, mo, d, h, mi, tzinfo=now.tzinfo)
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s)
+    if m:
+        t = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return t if t > now else t + dt.timedelta(days=1)
+    raise ValueError("give the time as 2026-11-22 09:00, 09:00 or +2h")
+
+
+def cmd_schedule(a):
+    if a.list or not a.id:
+        c = db()
+        out = []
+        for x in sorted(sched_read(), key=lambda x: x["at"]):
+            folder, uid = parse_id(x["id"])
+            r = c.execute("select subject, to_ from msgs where folder=? and uid=? order by uidv desc limit 1",
+                          (folder, uid)).fetchone()
+            out.append({"id": x["id"], "at": local_time(x["at"]), "subject": r["subject"] if r else "",
+                        "to": r["to_"] if r else "", "error": x.get("error")})
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=1))
+        else:
+            for x in out:
+                print("%s  %-12s %s%s" % (x["at"], x["id"], x["subject"], "  FAILED: " + x["error"] if x["error"] else ""))
+            print("(nothing scheduled)" if not out else "")
+        return
+    drafts_only(a.id, "schedule")
+    if a.cancel:
+        items = sched_read()
+        keep = [x for x in items if x["id"] != a.id]
+        if len(keep) == len(items):
+            die("%s is not scheduled" % a.id)
+        sched_write(keep)
+        print(json.dumps({"id": a.id, "scheduled": False}))
+        return
+    if not a.yes:
+        die("schedule needs --yes, given only after the owner approved this exact draft")
+    try:
+        when = parse_when(a.at)
+    except ValueError as e:
+        die(str(e))
+    at = int(when.timestamp())
+    if at < time.time() - 60:
+        die("that time has already passed")
+    if at > time.time() + 5 * 366 * 86400:
+        die("pick a time within the next five years")
+    items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
+    sched_write(items)
+    print(json.dumps({"id": a.id, "at": local_time(at), "app_running": app_running(),
+                      "note": "Ragdoll Mail sends it at that time while the app is open; if the app is "
+                              "closed then, it goes out when the app next starts."}, ensure_ascii=False, indent=1))
+
 
 
 def parser():
@@ -2903,6 +3227,17 @@ def parser():
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_delete_draft)
+    p = sp.add_parser("open", help="show a mail or draft in the Ragdoll Mail app (starts it when closed)")
+    p.add_argument("id")
+    p.set_defaults(fn=cmd_open)
+    p = sp.add_parser("schedule", help="send a draft later (the app sends it); --list shows what is waiting")
+    p.add_argument("id", nargs="?")
+    p.add_argument("--at", help="2026-11-22 09:00, 09:00 (the next one) or +2h")
+    p.add_argument("--cancel", action="store_true", help="keep it as a draft and do not send it")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_schedule)
     sp.add_parser("app", help="open the desktop app (ragdoll app --help)", add_help=False)
     p = sp.add_parser("update", help="get the newest ragdoll from GitHub, test it, keep it")
     g = p.add_mutually_exclusive_group()

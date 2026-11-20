@@ -144,7 +144,7 @@ agent  $ ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
 agent  › The draft is in your Drafts folder. Shall I send it?
 ```
 
-Setup, every command, and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
+To get the command: **Settings → Command line → Install** in the app. Every command and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
 
 ## Help and feedback
 
