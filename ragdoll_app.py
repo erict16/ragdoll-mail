@@ -1061,6 +1061,9 @@ class Backend:
             p["fmt_bar"] = a["fmt_bar"]
         if isinstance(a.get("notify"), bool):
             p["notify"] = a["notify"]
+        f = a.get("folded")
+        if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
+            p["folded"] = f
         os.makedirs(R.CFG.home, exist_ok=True)
         with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
             json.dump(p, f)

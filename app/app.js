@@ -225,13 +225,23 @@ function size(n) {
   if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
   return (n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0) + " MB";
 }
-function fileIcon(name) {
+// an attachment's tile: the common kinds each have their own colour (Word blue, Excel green, PowerPoint
+// orange, PDF red, drawings, pictures, archives), as in Office and the system's own file icons
+const FILE_KINDS = [
+  ["word", "W", ["doc", "docx", "docm", "dot", "dotx", "rtf", "odt", "pages", "wps"]],
+  ["excel", "X", ["xls", "xlsx", "xlsm", "xlsb", "csv", "numbers", "ods", "et"]],
+  ["ppt", "P", ["ppt", "pptx", "pptm", "pps", "ppsx", "key", "odp", "dps"]],
+  ["pdf", "PDF", ["pdf"]],
+  ["cad", "CAD", ["dwg", "dxf", "dwf", "step", "stp", "igs", "iges"]],
+  ["img", "file-image", ["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tif", "tiff", "svg"]],
+  ["zip", "file-archive", ["zip", "rar", "7z", "gz", "tar", "tgz"]],
+];
+function fileTile(name) {
   const x = (name.split(".").pop() || "").toLowerCase();
-  if (["pdf", "doc", "docx", "txt", "rtf", "odt", "md", "pages"].includes(x)) return "file-text";
-  if (["xls", "xlsx", "csv", "numbers", "ods"].includes(x)) return "file-spreadsheet";
-  if (["png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tif", "tiff", "svg"].includes(x)) return "file-image";
-  if (["zip", "rar", "7z", "gz", "tar", "tgz"].includes(x)) return "file-archive";
-  return "file";
+  const k = FILE_KINDS.find(([, , ext]) => ext.includes(x));
+  if (!k) return { cls: "att-icon", html: icon(["txt", "md", "eml", "msg"].includes(x) ? "file-text" : "file") };
+  const [kind, mark] = k;
+  return { cls: `att-icon kind kind-${kind}`, html: mark.startsWith("file-") ? icon(mark) : `<b${mark.length > 1 ? ' class="long"' : ""}>${mark}</b>` };
 }
 const nameOf = (p) => (p && (p.name || p.addr)) || "";
 function who(p) { return p && p.addr === S.boot?.user ? t("me") : nameOf(p); }
@@ -372,14 +382,20 @@ function renderNav() {
   const unread = folders.find((f) => f.key === "inbox")?.unread;
   $("#here-btn").className = "here-btn" + (unread && S.folder !== "inbox" ? " dot" : "");
   $("#here-btn").innerHTML = icon(here?.other ? "folder-open" : FOLDER_ICON[S.folder] || "folder-open") + `<span class="label" dir="auto">${esc(folderName(S.folder))}</span>`;
+  $("#head-title").textContent = folderName(S.folder);
   let seenOther = false;
-  for (const f of folders) {
+  for (const [i, f] of folders.entries()) {
+    if (f.other && !seenOther) nav.append(navSection());
+    const kids = f.other && folders[i + 1]?.other && folders[i + 1].depth > (f.depth || 0);
     const n = f.key === "inbox" || f.other ? f.unread : ["drafts", "scheduled", "flagged"].includes(f.key) ? f.total : 0;
     const name = f.other ? f.label : t(f.key);
-    const b = el("button", { class: "nav-item" + (f.other ? " other" : "") + (f.other && !seenOther ? " first" : "") + (f.key === S.folder && !S.query ? " on" : "") + (was && !was.has(f.key) && f.other ? " new" : ""),
+    const b = el("button", { class: "nav-item" + (f.other ? " other" : "") + (f.key === S.folder && !S.query ? " on" : "") + (was && !was.has(f.key) && f.other ? " new" : ""),
       style: f.other && f.depth ? `--depth:${f.depth}` : null, "data-folder": f.key, "data-tip": f.other ? f.key : name, "data-rail": "", onclick: () => { sideOpen(false); openFolder(f.key); },
-      html: icon(f.other ? "folder-open" : FOLDER_ICON[f.key] || "folder-open") + `<span class="label" dir="auto">${esc(name)}</span>` + (n ? `<span class="count">${n}</span>` : "") +
-        (f.other ? `<span class="nav-more" role="button" aria-label="${esc(t("folder_menu"))}">${icon("ellipsis", "small")}</span>` : "") });
+      "data-depth": f.other ? f.depth || 0 : null, "data-n": f.other ? n || 0 : null,
+      html: icon(f.other ? "folder-open" : FOLDER_ICON[f.key] || "folder-open") + `<span class="label" dir="auto">${esc(name)}</span>` + (n || f.other ? `<span class="count">${n || ""}</span>` : "") +
+        (f.other ? `<span class="nav-more" role="button" aria-label="${esc(t("folder_menu"))}">${icon("ellipsis", "small")}</span>` : "") +
+        (kids ? `<span class="nav-fold" role="button" aria-label="${esc(t("fold"))}">${icon("chevron-right", "small")}</span>` : "") });
+    if (kids) $(".nav-fold", b).addEventListener("click", (e) => { e.stopPropagation(); toggleFold(f.key); });
     if (f.other) {
       seenOther = true;
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
@@ -394,10 +410,45 @@ function renderNav() {
     }
     nav.append(b);
   }
+  applyFold();
   $("#account-addr").textContent = S.boot.demo ? t("demo") : S.boot.user;
   const up = $("#update");
   up.hidden = !S.update;
   if (S.update) up.innerHTML = icon("download") + `<span>${esc(t("update_to", "v" + S.update.version))}</span>`;
+}
+
+// the owner's own folders sit under a heading that folds them away; a folder with folders inside has
+// its own arrow. A folded folder adds the unread mail inside it to its own count. The open folder stays.
+function navSection() {
+  return el("div", { class: "nav-sec" },
+    el("button", { class: "nav-sec-btn", "aria-label": t("fold"), onclick: () => toggleFold("@mine"),
+      html: `<span class="label">${esc(t("my_folders"))}</span>` + icon("chevron-right", "small") + `<span class="count"></span>` }),
+    el("button", { class: "icon-btn tiny nav-sec-add", "data-tip": t("new_folder"), "aria-label": t("new_folder"), onclick: () => newFolder(), html: icon("plus", "small") }));
+}
+function toggleFold(key) {
+  const s = new Set(PREFS.folded || []);
+  if (s.has(key)) s.delete(key); else s.add(key);
+  savePref({ folded: [...s] });
+  applyFold();
+}
+function applyFold() {
+  const folded = new Set(PREFS.folded || []), all = folded.has("@mine");
+  const items = $$("#nav .nav-item.other"), sum = new Map(items.map((b) => [b, +b.dataset.n]));
+  const stack = [];
+  let secSum = 0;
+  for (const b of items) {
+    const d = +b.dataset.depth;
+    while (stack.length && +stack.at(-1).dataset.depth >= d) stack.pop();
+    const up = stack.find((x) => folded.has(x.dataset.folder));
+    if (up) sum.set(up, sum.get(up) + +b.dataset.n);
+    if (all) secSum += +b.dataset.n;
+    b.classList.toggle("gone", (all || !!up) && !b.classList.contains("on"));
+    b.classList.toggle("folded", folded.has(b.dataset.folder));
+    stack.push(b);
+  }
+  for (const [b, n] of sum) $(".count", b).textContent = n || "";
+  const sec = $("#nav .nav-sec");
+  if (sec) { sec.classList.toggle("folded", all); $(".count", sec).textContent = all && secSum ? secSum : ""; }
 }
 
 // the owner's own folders: make one, rename one, delete an empty one
@@ -468,7 +519,7 @@ function accountMenu() {
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
     { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
-    { icon: "keyboard", label: t("shortcuts"), key: "?", run: shortcutsSheet },
+    { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
     "-",
     { note: t("version", S.boot.version) },
   ], { above: true });
@@ -521,6 +572,7 @@ function renderRows() {
   }
   const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
   box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
+  if (S.multi.size > 1) syncSel();
   if (REDUCED.matches) return;
   if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
   else {
@@ -532,6 +584,17 @@ function renderRows() {
       if (now.s && !was.s) popStar($(".flag-ic", n));
     }
   }
+}
+
+// the next page goes after the rows already shown, without drawing those again
+function appendRows(add) {
+  const box = $("#rows"), more = $(".rows-more", box);
+  if (!$(".row", box)) return renderRows();
+  for (const x of add) { shownIds.add(x.id); shownMarks.set(x.id, marksOf(x)); }
+  (more || box.appendChild(document.createElement("i"))).insertAdjacentHTML("beforebegin", add.map(rowTemplate).join(""));
+  if (!more) box.lastChild.remove();
+  else if (!S.more) more.remove();
+  syncSel();
 }
 
 // the star in a row: grows in with a small spin and settles; shrinks away when taken off
@@ -699,11 +762,10 @@ async function loadMore() {
   try {
     const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length, ...filterArgs() });
     const have = new Set(S.rows.map((x) => x.id));
-    S.rows.push(...r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id)));
+    const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
+    S.rows.push(...add);
     S.more = r.more;
-    const top = $("#rows").scrollTop;
-    renderRows();
-    $("#rows").scrollTop = top;
+    appendRows(add);
   } catch (e) { fail(e); } finally { S.loadingMore = false; }
 }
 
@@ -721,7 +783,16 @@ function markRow(id, patch) {
 // ---------------------------------------------------------------- several mails at once
 
 const isSel = (id) => (S.multi.size > 1 ? S.multi.has(id) : id === S.sel);
-function syncSel() { for (const n of $$("#rows .row")) n.classList.toggle("on", isSel(n.dataset.id)); }
+function syncSel() {
+  let prev = null;
+  for (const n of $$("#rows .row")) {
+    const on = isSel(n.dataset.id);
+    n.classList.toggle("on", on);
+    prev?.classList.toggle("on-next", on);
+    prev = n;
+  }
+  prev?.classList.remove("on-next");
+}
 // the mails the next action works on: the selection, or the open mail
 function targets() {
   if (S.multi.size > 1) return [...S.multi];
@@ -866,10 +937,16 @@ $("#rows").addEventListener("contextmenu", (e) => {
 });
 // a Shift-click picks a range, not text
 $("#rows").addEventListener("mousedown", (e) => { if (e.shiftKey && e.target.closest(".row")) e.preventDefault(); });
+// near the bottom, the next page loads; checked once per frame, not on every scroll event
+let scrollTick = 0;
 $("#rows").addEventListener("scroll", () => {
-  const b = $("#rows");
-  if (b.scrollTop + b.clientHeight > b.scrollHeight - 400) loadMore();
-});
+  if (scrollTick) return;
+  scrollTick = requestAnimationFrame(() => {
+    scrollTick = 0;
+    const b = $("#rows");
+    if (b.scrollTop + b.clientHeight > b.scrollHeight - 600) loadMore();
+  });
+}, { passive: true });
 $("#rows").addEventListener("dragstart", (e) => {
   const row = e.target.closest(".row");
   if (!row) return;
@@ -971,11 +1048,30 @@ function toggleUnread() {
 // ---------------------------------------------------------------- search
 
 let searchTimer = null;
+// the list's header names the folder; the search box takes its place while it is in use or holds words
+// the box shows while it has focus or words; closing plays the shrink (style.css) before it goes
+let searchShut = 0;
+function showSearch(on) {
+  const head = $(".list-head");
+  if (on) { clearTimeout(searchShut); searchShut = 0; head.classList.remove("closing"); head.classList.add("searching"); return; }
+  if (!head.classList.contains("searching") || searchShut) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return head.classList.remove("searching");
+  head.classList.add("closing");
+  searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 200);
+}
 function syncSearchUI() {
   const v = $("#search").value;
   $("#search-clear").hidden = !v;
-  $("#search-kbd").hidden = !!v;
+  showSearch(!!v || document.activeElement === $("#search"));
 }
+function openSearch() {
+  showSearch(true);
+  $("#search").focus(); $("#search").select();
+}
+$("#search").addEventListener("focus", syncSearchUI);
+$("#search").addEventListener("blur", syncSearchUI);
+$("#search-btn").innerHTML = icon("search");
+$("#search-btn").addEventListener("click", openSearch);
 $("#search").placeholder = t("search");
 $("#search-clear").innerHTML = icon("x");
 $("#search-clear").addEventListener("click", () => { $("#search").value = ""; onSearch(true); $("#search").focus(); });
@@ -1246,7 +1342,7 @@ function attNode(a, id) {
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
   const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name, onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
-    el("div", { class: "att-icon", html: icon(fileIcon(a.name)) }),
+    el("div", { class: fileTile(a.name).cls, html: fileTile(a.name).html }),
     el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   return node;
@@ -1764,7 +1860,7 @@ function renderAtts() {
   box.replaceChildren();
   for (const a of S.compose.atts) {
     box.append(el("div", { class: "att" + (a.uploading ? " busy" : ""), title: a.name },
-      el("div", { class: "att-icon", html: icon(a.uploading ? "loader-circle" : fileIcon(a.name), a.uploading ? "spin" : "") }),
+      el("div", a.uploading ? { class: "att-icon", html: icon("loader-circle", "spin") } : fileTile(a.name)),
       el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, a.uploading ? t("uploading") : size(a.size))),
       a.uploading ? null : iconBtn("x", t("remove"), () => { S.compose.atts = S.compose.atts.filter((x) => x !== a); renderAtts(); touched(); }, { cls: "tiny" })));
   }
@@ -2212,6 +2308,7 @@ function relabel() {
   if (!S.boot) return;
   $("#compose-btn").dataset.tip = t("compose");
   $("#search").placeholder = t("search");
+  $("#search-btn").dataset.tip = t("search");
   $("#banner-btn").textContent = t("settings");
   syncFilterUI();
   renderNav();
@@ -2318,8 +2415,9 @@ function typing(e) {
 }
 function onKey(e) {
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); $("#search").focus(); $("#search").select(); return; }
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
+  if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
   if (mod && !e.altKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
     e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
   }
@@ -2334,7 +2432,6 @@ function onKey(e) {
   if (typing(e) || mod || e.altKey) return;
   const id = S.focus || S.sel;
   const k = e.key;
-  if (k === "?") { e.preventDefault(); shortcutsSheet(); return; }
   if (S.multi.size > 1) {
     const ids = [...S.multi];
     if (k === "Escape") { e.preventDefault(); clearMulti(); }
@@ -2345,13 +2442,13 @@ function onKey(e) {
     else if (k === "s") { e.preventDefault(); toggleFlag(); }
     else if (k === "j" || k === "ArrowDown" || k === "k" || k === "ArrowUp") { e.preventDefault(); S.multi.clear(); step(k === "j" || k === "ArrowDown" ? 1 : -1); }
     else if (k === "c") { e.preventDefault(); openCompose({ mode: "new" }); }
-    else if (k === "/") { e.preventDefault(); $("#search").focus(); }
+    else if (k === "/") { e.preventDefault(); openSearch(); }
     return;
   }
   if (k === "j" || k === "ArrowDown") { e.preventDefault(); step(1); }
   else if (k === "k" || k === "ArrowUp") { e.preventDefault(); step(-1); }
   else if (k === "c") { e.preventDefault(); openCompose({ mode: "new" }); }
-  else if (k === "/") { e.preventDefault(); $("#search").focus(); }
+  else if (k === "/") { e.preventDefault(); openSearch(); }
   else if (!S.thread) return;
   else if (k === "r") { e.preventDefault(); openCompose({ mode: "reply", id }); }
   else if (k === "a") { e.preventDefault(); openCompose({ mode: "replyall", id }); }
@@ -2369,13 +2466,23 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
 // ---------------------------------------------------------------- list width
 
 (() => {
-  const sp = $("#splitter");
+  const sp = $("#splitter"), app = $("#app");
+  // one width per screen frame; the open mail keeps its width while the line moves (laying a long mail out
+  // again on every mouse move is what made this slow) and fits the new width once, on release
   sp.addEventListener("mousedown", (e) => {
     e.preventDefault();
     const x0 = e.clientX, w0 = $("#list-col").offsetWidth;
-    const move = (ev) => { const w = Math.max(280, Math.min(600, w0 + ev.clientX - x0)); document.documentElement.style.setProperty("--list-w", w + "px"); };
+    let x = x0, q = 0;
+    const kids = [...$("#pane").children];
+    for (const k of kids) k.style.width = k.offsetWidth + "px";
+    app.classList.add("resizing");
+    const apply = () => { q = 0; app.style.setProperty("--list-w", Math.max(280, Math.min(600, w0 + x - x0)) + "px"); };
+    const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
     const up = () => {
       removeEventListener("mousemove", move); removeEventListener("mouseup", up);
+      if (q) { cancelAnimationFrame(q); apply(); }
+      app.classList.remove("resizing");
+      for (const k of kids) k.style.width = "";
       api("prefs", { list_width: $("#list-col").offsetWidth }).catch(() => {});
     };
     addEventListener("mousemove", move); addEventListener("mouseup", up);
@@ -2472,8 +2579,9 @@ function start(boot) {
   $("#side-scrim").onclick = () => sideOpen(false);
   placeCompose();
   $("#account").onclick = accountMenu;
-  $("#search-kbd").textContent = MAC ? "⌘K" : "Ctrl K";
   $("#search").placeholder = t("search");
+  Object.assign($("#search-btn").dataset, { tip: t("search"), key: MAC ? "⌘K" : "Ctrl K" });
+  $("#search-btn").setAttribute("aria-label", t("search"));
   $("#banner-btn").textContent = t("settings");
   document.querySelectorAll("[data-i]").forEach((n) => { n.innerHTML = svg(n.dataset.i); });
   renderNav();
@@ -2496,6 +2604,6 @@ function start(boot) {
   PREFS = b.prefs || {};
   if (!b.prefs) try { PREFS = await api("prefs", {}); } catch { /* defaults */ }
   setLocale(PREFS);
-  if (PREFS.list_width) document.documentElement.style.setProperty("--list-w", PREFS.list_width + "px");
+  if (PREFS.list_width) $("#app").style.setProperty("--list-w", PREFS.list_width + "px");
   if (!b.configured) showSetup(); else start(b);
 })();
