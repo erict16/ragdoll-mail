@@ -1,9 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ragdoll-mail"
-version = "0.9.0"
+version = "0.10.0"
 description = "Free mail app for Mac and Windows with fast local search for any IMAP mailbox, plus a command line for AI agents"
+readme = "README.md"
 requires-python = ">=3.10"
+authors = [{name = "Eric Tan"}]
+keywords = ["email", "imap", "mail client", "full-text search", "exmail", "cli", "ai agent"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Topic :: Communications :: Email :: Email Clients (MUA)",
+]
 license = {text = "MIT"}
+
+[project.urls]
+Homepage = "https://erict16.github.io/ragdoll-mail/"
+Source = "https://github.com/erict16/ragdoll-mail"
+Releases = "https://github.com/erict16/ragdoll-mail/releases"
 
 [project.optional-dependencies]
 app = ["pywebview>=5", "pyobjc-framework-UserNotifications; sys_platform == 'darwin'"]

@@ -72,9 +72,14 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 // Reply, reply all and forward: Remix arrow shapes drawn as a hollow, rounded outline (Apple Mail style); every other icon is Lucide.
-const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="2.5 2.5 19 19" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
+// Each arrow's frame holds the whole shape, its sharp tip and the outline's half width included, so nothing
+// is drawn outside the frame (WebKit cuts off what is); reply and forward share one size.
+// reply all is wider than tall: its frame keeps reply's height, and its box is wider (style.css .i-wide), so its
+// arrows are drawn at the very size of reply's
+const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
+const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="${ARROW_BOX[n]}" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
   : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
-const icon = (n, cls = "") => `<span class="i ${cls}">${svg(n)}</span>`;
+const icon = (n, cls = "") => `<span class="i ${cls}${n === "reply-all" ? " i-wide" : ""}">${svg(n)}</span>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function el(tag, attrs = {}, ...kids) {
@@ -89,6 +94,16 @@ function el(tag, attrs = {}, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
   return e;
 }
+// a box's scrollbar shows while it scrolls and goes 0.8s after it stops (style.css: .scrolling)
+const scrollQuiet = new WeakMap();
+addEventListener("scroll", (e) => {
+  const n = e.target === document ? document.scrollingElement : e.target;
+  if (!n?.classList) return;
+  n.classList.add("scrolling");
+  clearTimeout(scrollQuiet.get(n));
+  scrollQuiet.set(n, setTimeout(() => n.classList.toggle("scrolling", false), 800));
+}, { capture: true, passive: true });
+
 function iconBtn(name, tip, onclick, extra = {}) {
   return el("button", { class: "icon-btn" + (extra.cls ? " " + extra.cls : ""), "data-tip": tip, "data-key": extra.key, html: icon(name), onclick, disabled: extra.disabled, "aria-label": tip });
 }
@@ -533,15 +548,16 @@ function rowTemplate(r) {
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(folderName(r.folder))}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
-  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("forward", "small") : ""}</span>` : "";
+  const done = (r.answered ? `<span class="mk mk-a">${icon("reply", "small")}</span>` : "") +
+    (r.forwarded ? `<span class="mk mk-f">${icon("forward", "small")}</span>` : "");
   const acts = r.sched
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : (S.folder === "trash" || S.folder === "junk") && !S.query
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span><span class="who" dir="auto">${done}${esc(name)}</span>` +
+  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span>${done}<span class="who" dir="auto">${esc(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
     `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
     `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
@@ -626,21 +642,13 @@ function setStar(node, on) {
   }
 }
 
-// a new replied / forwarded mark opens its space before the name, the arrow sliding the way it points
+// a new replied / forwarded arrow comes in the way it points
 function showDone(node, replied, forwarded) {
-  const d = $(".done-ic", node);
-  if (!d || REDUCED.matches) return;
-  const w = d.offsetWidth + "px";
-  d.animate([
-    { width: "0px", marginInlineEnd: "0px", opacity: 0 },
-    { width: w, marginInlineEnd: "5px", opacity: 0, offset: 0.35 },
-    { width: w, marginInlineEnd: "5px", opacity: 1 },
-  ], { duration: 420, easing: SMOOTH });
-  const icons = $$(".i", d);
-  const slide = (n, dx) => n?.animate([{ transform: `translateX(${dx}px)` }, { transform: "none" }],
-    { duration: 420, easing: "cubic-bezier(.2, .8, .2, 1)" });
-  if (replied) slide(icons[0], 7);
-  if (forwarded) slide(icons[icons.length - 1], -7);
+  if (REDUCED.matches) return;
+  const come = (n, dx) => n?.animate([{ opacity: 0, transform: `translateX(${dx}px) scale(.7)` }, { opacity: 1, transform: "none" }],
+    { duration: 320, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  if (replied) come($(".mk-a", node), 5);
+  if (forwarded) come($(".mk-f", node), -5);
 }
 
 // rows going away fold up before they are dropped
@@ -1052,9 +1060,10 @@ function showSearch(on) {
   if (!head.classList.contains("searching") || searchShut) return;
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return head.classList.remove("searching");
   head.classList.add("closing");
-  searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 200);
+  searchShut = setTimeout(() => { searchShut = 0; head.classList.remove("searching", "closing"); }, 160);
 }
 function syncSearchUI() {
+  if (dragFocus.held) return;         // a column is being dragged: the search stays as it is
   const v = $("#search").value;
   $("#search-clear").hidden = !v;
   showSearch(!!v || document.activeElement === $("#search"));
@@ -1112,7 +1121,7 @@ function renderToolbar() {
       iconBtn("calendar-clock", t("send_later"), (e) => laterMenu(e.currentTarget), { disabled: !!S.compose.busy }),
       el("span", { class: "sep" }),
       iconBtn("paperclip", t("attach"), () => pickFiles()),
-      iconBtn("type", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
+      iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
       iconBtn("trash-2", t("discard"), () => discardCompose()));
@@ -1136,8 +1145,8 @@ function renderToolbar() {
         : iconBtn("archive", t("archive_it"), () => moveMail(ids, "archive"), { key: "E" }),
       iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
       iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), { key: "V" }),
-      iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U" }),
-      iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on" : "" }),
+      iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U", cls: anyUnread ? "" : "unread-mark" }),
+      iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on fill" : "" }),
     );
     return;
   }
@@ -1151,8 +1160,8 @@ function renderToolbar() {
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
     iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
-    iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
-    iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
+    iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
+    iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
   );
 }
 
@@ -1297,12 +1306,15 @@ async function loadBody(node, r) {
 
 function renderBody(body, m) {
   body.replaceChildren();
-  // attachments sit right under the mail's header, above the text
-  if (m.atts.length) {
+  if (m.unsub) unsubLink(body.closest(".msg"), m);
+  if (m.invite) body.append(inviteCard(m));
+  // attachments sit right under the mail's header, above the text; an invitation's .ics is the card above
+  const files = m.invite ? m.atts.filter((a) => !/\.ics$/i.test(a.name)) : m.atts;
+  if (files.length) {
     const atts = el("div", { class: "atts" });
-    for (const a of m.atts) atts.append(attNode(a, m.id));
+    for (const a of files) atts.append(attNode(a, m.id));
     body.append(atts);
-    if (m.atts.length > 1) {
+    if (files.length > 1) {
       const all = el("button", { class: "link-btn atts-all", html: icon("download", "small") + `<span>${esc(t("save_all"))}</span>`, onclick: async () => {
         all.disabled = true;
         try {
@@ -1322,6 +1334,53 @@ function renderBody(body, m) {
   body.append(frame.node);
 }
 
+// a mailing list's way out, beside the sender's address, as in Gmail and Apple Mail
+function unsubLink(node, m) {
+  const from = node?.querySelector(".msg-from");
+  if (!from || from.querySelector(".unsub")) return;
+  const name = nameOf(m.from);
+  from.append(el("button", { class: "unsub", onclick: (e) => {
+    e.stopPropagation();
+    const box = sheet(el("div", {},
+      el("h2", {}, t("unsub_title", name)),
+      el("p", { class: "sheet-sub" }, t(m.unsub.one_click ? "unsub_one" : m.unsub.url ? "unsub_web" : "unsub_mail")),
+      el("div", { class: "sheet-acts" },
+        el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
+        el("button", { class: "btn primary", onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const r = await api("unsubscribe", { id: m.id });
+            closeLayer();
+            if (r.done) { toast(t("unsub_done", name)); from.querySelector(".unsub")?.remove(); }
+            else if (r.mailto) openCompose({ mode: "new", to: [{ name: "", addr: r.mailto.toLowerCase() }], subject: r.subject });
+          } catch (err) { ev.target.disabled = false; fail(err); }
+        } }, t("unsub")))));
+    box.querySelector(".btn.primary").focus();
+  } }, t("unsub")));
+}
+
+// a meeting invitation: when and where, and a way into the system's calendar
+function inviteCard(m) {
+  const v = m.invite;
+  const day = { weekday: "short", month: "short", day: "numeric" };
+  const same = v.end && fmt(v.end, { year: "numeric", month: "numeric", day: "numeric" }) === fmt(v.start, { year: "numeric", month: "numeric", day: "numeric" });
+  let when = fmt(v.start, day);
+  if (v.all_day) when += " · " + t("all_day");
+  else when += " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, day) + " " + fmt(v.end, HM)) : "");
+  const past = (v.end || v.start) * 1000 < Date.now();
+  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") },
+    el("div", { class: "inv-day" }, el("span", {}, fmt(v.start, { month: "short" })), el("b", {}, fmt(v.start, { day: "numeric" }).replace(/\D+$/, ""))),
+    el("div", { class: "inv-text" },
+      el("b", {}, v.title || t("invite")),
+      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + when),
+      v.where ? el("span", {}, v.where) : null,
+      v.organizer ? el("span", { class: "inv-org" }, t("inv_from", v.organizer)) : null),
+    v.cancelled ? null : el("button", { class: "btn", onclick: async (e) => {
+      e.target.disabled = true;
+      try { await api("open_invite", { id: m.id }); } catch (err) { fail(err); } finally { e.target.disabled = false; }
+    } }, t("add_cal")));
+}
+
 function attNode(a, id) {
   // one click at a time: a second one while the first is still on its way only opened a second copy
   const open = async () => {
@@ -1338,10 +1397,31 @@ function attNode(a, id) {
       toast(t("saved_to") + " · " + r.name, { action: { label: t("show"), run: () => api("reveal", { path: r.path }).catch(fail) }, ms: 5000 });
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
-  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name, onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+  let dragged = false;
+  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
+    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
     el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
+  // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
+  if (MAC && S.boot.window) {
+    node.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest(".att-acts")) return;
+      e.preventDefault();                 // no text selection, no drag of the card's picture
+      const x0 = e.clientX, y0 = e.clientY;
+      const move = (ev) => {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 5) return;
+        stop();
+        dragged = true;
+        node.classList.add("busy");
+        api("attachment", { id, i: a.i, name: a.name, action: "drag" })
+          .then((r) => { if (!r.dragging) dragged = false; }, fail)
+          .finally(() => node.classList.toggle("busy", false));
+      };
+      const stop = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", stop); };
+      addEventListener("mousemove", move); addEventListener("mouseup", stop);
+    });
+  }
   return node;
 }
 
@@ -1610,6 +1690,7 @@ async function openCompose(opts) {
     c = await api("compose", { mode: opts.mode, id: opts.id });
   } catch (e) { return fail(e); }
   if (opts.to) c.to = [...opts.to, ...c.to];
+  if (opts.subject) c.subject = opts.subject;
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;
@@ -2176,7 +2257,8 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"]];
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"],
+    ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
     for (const [k, ic, lab] of tabs) nav.append(el("button", { class: "nav-item" + (k === tab ? " on" : ""), onclick: () => { grab(); tab = k; drawNav(); draw(); }, html: icon(ic) + `<span class="label">${esc(t(lab))}</span>` }));
@@ -2198,9 +2280,9 @@ async function openSettings() {
       const lab = (text, ...kids) => el("label", {}, el("span", { class: "lab" }, text), ...kids);
       f.append(lab(t("name"), inp("name")), lab(t("email"), inp("user", "email")),
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
-      if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", "RAGDOLL_PASSWORD")));
+      if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", s.password_env)));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number", { "data-host": "smtp_port" }))));
       const res = el("div");
       const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
@@ -2252,6 +2334,27 @@ async function openSettings() {
       // a moment after the switch here: macOS may be asking its question right now
       setTimeout(check, noticeAsked ? 1500 : 0);
       noticeAsked = false;
+    } else if (tab === "cli") {
+      const form = el("div", { class: "form" });
+      body.append(el("h2", {}, t("cli")), form);
+      const drawCli = async () => {
+        const st = await api("cli_state").catch(fail);
+        if (!st || !form.isConnected) return;
+        const res = el("div");
+        const btn = el("button", { class: "btn", onclick: async () => {
+          btn.disabled = true;
+          try {
+            const r = await api("install_cli");
+            const lines = [r.kept ? t("cli_kept", r.path) : t("cli_done", r.path)];
+            if (r.path_added) lines.push(t("cli_new_terminal"));
+            res.replaceChildren(el("div", { class: r.kept ? "msg-warn" : "msg-ok", html: (r.kept ? "" : icon("circle-check")) + esc(lines.join(" ")) }));
+          } catch (e) { res.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(e.message) })); }
+          finally { btn.disabled = false; }
+        } }, st.installed ? t("cli_reinstall") : t("cli_install"));
+        form.replaceChildren(el("div", { class: "stack" }, el("span", { class: "lab" }, t("cli_command")),
+          el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, btn, res)));
+      };
+      drawCli();
     } else if (tab === "region") {
       const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
         setPref({ lang: val }); setLocale(PREFS); relabel(); relabelSheet();
@@ -2330,7 +2433,6 @@ function relabel() {
   placeCompose();
   $("#search").placeholder = t("search");
   $("#search-btn").dataset.tip = t("search");
-  $("#banner-btn").textContent = t("settings");
   syncFilterUI();
   renderNav();
   renderRows();
@@ -2361,7 +2463,7 @@ function showSetup() {
     email.addEventListener("change", async () => {
       if (!v.user.includes("@") || guessed === v.user) return;
       guessed = v.user;
-      try { const g = await api("guess_servers", { user: v.user }); v.imap_host = g.imap_host; v.smtp_host = g.smtp_host; const n = $$("#setup input[data-host]"); n.forEach((x) => { x.value = v[x.dataset.host]; }); } catch { /* typed by hand */ }
+      try { Object.assign(v, await api("guess_servers", { user: v.user })); $$("#setup input[data-host]").forEach((x) => { x.value = v[x.dataset.host] ?? ""; }); } catch { /* typed by hand */ }
     });
     f.append(lab(t("name"), inp("name")), lab(t("email"), email), lab(t("password"), inp("password", "password")));
     const dis = el("button", { class: "disclose" + (open ? " open" : ""), onclick: () => { open = !open; draw(); }, html: icon("chevron-right", "small") + esc(t("servers")) });
@@ -2385,7 +2487,7 @@ function showSetup() {
   async function signIn() {
     if (busy) return;
     if (!v.imap_host && v.user.includes("@")) {
-      try { const g = await api("guess_servers", { user: v.user }); v.imap_host = g.imap_host; v.smtp_host = g.smtp_host; } catch { /* below */ }
+      try { Object.assign(v, await api("guess_servers", { user: v.user })); } catch { /* below */ }
     }
     busy = true; err = ""; draw();
     try {
@@ -2486,6 +2588,26 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
 
 // ---------------------------------------------------------------- list width
 
+// While a column edge is dragged, a text field with the caret in it is let go and given back on release.
+// In the Mac app (WebKit) a focused field has its caret placed again, and the input method asked where it
+// is, on every frame the layout changes: dragging with the search open was very slow (21st Nov 2026).
+const dragFocus = {
+  held: null, start: 0, end: 0,
+  take() {
+    const a = document.activeElement;
+    if (!a || !a.matches?.("input, textarea")) return;
+    this.held = a; this.start = a.selectionStart; this.end = a.selectionEnd;
+    a.blur();
+  },
+  give() {
+    const a = this.held;
+    this.held = null;
+    if (!a || !a.isConnected) return;
+    a.focus({ preventScroll: true });
+    try { a.setSelectionRange(this.start, this.end); } catch { /* not a text field */ }
+  },
+};
+
 (() => {
   const sp = $("#splitter"), app = $("#app");
   // one width per screen frame; the open mail keeps its width while the line moves (laying a long mail out
@@ -2496,6 +2618,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
     let x = x0, q = 0;
     const kids = [...$("#pane").children];
     for (const k of kids) k.style.width = k.offsetWidth + "px";
+    dragFocus.take();
     app.classList.add("resizing");
     const apply = () => { q = 0; app.style.setProperty("--list-w", Math.max(280, Math.min(600, w0 + x - x0)) + "px"); };
     const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
@@ -2504,6 +2627,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
       if (q) { cancelAnimationFrame(q); apply(); }
       app.classList.remove("resizing");
       for (const k of kids) k.style.width = "";
+      dragFocus.give();
       api("prefs", { list_width: $("#list-col").offsetWidth }).catch(() => {});
     };
     addEventListener("mousemove", move); addEventListener("mouseup", up);
@@ -2521,6 +2645,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
     let x = x0, q = 0;
     const kids = [...$("#pane").children];
     for (const k of kids) k.style.width = k.offsetWidth + "px";
+    dragFocus.take();
     app.classList.add("side-sizing");
     const apply = () => { q = 0; app.style.setProperty("--side-pick", Math.round(Math.max(SIDE_MIN, Math.min(SIDE_MAX, w0 + x - x0))) + "px"); };
     const move = (ev) => { x = ev.clientX; if (!q) q = requestAnimationFrame(apply); };
@@ -2529,6 +2654,7 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
       if (q) { cancelAnimationFrame(q); apply(); }
       app.classList.remove("side-sizing");
       for (const k of kids) k.style.width = "";
+      dragFocus.give();
       if (x === x0) return;
       PREFS.side_width = $(".side").offsetWidth;
       api("prefs", { side_width: PREFS.side_width }).catch(() => {});
@@ -2581,6 +2707,23 @@ function showNews(news) {
   });
   if (!inFront() && canNotice()) notice(live, one);
 }
+// a hand-off from ragdoll in a terminal or an assistant: show this mail, or a draft is ready
+async function openMail(id) {
+  const key = id.slice(0, id.lastIndexOf(":"));
+  await openFolder(key);
+  if (rowOf(id)) selectRow(id); else openThread(id);
+}
+async function showAsks(asks) {
+  const now = Date.now() / 1000;
+  const fresh = (asks || []).filter((x) => x.n > S.asksN);
+  if (!fresh.length) return;
+  S.asksN = Math.max(...fresh.map((x) => x.n));
+  for (const x of fresh.filter((x) => now - x.at < 600)) {
+    if (x.kind === "open") await openMail(x.id);
+    else toast(t("draft_ready", x.subject || t("no_subject")), { id: "ask", ms: 12000, action: { label: t("open"), run: () => openMail(x.id) } });
+  }
+}
+window.ragdollPoll = () => refreshCounts();
 function applyStatus(st) {
   S.boot.folders = st.folders;
   S.update = st.update;
@@ -2589,13 +2732,28 @@ function applyStatus(st) {
   renderNav();
   const b = $("#banner");
   if (st.error && !S.boot.demo) {
+    // known problems get a short title, what it means, and a button named for the fix;
+    // anything else shows its first sentence as the title and the rest below
+    const known = [[/^No password saved\./, "b_pw"], [/^No account yet\./, "b_acct"], [/^Sign-in failed\./, "b_signin"]]
+      .find(([re]) => re.test(st.error));
+    let title, sub, act;
+    if (known) {
+      const k = known[1];
+      title = t(k + "_title"); sub = STR[k + "_sub"] || ""; act = t(k + "_btn");
+    } else {
+      const text = tr(st.error), m = text.match(/^(.+?[.。])\s*(.*)$/s);
+      title = m ? m[1].replace(/[.。]$/, "") : text; sub = m ? m[2] : ""; act = t("b_fix");
+    }
+    $("#banner-title").textContent = title;
+    $("#banner-sub").textContent = sub;
+    $("#banner-sub").hidden = !sub;
+    $("#banner-btn").textContent = act;
     b.hidden = false;
-    $("#banner-text").textContent = tr(st.error);
-    $("#banner-btn").textContent = t("settings");
   } else b.hidden = true;
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
+  showAsks(st.asks);
 }
 $("#banner-btn").addEventListener("click", openSettings);
 $("#update").addEventListener("click", () => {
@@ -2620,6 +2778,7 @@ else window.addEventListener("pywebviewready", nativeWindow);
 function start(boot) {
   S.boot = boot;
   S.newsN = Math.max(0, ...(boot.news || []).map((x) => x.n));
+  S.asksN = 0;        // a mail asked for before the app was open is still shown
   applyTheme(boot.theme);
   $("#app").hidden = false;
   $("#setup").hidden = true;
@@ -2635,7 +2794,6 @@ function start(boot) {
   $("#search").placeholder = t("search");
   Object.assign($("#search-btn").dataset, { tip: t("search"), key: MAC ? "⌘K" : "Ctrl K" });
   $("#search-btn").setAttribute("aria-label", t("search"));
-  $("#banner-btn").textContent = t("settings");
   document.querySelectorAll("[data-i]").forEach((n) => { n.innerHTML = svg(n.dataset.i); });
   renderNav();
   showEmpty();

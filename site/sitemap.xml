@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/zh/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/exmail/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/exmail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/exmail/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/zh/exmail/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/exmail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/exmail/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/compare/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/compare/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/compare/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/zh/compare/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/compare/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/compare/"/>
+  </url>
+</urlset>

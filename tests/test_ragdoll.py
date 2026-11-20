@@ -1062,3 +1062,213 @@ class HeldFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AppBridge(unittest.TestCase):
+    """The ragdoll command made from the app, hand-offs to the app, send later, the index version."""
+
+    def setUp(self):
+        self.old = ragdoll.CFG.d["data_dir"]
+        ragdoll.CFG.d["data_dir"] = tempfile.mkdtemp()
+        self.home = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(ragdoll.CFG.d["data_dir"], ignore_errors=True)
+        shutil.rmtree(self.home, ignore_errors=True)
+        ragdoll.CFG.d["data_dir"] = self.old
+
+    @unittest.skipIf(sys.platform == "win32", "the launcher and PATH are a POSIX shell's here")
+    def test_install_cli_makes_launcher_and_path_once(self):
+        r = ragdoll.install_cli(self.home)
+        self.assertTrue(r["made"])
+        path = os.path.join(self.home, ".local", "bin", "ragdoll")
+        self.assertEqual(r["path"], path)
+        self.assertTrue(os.access(path, os.X_OK))
+        out = subprocess.run([path, "--version"], capture_output=True, text=True, env=dict(os.environ, HOME=self.home))
+        self.assertIn(ragdoll.__version__, out.stdout)
+        self.assertTrue(r["path_added"])
+        with open(r["path_added"], encoding="utf-8") as f:
+            self.assertEqual(f.read().count(".local/bin"), 1)
+        again = ragdoll.install_cli(self.home)
+        self.assertFalse(again["made"])
+        self.assertIsNone(again["path_added"])          # already on the PATH: the profile is not touched twice
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX launcher")
+    def test_install_cli_keeps_a_launcher_it_did_not_make(self):
+        d = os.path.join(self.home, ".local", "bin")
+        os.makedirs(d)
+        with open(os.path.join(d, "ragdoll"), "w") as f:
+            f.write("#!/bin/sh\nexec python3 -I /my/clone/ragdoll.py \"$@\"\n")
+        r = ragdoll.install_cli(self.home)
+        self.assertTrue(r["kept"])
+        self.assertFalse(r["made"])
+        with open(os.path.join(d, "ragdoll")) as f:
+            self.assertIn("/my/clone/", f.read())
+
+    def test_asks_are_read_once_and_old_ones_dropped(self):
+        ragdoll.tell_app("open", "inbox:5", "Hello")
+        ragdoll.tell_app("draft", "drafts:7", "Re: Hello")
+        got = ragdoll.take_asks()
+        self.assertEqual([(x["kind"], x["id"]) for x in got], [("open", "inbox:5"), ("draft", "drafts:7")])
+        self.assertEqual(ragdoll.take_asks(), [])
+        ragdoll.tell_app("open", "inbox:6")
+        self.assertEqual(ragdoll.take_asks(max_age=-1), [])
+
+    def test_parse_when(self):
+        now = ragdoll.dt.datetime(2026, 11, 21, 10, 0, tzinfo=ragdoll.CFG.tz)
+        self.assertEqual(ragdoll.parse_when("+2h", now), now + ragdoll.dt.timedelta(hours=2))
+        self.assertEqual(ragdoll.parse_when("09:00", now).day, 22)        # 9:00 has passed: tomorrow
+        self.assertEqual(ragdoll.parse_when("11:30", now).day, 21)
+        self.assertEqual(ragdoll.parse_when("2026-12-01 08:15", now).hour, 8)
+        with self.assertRaises(ValueError):
+            ragdoll.parse_when("tomorrow", now)
+
+    def run_cli(self, *argv):
+        """Run one command here as the shell would: (exit code, stdout, stderr)."""
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                a = ragdoll.parser().parse_args(list(argv))
+                a.fn(a)
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else 1
+                if isinstance(e.code, str):
+                    print(e.code, file=sys.stderr)
+            except LookupError as e:
+                code = 1
+                print(e, file=sys.stderr)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_schedule_needs_yes_and_a_draft(self):
+        code, out, err = self.run_cli("schedule", "inbox:5", "--at", "+1h", "--yes")
+        self.assertNotEqual(code, 0)
+        code, out, err = self.run_cli("schedule", "drafts:9", "--at", "+1h")
+        self.assertIn("--yes", err)
+        self.assertEqual(ragdoll.sched_read(), [])
+        code, out, err = self.run_cli("schedule", "drafts:9", "--at", "+1h", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([x["id"] for x in ragdoll.sched_read()], ["drafts:9"])
+        self.assertGreater(ragdoll.sched_read()[0]["at"], time.time() + 3000)
+        code, out, err = self.run_cli("schedule", "--list", "--json")
+        self.assertEqual(json.loads(out)[0]["id"], "drafts:9")
+        code, out, err = self.run_cli("schedule", "drafts:9", "--cancel")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(ragdoll.sched_read(), [])
+
+    def test_index_from_a_newer_version_is_refused(self):
+        c = ragdoll.db()
+        self.assertEqual(c.execute("select v from meta where k='schema'").fetchone()[0], str(ragdoll.SCHEMA_VERSION))
+        c.execute("insert or replace into meta values('schema', ?)", (str(ragdoll.SCHEMA_VERSION + 1),))
+        c.commit()
+        c.close()
+        with self.assertRaises(ragdoll.IndexTooNew):
+            ragdoll.db()
+        code, out, err = self.run_cli("status")
+        self.assertNotEqual(code, 0)
+        self.assertIn("newer Ragdoll Mail", err)
+
+
+class PasswordFromShell(unittest.TestCase):
+    """An app opened from the Dock does not get the variables the shell profile exports."""
+
+    def setUp(self):
+        self.saved = (ragdoll.FROZEN, ragdoll.keychain_get, ragdoll.subprocess.run, dict(ragdoll._SHELL_ENV),
+                      ragdoll.CFG.d.get("password_env"))
+        ragdoll.CFG.d["password_env"] = "RAGDOLL_TEST_PW_X"
+        os.environ.pop("RAGDOLL_TEST_PW_X", None)
+        ragdoll._SHELL_ENV.clear()
+        ragdoll.keychain_get = lambda *a, **k: None
+        self.calls = []
+
+        def run(argv, **kw):
+            self.calls.append(argv)
+            out = "" if argv[0] == "launchctl" else "s3cret\n"
+            return subprocess.CompletedProcess(argv, 0, stdout=out)
+        ragdoll.subprocess.run = run
+
+    def tearDown(self):
+        ragdoll.FROZEN, ragdoll.keychain_get, ragdoll.subprocess.run, old, ragdoll.CFG.d["password_env"] = self.saved
+        ragdoll._SHELL_ENV.clear()
+        ragdoll._SHELL_ENV.update(old)
+
+    def test_the_app_asks_the_login_shell_once(self):
+        ragdoll.FROZEN = True
+        self.assertEqual(ragdoll.find_password(), "s3cret")
+        self.assertEqual(ragdoll.find_password(), "s3cret")
+        shells = [c for c in self.calls if c[0] != "launchctl"]
+        self.assertEqual(len(shells), 1)                         # asked once, then remembered
+        self.assertEqual(shells[0][-1], "printenv RAGDOLL_TEST_PW_X")
+
+    def test_a_terminal_does_not_ask_the_shell(self):
+        ragdoll.FROZEN = False
+        self.assertIsNone(ragdoll.find_password())
+        self.assertEqual(self.calls, [])
+
+    def test_odd_variable_names_are_never_put_in_a_command(self):
+        self.assertIsNone(ragdoll.shell_env("X; rm -rf ~"))
+        self.assertEqual(self.calls, [])
+
+
+class ServersFromMx(unittest.TestCase):
+    """A company address (name@company.com) finds its mail service from the domain's MX records."""
+    MAC = ("Server:\t\t192.168.1.1\nAddress:\t192.168.1.1#53\n\nNon-authoritative answer:\n"
+           "example.com\tmail exchanger = 10 mxbiz2.qq.com.\nexample.com\tmail exchanger = 5 mxbiz1.qq.com.\n")
+    WIN = ("Server:  router\nAddress:  192.168.1.1\n\nNon-authoritative answer:\n"
+           "example.com\tMX preference = 10, mail exchanger = mx2.zoho.eu\n"
+           "example.com\tMX preference = 5, mail exchanger = mx.zoho.eu\n")
+
+    def setUp(self):
+        self.saved = ragdoll.subprocess.run
+        self.out, self.calls = "", []
+
+        def run(argv, **kw):
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, self.out, "")
+        ragdoll.subprocess.run = run
+        self.addCleanup(setattr, ragdoll.subprocess, "run", self.saved)
+
+    def test_mac_output_best_first(self):
+        self.out = self.MAC
+        self.assertEqual(ragdoll.mx_hosts("example.com"), ["mxbiz1.qq.com", "mxbiz2.qq.com"])
+        self.assertEqual(ragdoll.servers_from_mx("example.com"),
+                         {"imap_host": "imap.exmail.qq.com", "smtp_host": "smtp.exmail.qq.com", "smtp_port": 465})
+
+    def test_windows_output_and_regional_hosts(self):
+        self.out = self.WIN
+        self.assertEqual(ragdoll.servers_from_mx("example.com")["imap_host"], "imap.zoho.eu")
+
+    def test_unknown_service_and_odd_domains(self):
+        self.out = "example.com\tmail exchanger = 10 mail.example.com.\n"
+        self.assertIsNone(ragdoll.servers_from_mx("example.com"))
+        self.assertEqual(ragdoll.mx_hosts("x; rm -rf ~"), [])
+        self.assertEqual(ragdoll.mx_hosts("-type=any"), [])
+        self.assertEqual(len(self.calls), 1)
+
+    def test_no_nslookup(self):
+        def missing(*a, **k):
+            raise FileNotFoundError("nslookup")
+        ragdoll.subprocess.run = missing
+        self.assertIsNone(ragdoll.servers_from_mx("example.com"))
+
+
+class SmtpPorts(unittest.TestCase):
+    def test_587_must_switch_to_tls(self):
+        made = []
+
+        class Plain:
+            def __init__(self, host, port, timeout):
+                made.append((host, port))
+
+            def starttls(self, context):
+                raise ragdoll.smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+            def close(self):
+                made.append("closed")
+        saved = ragdoll.smtplib.SMTP
+        ragdoll.smtplib.SMTP = Plain
+        try:
+            with self.assertRaises(ragdoll.smtplib.SMTPNotSupportedError):
+                ragdoll.smtp_open("smtp.example.com", 587, 5)
+        finally:
+            ragdoll.smtplib.SMTP = saved
+        self.assertEqual(made, [("smtp.example.com", 587), "closed"])

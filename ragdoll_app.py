@@ -65,7 +65,7 @@ FOLDER_NAMES = {
     "junk": ("junk", "spam", "junk e-mail", "junk email", "[gmail]/spam", "垃圾邮件", "垃圾箱"),
     "archive": ("archive", "archives", "归档"),
 }
-PROVIDERS = {       # domain -> (imap host, smtp host); all on 993 / 465
+PROVIDERS = {       # domain -> (imap host, smtp host[, smtp port]); IMAP on 993, SMTP on 465 unless given
     "gmail.com": ("imap.gmail.com", "smtp.gmail.com"),
     "googlemail.com": ("imap.gmail.com", "smtp.gmail.com"),
     "qq.com": ("imap.qq.com", "smtp.qq.com"),
@@ -80,6 +80,9 @@ PROVIDERS = {       # domain -> (imap host, smtp host); all on 993 / 465
     "zoho.com": ("imap.zoho.com", "smtp.zoho.com"),
     "gmx.com": ("imap.gmx.com", "mail.gmx.com"),
     "yandex.com": ("imap.yandex.com", "smtp.yandex.com"),
+    "icloud.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
+    "me.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
+    "mac.com": ("imap.mail.me.com", "smtp.mail.me.com", 587),
 }
 
 
@@ -289,6 +292,102 @@ def part_info(k, p, light=False):
     return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
 
 
+
+def list_unsub(msg):
+    """The mail's own way out of a mailing list (List-Unsubscribe, RFC 2369; one click per RFC 8058):
+    {"url", "mailto", "one_click"}, or None for a mail that has none."""
+    h = R.hdr(msg, "List-Unsubscribe") or ""
+    links = re.findall(r"<\s*([^>\s]+)\s*>", h)
+    url = next((u for u in links if re.match(r"(?i)https://", u)), None) or \
+        next((u for u in links if re.match(r"(?i)http://", u)), None)
+    mailto = next((u for u in links if re.match(r"(?i)mailto:[^@\s]+@", u)), None)
+    if not url and not mailto:
+        return None
+    one = bool(url and url.lower().startswith("https://")
+               and re.search(r"(?i)List-Unsubscribe\s*=\s*One-Click", R.hdr(msg, "List-Unsubscribe-Post") or ""))
+    return {"url": url, "mailto": mailto, "one_click": one}
+
+
+# Outlook names Windows time zones, not IANA ones
+WIN_TZ = {"China Standard Time": "Asia/Shanghai", "Singapore Standard Time": "Asia/Singapore",
+          "Taipei Standard Time": "Asia/Taipei", "Tokyo Standard Time": "Asia/Tokyo", "Korea Standard Time": "Asia/Seoul",
+          "India Standard Time": "Asia/Kolkata", "SE Asia Standard Time": "Asia/Bangkok",
+          "W. Australia Standard Time": "Australia/Perth", "AUS Eastern Standard Time": "Australia/Sydney",
+          "GMT Standard Time": "Europe/London", "W. Europe Standard Time": "Europe/Berlin",
+          "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest",
+          "Russian Standard Time": "Europe/Moscow", "Arabian Standard Time": "Asia/Dubai",
+          "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago",
+          "Mountain Standard Time": "America/Denver", "Pacific Standard Time": "America/Los_Angeles",
+          "UTC": "UTC", "Coordinated Universal Time": "UTC"}
+
+
+def ics_time(value, params):
+    """An iCalendar date or date-time -> (unix time, all day)."""
+    v = value.strip()
+    if re.fullmatch(r"\d{8}", v):           # a whole day: midnight where the reader is
+        d = dt.datetime.strptime(v, "%Y%m%d")
+        return int(d.timestamp()), True
+    m = re.fullmatch(r"(\d{8}T\d{4})(\d{2})?(Z?)", v)
+    if not m:
+        return None, False
+    d = dt.datetime.strptime(m.group(1) + (m.group(2) or "00"), "%Y%m%dT%H%M%S")
+    if m.group(3):
+        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False
+    tz = None
+    name = (params.get("TZID") or "").strip('"')
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(WIN_TZ.get(name, name))
+        except Exception:
+            tz = None
+    return int(d.replace(tzinfo=tz).timestamp() if tz else d.timestamp()), False
+
+
+def ics_part(msg):
+    """The mail's calendar part (an invitation), or None."""
+    for p in msg.walk():
+        if p.is_multipart():
+            continue
+        if p.get_content_type() == "text/calendar" or (R.fname(p) or "").lower().endswith(".ics"):
+            return p
+    return None
+
+
+def invite_of(msg):
+    """What a meeting invitation says: {"title", "start", "end", "all_day", "where", "organizer", "method"}, or None."""
+    p = ics_part(msg)
+    if p is None:
+        return None
+    try:
+        text = R.part_bytes(p).decode("utf-8", "replace")
+    except Exception:
+        return None
+    text = re.sub(r"\r?\n[ \t]", "", text)               # unfold
+    method = (re.search(r"(?mi)^METHOD:(.*)$", text) or [None, ""])[1].strip().upper()
+    ev = re.search(r"(?s)BEGIN:VEVENT(.*?)END:VEVENT", text)
+    if not ev:
+        return None
+    props = {}
+    for line in ev.group(1).splitlines():
+        m = re.match(r"([A-Za-z-]+)((?:;[^:]*)?):(.*)", line)
+        if not m or m.group(1).upper() in props:
+            continue
+        params = dict(re.findall(r';([A-Za-z-]+)=("[^"]*"|[^;]*)', m.group(2)))
+        props[m.group(1).upper()] = (m.group(3), {k.upper(): v for k, v in params.items()})
+    unesc = lambda v: re.sub(r"\\([,;\\])", r"\1", v.replace("\\n", "\n").replace("\\N", "\n")).strip()
+    start, all_day = ics_time(*props["DTSTART"]) if "DTSTART" in props else (None, False)
+    if start is None:
+        return None
+    end = ics_time(*props["DTEND"])[0] if "DTEND" in props else None
+    org = props.get("ORGANIZER")
+    organizer = ""
+    if org:
+        organizer = org[1].get("CN", "").strip('"') or re.sub(r"(?i)^mailto:", "", org[0])
+    return {"title": unesc(props.get("SUMMARY", ("", {}))[0]), "start": start, "end": end, "all_day": all_day,
+            "where": unesc(props.get("LOCATION", ("", {}))[0]), "organizer": organizer,
+            "method": method, "cancelled": method == "CANCEL" or props.get("STATUS", ("", {}))[0].upper() == "CANCELLED"}
+
 def data_images(html):
     """Pasted data: images in the editor -> (html with cid: links, [(cid, bytes, maintype, subtype)])."""
     found = []
@@ -439,7 +538,7 @@ DEMO = [
      "Kind regards,\nHannah Weber", [], True, None, None),
     ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME], [],
      "下周培训安排",
-     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [], True, None, None),
+     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -485,6 +584,19 @@ DEMO = [
 DEMO_FOLDERS = [("Projects", ""), ("Projects/Acme", "")]
 
 
+
+def demo_ics(name, ts):
+    """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
+    d = dt.datetime.now() + dt.timedelta(days=1)
+    d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
+    u = d.astimezone(dt.timezone.utc)
+    f = "%Y%m%dT%H%M%SZ"
+    return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:产品培训\r\n"
+            "LOCATION:三楼会议室\r\nORGANIZER;CN=王芳:mailto:wang.fang@example.cn\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f)))
+
+
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False):
     msg = EmailMessage()
     msg["From"] = formataddr(frm)
@@ -497,6 +609,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     if irt:
         msg["In-Reply-To"] = irt
         msg["References"] = refs
+    if frm[1] in ("noreply@github.com", "news@acme-industrial.com", "offers@example.net"):
+        msg["List-Unsubscribe"] = "<https://example.com/unsubscribe/demo>, <mailto:unsubscribe@example.com?subject=unsubscribe>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     msg.set_content(body)
     html = R.text_to_html(body)
     if inline:
@@ -507,7 +622,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     if inline:
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
-        if kind == "pdf":
+        if kind == "ics":
+            msg.add_attachment(demo_ics(name, ts), subtype="calendar", filename=name, params={"method": "REQUEST"})
+        elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
             msg.add_attachment(b"PK\x03\x04 demo".ljust(demo_size(name, 24, 60), b"\x00"), "application",
@@ -536,6 +653,8 @@ class Backend:
         self.extra_now = False
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
+        self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
+        self.asks_n = 0
         self.news_mark = None
         self.moved_in = {}                      # message-id -> when the app itself put it in the inbox
         self.focus_at = 0                       # when the page last said its window is in front
@@ -571,6 +690,8 @@ class Backend:
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
+        if not demo:
+            threading.Thread(target=self.asks_loop, daemon=True).start()
 
     # ---- plumbing
 
@@ -971,7 +1092,8 @@ class Backend:
         return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
-                "prefs": self.prefs(), "news": self.news}
+                "prefs": self.prefs(), "news": self.news, "asks": self.asks,
+                "window": WINDOW.w is not None}
 
     def flag_folders(self):
         """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
@@ -1030,7 +1152,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news}
+                "news": self.news, "asks": self.asks}
 
     def api_sync(self, a):
         if not self.demo:
@@ -1250,7 +1372,8 @@ class Backend:
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
                "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
-               "big": R.big_attachment_lines(R.html_to_text(html) or plain)}
+               "big": R.big_attachment_lines(R.html_to_text(html) or plain),
+               "unsub": list_unsub(msg), "invite": invite_of(msg)}
         return out
 
     def set_flag(self, ids, flag, on, wait=True, later=False):
@@ -1721,9 +1844,54 @@ class Backend:
             fail("That attachment is not in the mail any more.")
         save = a.get("action") == "save"
         path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
+        if a.get("action") == "drag":
+            # the file under its own name in the app's open folder; Finder copies it where it is dropped
+            return {"path": path, "name": os.path.basename(path), "dragging": drag_out(path)}
         if not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
+
+    def api_unsubscribe(self, a):
+        """Leave the mailing list the mail came from. One click (RFC 8058): the app asks the list itself.
+        Else the list's page opens in the browser, or the page writes the mail the list asks for."""
+        u = list_unsub(R.to_msg(self.view(a["id"])[0]))
+        if not u:
+            fail("This mail has no way to unsubscribe.")
+        if u["one_click"]:
+            if not self.demo:
+                req = urllib.request.Request(u["url"], data=b"List-Unsubscribe=One-Click", method="POST",
+                                             headers={"Content-Type": "application/x-www-form-urlencoded",
+                                                      "User-Agent": APP_NAME})
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as r:
+                        r.read(4096)
+                except Exception as e:
+                    fail("The list did not answer: %s" % (getattr(e, "reason", None) or e))
+            return {"done": True}
+        if u["url"]:
+            webbrowser.open(u["url"])
+            return {"opened": True}
+        to, _, query = u["mailto"][7:].partition("?")
+        subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
+        return {"mailto": urllib.parse.unquote(to), "subject": subj}
+
+    def api_open_invite(self, a):
+        """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""
+        p = ics_part(R.to_msg(self.view(a["id"])[0]))
+        if p is None:
+            fail("This mail has no invitation.")
+        data = R.part_bytes(p)
+        d = os.path.join(R.CFG.home, "open", hashlib.sha256(data).hexdigest()[:12])
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, R.safe_name(R.fname(p) or "invite.ics"))
+        if not path.lower().endswith(".ics"):
+            path += ".ics"
+        with open(path, "wb") as f:
+            f.write(data)
+        self.made.add(path)
+        if not self.demo:
+            open_path(path)
+        return {"path": path}
 
     def api_save_all(self, a):
         """Every file of the mail into Downloads, the way api_attachment's "save" does one.
@@ -2108,6 +2276,45 @@ class Backend:
     def upload(self, name, data):
         return self.keep_file(name or "file", data)
 
+    # ---- hand-offs from ragdoll in a terminal or an agent (ragdoll open, a new draft)
+
+    def asks_loop(self):
+        while not self.stopping.is_set():
+            with contextlib.suppress(Exception):
+                self.take_asks()
+            self.stopping.wait(1)
+
+    def take_asks(self):
+        got = R.take_asks()
+        if not got:
+            return
+        for x in got:
+            self.asks_n += 1
+            self.asks.append({"n": self.asks_n, "kind": x.get("kind") or "open", "id": x["id"],
+                              "subject": x.get("subject") or "", "at": x.get("at") or int(time.time())})
+        self.asks = self.asks[-20:]
+        self.look()
+        self.bump()
+        if any(x.get("kind") == "open" for x in got):
+            bring_front()
+        poke_page()
+
+    # ---- the ragdoll command
+
+    def api_cli_state(self, a):
+        launcher = os.path.join(os.environ.get("LOCALAPPDATA", ""), "ragdoll-mail", "bin", "ragdoll.cmd") \
+            if sys.platform == "win32" else os.path.expanduser("~/.local/bin/ragdoll")
+        return {"installed": os.path.exists(launcher), "launcher": launcher}
+
+    def api_install_cli(self, a):
+        if self.demo:
+            fail("Not in the demo.")
+        try:
+            r = R.install_cli()
+        except OSError as e:
+            fail(str(e))
+        return r
+
     # ---- settings and setup
 
     def api_settings(self, a):
@@ -2115,22 +2322,24 @@ class Backend:
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
                 "smtp_port": R.CFG.smtp.get("port", 465),
                 "signature": self.signature(), "has_password": self.has_password(),
-                "password_env": os.environ.get(R.CFG.password_env) is not None and not self.demo,
+                "password_env": R.CFG.password_env if not self.demo and (
+                    os.environ.get(R.CFG.password_env) or R._SHELL_ENV.get(R.CFG.password_env)) else "",
                 "folders": dict(R.CFG.folders), "config": config_path(), "demo": self.demo}
 
     def has_password(self):
         if self.demo:
             return True
-        if os.environ.get(R.CFG.password_env):
-            return True
-        return bool(R.CFG.user and R.keychain_get(R.CFG.user))
+        return bool(R.find_password())
 
     def api_guess_servers(self, a):
         dom = (a.get("user") or "").rpartition("@")[2].lower()
         if dom in PROVIDERS:
-            i, s = PROVIDERS[dom]
-            return {"imap_host": i, "smtp_host": s}
-        return {"imap_host": "imap." + dom if dom else "", "smtp_host": "smtp." + dom if dom else ""}
+            i, s, *port = PROVIDERS[dom]
+            return {"imap_host": i, "smtp_host": s, "smtp_port": (port or [465])[0]}
+        # a company domain: who receives its mail says whose servers it uses (Exmail, Google, ...)
+        found = None if self.demo or not dom else R.servers_from_mx(dom)
+        return found or {"imap_host": "imap." + dom if dom else "", "smtp_host": "smtp." + dom if dom else "",
+                         "smtp_port": 465}
 
     def api_test(self, a):
         """Sign in to IMAP and SMTP with these settings; find the special folders."""
@@ -2159,7 +2368,7 @@ class Backend:
             with contextlib.suppress(Exception):
                 m.logout()
         try:
-            s = smtplib.SMTP_SSL(shost, sport, timeout=20)
+            s = R.smtp_open(shost, sport, 20)
             try:
                 s.login(user, pw)
             finally:
@@ -2663,6 +2872,81 @@ def system_dark():
 WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
 
 
+def bring_front():
+    """The window to the front, as when its Dock or taskbar icon is clicked."""
+    w = WINDOW.w
+    if w is None:
+        return
+    with contextlib.suppress(Exception):
+        w.restore()
+    with contextlib.suppress(Exception):
+        w.show()
+    if sys.platform == "darwin":
+        with contextlib.suppress(Exception):
+            import AppKit
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(lambda: AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True))
+    elif sys.platform == "win32" and WINDOW.hwnd:
+        with contextlib.suppress(Exception):
+            import ctypes
+            ctypes.windll.user32.SetForegroundWindow(WINDOW.hwnd)
+
+
+_DRAG = SimpleNamespace(source=None)
+
+
+def drag_out(path):
+    """Start a Finder drag of this file from where the mouse is: the page asks while the button is held on an
+    attachment, and a drop on the desktop or a folder copies the file there. macOS only; False when no drag
+    could start (no window, the button already let go)."""
+    if sys.platform != "darwin" or WINDOW.w is None:
+        return False
+    try:
+        import objc
+        from AppKit import NSApp, NSDraggingItem, NSMakeRect, NSObject, NSURL, NSWorkspace
+        from PyObjCTools import AppHelper
+    except ImportError:
+        return False
+    if _DRAG.source is None:
+        class RagdollDragSource(NSObject, protocols=[objc.protocolNamed("NSDraggingSource")]):
+            def draggingSession_sourceOperationMaskForDraggingContext_(self, session, context):
+                return 1                                # NSDragOperationCopy: the file stays in the mail
+        _DRAG.source = RagdollDragSource.alloc().init()
+    done, ok = threading.Event(), []
+
+    def go():
+        try:
+            ev = NSApp.currentEvent()
+            win = ev.window() if ev is not None else None
+            if ev is None or win is None or ev.type() not in (1, 6):    # left mouse down / dragged
+                return
+            view = win.contentView()
+            p = view.convertPoint_fromView_(ev.locationInWindow(), None)
+            pic = NSWorkspace.sharedWorkspace().iconForFile_(path)
+            pic.setSize_((48, 48))
+            item = NSDraggingItem.alloc().initWithPasteboardWriter_(NSURL.fileURLWithPath_(path))
+            item.setDraggingFrame_contents_(NSMakeRect(p.x - 24, p.y - 24, 48, 48), pic)
+            view.beginDraggingSessionWithItems_event_source_([item], ev, _DRAG.source)
+            ok.append(True)
+        except Exception:
+            pass
+        finally:
+            done.set()
+    AppHelper.callAfter(go)
+    done.wait(3)
+    return bool(ok)
+
+
+def poke_page():
+    """Ask the page to look now instead of at its next poll."""
+    if WINDOW.w is not None:
+        with contextlib.suppress(Exception):
+            # run_js hands the line to the page as it is; evaluate_js wraps it in eval(), which the
+            # page's Content-Security-Policy (script-src 'self') refuses
+            run = getattr(WINDOW.w, "run_js", None) or WINDOW.w.evaluate_js
+            run("window.ragdollPoll && window.ragdollPoll()")
+
+
 def dock_badge(n):
     """The inbox's unread count on the Mac Dock icon, nothing when 0. True when it was asked for."""
     if sys.platform != "darwin" or WINDOW.w is None:        # in the browser there is no Dock icon of ours
@@ -2867,7 +3151,10 @@ def main(argv=None):
     # a plain kill still closes the mailbox and removes the demo's temp folder
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    backend = Backend(demo=a.demo)
+    try:
+        backend = Backend(demo=a.demo)
+    except R.IndexTooNew as e:
+        return too_new(str(e), a.browser)
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -2899,5 +3186,24 @@ def main(argv=None):
             shutil.rmtree(R.CFG.home, ignore_errors=True)
 
 
+def too_new(text, browser=False):
+    """This app is older than the ragdoll that last wrote the index: say so, and how to update."""
+    print(text, file=sys.stderr)
+    page = ("<!doctype html><meta charset=utf-8><body style='font:15px -apple-system,Segoe UI,sans-serif;"
+            "padding:40px;line-height:1.6'><h2 style='font-weight:500'>Please update Ragdoll Mail</h2>"
+            "<p>%s</p>" % htmlmod.escape(text))
+    if browser:
+        return 1
+    try:
+        import webview
+    except ImportError:
+        return 1
+    webview.create_window(APP_NAME, html=page, width=560, height=300)
+    webview.start()
+    return 1
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:2] == ["cli"]:       # the built app is also the ragdoll command: <app> cli search ...
+        sys.exit(R.main(sys.argv[2:]))
+    sys.exit(main())

@@ -614,3 +614,68 @@ const MORE6 = {
   "de": { side_hide: "Seitenleiste ausblenden", side_show: "Seitenleiste einblenden", side_toggle: "Seitenleiste ein- oder ausblenden" },
 };
 for (const [k, v] of Object.entries(MORE6)) Object.assign(LANGS[k], v);
+
+// the ragdoll command, hand-offs from assistants
+const MORE7 = {
+  "en": { cli: "Command line", cli_command: "The ragdoll command", cli_install: "Install", cli_reinstall: "Install again",
+    cli_done: "Installed: %s.", cli_kept: "%s is your own; it was left as it is.", cli_new_terminal: "Open a new terminal window to use it.",
+    draft_ready: "Draft ready: %s" },
+  "zh-Hans": { cli: "命令行", cli_command: "ragdoll 命令", cli_install: "安装", cli_reinstall: "重新安装",
+    cli_done: "已安装：%s。", cli_kept: "%s 是你自己建的，没有改动。", cli_new_terminal: "新开一个终端窗口就能用。",
+    draft_ready: "草稿写好了：%s" },
+  "zh-Hant": { cli: "命令列", cli_command: "ragdoll 命令", cli_install: "安裝", cli_reinstall: "重新安裝",
+    cli_done: "已安裝：%s。", cli_kept: "%s 是你自己建的，沒有改動。", cli_new_terminal: "新開一個終端機視窗就能用。",
+    draft_ready: "草稿寫好了：%s" },
+  "ja": { cli: "コマンドライン", cli_install: "インストール", cli_reinstall: "再インストール", draft_ready: "下書きができました：%s" },
+  "ko": { cli: "명령줄", cli_install: "설치", cli_reinstall: "다시 설치", draft_ready: "초안 준비됨: %s" },
+  "es": { cli: "Línea de comandos", cli_install: "Instalar", cli_reinstall: "Instalar de nuevo", draft_ready: "Borrador listo: %s" },
+  "fr": { cli: "Ligne de commande", cli_install: "Installer", cli_reinstall: "Réinstaller", draft_ready: "Brouillon prêt : %s" },
+  "de": { cli: "Befehlszeile", cli_install: "Installieren", cli_reinstall: "Erneut installieren", draft_ready: "Entwurf fertig: %s" },
+};
+for (const [k, v] of Object.entries(MORE7)) Object.assign(LANGS[k], v);
+
+// the warning banner over the list: what it means, and a button that names the fix
+const MORE8 = {
+  "en": { b_pw_title: "No password saved", b_pw_sub: "New mail can't come in until it is.", b_pw_btn: "Add password",
+    b_acct_title: "No account yet", b_acct_btn: "Add account", b_signin_title: "Sign-in failed",
+    b_signin_sub: "Check the address and password.", b_signin_btn: "Check", b_fix: "Settings" },
+  "zh-Hans": { b_pw_title: "还没有保存密码", b_pw_sub: "保存后才能收到新邮件。", b_pw_btn: "添加密码",
+    b_acct_title: "还没有账户", b_acct_btn: "添加账户", b_signin_title: "登录失败",
+    b_signin_sub: "请检查邮箱地址和密码。", b_signin_btn: "检查", b_fix: "设置" },
+  "zh-Hant": { b_pw_title: "尚未儲存密碼", b_pw_sub: "儲存後才能收到新郵件。", b_pw_btn: "新增密碼",
+    b_acct_title: "尚未有帳號", b_acct_btn: "新增帳號", b_signin_title: "登入失敗",
+    b_signin_sub: "請檢查郵件地址和密碼。", b_signin_btn: "檢查", b_fix: "設定" },
+  "ja": { b_pw_title: "パスワードが保存されていません", b_pw_btn: "パスワードを追加", b_signin_title: "サインインできません", b_fix: "設定" },
+  "ko": { b_pw_title: "저장된 비밀번호가 없습니다", b_pw_btn: "비밀번호 추가", b_signin_title: "로그인 실패", b_fix: "설정" },
+  "es": { b_pw_title: "No hay contraseña guardada", b_pw_btn: "Añadir contraseña", b_signin_title: "No se pudo iniciar sesión", b_fix: "Ajustes" },
+  "fr": { b_pw_title: "Aucun mot de passe enregistré", b_pw_btn: "Ajouter", b_signin_title: "Échec de la connexion", b_fix: "Réglages" },
+  "de": { b_pw_title: "Kein Passwort gespeichert", b_pw_btn: "Passwort hinzufügen", b_signin_title: "Anmeldung fehlgeschlagen", b_fix: "Einstellungen" },
+};
+for (const [k, v] of Object.entries(MORE8)) Object.assign(LANGS[k], v);
+const MORE9 = {
+  "en": { unsub: "Unsubscribe", unsub_title: "Unsubscribe from %s?", unsub_one: "You'll stop getting these mails. The app tells the sender for you.",
+    unsub_web: "The sender's unsubscribe page opens in your browser.", unsub_mail: "A mail asking to unsubscribe opens. Send it to finish.",
+    unsub_done: "Unsubscribed from %s", all_day: "All day", invite: "Invitation", inv_cancelled: "Cancelled", inv_from: "From %s", add_cal: "Add to Calendar" },
+  "zh-Hans": { unsub: "退订", unsub_title: "退订 %s？", unsub_one: "以后不会再收到这类邮件。应用会替你通知发件方。",
+    unsub_web: "发件方的退订页面会在浏览器里打开。", unsub_mail: "会打开一封退订邮件，发出后即完成。",
+    unsub_done: "已退订 %s", all_day: "全天", invite: "会议邀请", inv_cancelled: "已取消", inv_from: "发起人：%s", add_cal: "添加到日历" },
+  "zh-Hant": { unsub: "取消訂閱", unsub_title: "取消訂閱 %s？", unsub_one: "以後不會再收到這類郵件。應用程式會替你通知寄件方。",
+    unsub_web: "寄件方的取消訂閱頁面會在瀏覽器中開啟。", unsub_mail: "會開啟一封取消訂閱郵件，寄出後即完成。",
+    unsub_done: "已取消訂閱 %s", all_day: "全天", invite: "會議邀請", inv_cancelled: "已取消", inv_from: "發起人：%s", add_cal: "加入行事曆" },
+  "ja": { unsub: "配信停止", unsub_title: "%s の配信を停止しますか？", unsub_one: "今後このメールは届きません。送信元にはアプリが知らせます。",
+    unsub_web: "送信元の配信停止ページがブラウザで開きます。", unsub_mail: "配信停止のメールが開きます。送信すると完了します。",
+    unsub_done: "%s の配信を停止しました", all_day: "終日", invite: "招待", inv_cancelled: "キャンセル", inv_from: "主催：%s", add_cal: "カレンダーに追加" },
+  "ko": { unsub: "구독 취소", unsub_title: "%s 구독을 취소할까요?", unsub_one: "이런 메일을 더 받지 않습니다. 앱이 보낸 쪽에 알려 줍니다.",
+    unsub_web: "보낸 쪽의 구독 취소 페이지가 브라우저에서 열립니다.", unsub_mail: "구독 취소 메일이 열립니다. 보내면 끝납니다.",
+    unsub_done: "%s 구독을 취소했습니다", all_day: "종일", invite: "초대", inv_cancelled: "취소됨", inv_from: "주최: %s", add_cal: "캘린더에 추가" },
+  "es": { unsub: "Cancelar suscripción", unsub_title: "¿Cancelar la suscripción a %s?", unsub_one: "Dejarás de recibir estos correos. La app avisa al remitente.",
+    unsub_web: "La página para darte de baja se abre en el navegador.", unsub_mail: "Se abre un correo para darte de baja. Envíalo para terminar.",
+    unsub_done: "Suscripción a %s cancelada", all_day: "Todo el día", invite: "Invitación", inv_cancelled: "Cancelada", inv_from: "De %s", add_cal: "Añadir al calendario" },
+  "fr": { unsub: "Se désabonner", unsub_title: "Se désabonner de %s ?", unsub_one: "Vous ne recevrez plus ces e-mails. L'app prévient l'expéditeur.",
+    unsub_web: "La page de désabonnement s'ouvre dans le navigateur.", unsub_mail: "Un e-mail de désabonnement s'ouvre. Envoyez-le pour terminer.",
+    unsub_done: "Désabonné de %s", all_day: "Toute la journée", invite: "Invitation", inv_cancelled: "Annulée", inv_from: "De %s", add_cal: "Ajouter au calendrier" },
+  "de": { unsub: "Abbestellen", unsub_title: "%s abbestellen?", unsub_one: "Diese Mails kommen nicht mehr. Die App sagt es dem Absender.",
+    unsub_web: "Die Abmeldeseite des Absenders öffnet sich im Browser.", unsub_mail: "Eine Abmelde-Mail öffnet sich. Senden Sie sie, um fertig zu werden.",
+    unsub_done: "%s abbestellt", all_day: "Ganztägig", invite: "Einladung", inv_cancelled: "Abgesagt", inv_from: "Von %s", add_cal: "Zum Kalender hinzufügen" },
+};
+for (const [k, v] of Object.entries(MORE9)) Object.assign(LANGS[k], v);

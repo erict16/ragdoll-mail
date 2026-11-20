@@ -1,5 +1,6 @@
 # PyInstaller build for the desktop app:  pyinstaller ragdoll-mail.spec
-# macOS gives "dist/Ragdoll Mail.app", Windows gives "dist/Ragdoll Mail.exe" (one file, no console).
+# macOS gives "dist/Ragdoll Mail.app"; Windows gives "dist/Ragdoll Mail.exe" (one file, no console)
+# and "dist/ragdoll.exe" (the command line, with a console).
 import re
 import sys
 
@@ -22,3 +23,7 @@ if sys.platform == "darwin":
                              "NSRequiresAquaSystemAppearance": False})
 else:
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="Ragdoll Mail", console=False, icon=ICON)
+    # A window program has no console, so the ragdoll command is its own small
+    # console program beside it. On the Mac the app's own program is the command: <app> cli ...
+    c = Analysis(["ragdoll.py"], excludes=["tkinter", "unittest", "pydoc", "webview"])
+    cli = EXE(PYZ(c.pure), c.scripts, c.binaries, c.datas, [], name="ragdoll", console=True, icon=ICON)

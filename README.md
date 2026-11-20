@@ -13,12 +13,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Mac</b></a> ·
-  <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Windows</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><b>Download for Mac</b></a> ·
+  <a href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><b>Download for Windows</b></a> ·
+  <a href="https://erict16.github.io/ragdoll-mail/"><b>Website</b></a> ·
   <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: searching the mailbox, reading a mail, writing a reply, and taking a sent mail back"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: search finds a mail as you type, a mail with attachments opens, a reply is written, the send is undone, and the reply is set to go later"></p>
 
 ## What is Ragdoll Mail?
 
@@ -43,7 +44,7 @@ It was made for one problem. On many mailboxes, and on Tencent Exmail most of al
 2. **Open it.** We have not paid Apple or Microsoft for a signature yet, so the system asks once:
    - Mac: when macOS says it could not check the app, open **System Settings → Privacy & Security**, scroll down and press **Open Anyway**. (On older macOS: right-click the app and choose **Open**.)
    - Windows: choose **More info**, then **Run anyway**.
-3. **Sign in** with your mail address and password. For the mailboxes named above, the app fills in the server settings by itself.
+3. **Sign in** with your mail address and password. For the mailboxes named above, and for company addresses on Tencent Exmail, Google Workspace, Alibaba or NetEase mail, the app fills in the server settings by itself. Using Exmail? See the [Exmail setup guide](https://erict16.github.io/ragdoll-mail/exmail/).
 
 The first time, the app reads your mailbox. For a big mailbox this takes a few minutes. You can read and write mail while it works.
 
@@ -55,6 +56,8 @@ The first time, the app reads your mailbox. For a big mailbox this takes a few m
 - A whole conversation on one page, with the newest mail on top. Old quoted text folds away.
 - Click a picture to see it large. Save one attachment, or all of them at once.
 - Hold the pointer on a link to see where it goes before you click.
+- A meeting invitation shows what, when and where, with a button to add it to your calendar.
+- Newsletters get an **Unsubscribe** link beside the sender. One click, and they stop.
 
 **Find**
 - Press ⌘K (Mac) or Ctrl+K (Windows) and type. Search looks at the subject, the people, the text and the names of attached files.
@@ -144,7 +147,7 @@ agent  $ ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
 agent  › The draft is in your Drafts folder. Shall I send it?
 ```
 
-Setup, every command, and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
+To get the command: **Settings → Command line → Install** in the app. Every command and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
 
 ## Help and feedback
 

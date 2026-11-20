@@ -7,6 +7,7 @@ Looking for the app? Go back to the [main page](../README.md).
 - [Agents draft. You send.](#agents-draft-you-send)
 - [Setup](#setup)
 - [Commands](#commands)
+- [Hand a draft to the app](#hand-a-draft-to-the-app)
 - [How search works](#how-search-works)
 - [Compared with other ways in](#compared-with-other-ways-in)
 
@@ -52,6 +53,10 @@ have said yes to that draft.
 
 ## Setup
 
+**With the app:** sign in to Ragdoll Mail, open **Settings → Command line** and press **Install**. That is all: the command uses the app's own mailbox, password and index. Open a new terminal window and try `ragdoll status`.
+
+**From the code** (no app needed):
+
 1. Python 3.10+ (SQLite 3.34+ for the trigram index; the python.org builds have it).
 2. Copy `config.example.json` to `~/.config/ragdoll-mail/config.json` and fill it in. Dates use the computer's time zone; add `"utc_offset_hours": 8` (for example) to use a fixed one.
 3. Put the IMAP app password in the environment variable named by `password_env` (or sign in once in the desktop app, which saves it in the system keychain). Windows (stays set for new programs):
@@ -83,6 +88,9 @@ ragdoll mark inbox:9255 inbox:9256 --read --star
 ragdoll archive inbox:9255
 ragdoll move inbox:9256 --to "Projects/Acme"
 ragdoll folders
+ragdoll open drafts:12                          # show it in the app
+ragdoll schedule drafts:12 --at "09:00" --yes   # send later; also +2h or 2026-11-22 09:00
+ragdoll schedule --list
 ```
 
 `ragdoll --help` lists every option. Ids are `<folder>:<uid>`. Add `--json` for machine output.
@@ -90,6 +98,12 @@ ragdoll folders
 `search` and `list` take the same filters: `--from`, `--to`, `--since`, `--until`, `--folder`, `--unread`, `--starred`, `--att`. When `--limit` cuts the list, the last line says how many there are in all: `(showing the newest 20 of 137; --limit 137 shows all)`. Junk mail is left out unless you ask for `--folder junk`.
 
 `mark` (`--read` / `--unread`, `--star` / `--unstar`), `archive` and `move` change the server and the index together. `move --to` takes a short name (`inbox`, `archive`, `junk`) or a folder name from `ragdoll folders`. Nothing is deleted; move the mail back to undo. The trash stays behind `ragdoll trash <ids> --yes`.
+
+`schedule` puts a draft on the app's send-later list. The app sends it at that time while it is open; if it is closed then, the mail goes out the next time it starts. `schedule <id> --cancel` keeps it as a draft.
+
+## Hand a draft to the app
+
+When the draft is ready, the agent runs `ragdoll open drafts:12`. Ragdoll Mail comes to the front with that draft open (it starts if it was closed). You read it, change what you like and press Send yourself. When the app is open and an agent writes a draft, a short note with an Open button shows at the bottom of the window.
 
 <details>
 <summary><b>How drafts work, in detail</b></summary>

@@ -68,13 +68,18 @@ input, textarea, select { font: inherit; color: inherit; }
 .grow { flex: 1; align-self: stretch; }
 .i { display: inline-flex; width: 16px; height: 16px; flex: none; }
 .i svg { width: 100%; height: 100%; stroke-width: 1.75; }
-.i svg.arrowshape { stroke-width: 1.4; overflow: visible; }
+.i svg.arrowshape { stroke-width: 1.6; }
+.i.i-wide { width: auto !important; aspect-ratio: 25.3 / 21.8; }
 .i.small { width: 14px; height: 14px; }
 .i.big { width: 20px; height: 20px; }
 ::selection { background: rgba(63, 135, 132, .22); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-/* the scrollbar is always there to see and to drag, darker under the pointer */
-::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+/* as on the Mac, a scrollbar shows while its box scrolls (app.js marks it .scrolling) and under the pointer,
+   darker there, and is gone a moment after; its 10px stays, so nothing shifts */
+::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+.scrolling::-webkit-scrollbar-thumb { background-color: var(--line-2); }
+/* WebKit redraws a box's scrollbar only when the box's own style changes, not its scrollbar's alone */
+.scrolling { --sb-on: 1; }
 ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
 
 /* ---------- layout */
@@ -146,29 +151,39 @@ input, textarea, select { font: inherit; color: inherit; }
 .list-head:not(.searching) .search, .list-head.searching #search-btn { display: none; }
 /* the search button grows leftwards into the box: the glass rides on the box's left edge and settles
    to its smaller size, the words slide in a moment later. Closing shrinks the box back into the button
-   (app.js keeps it shown for those 200ms), so the glass ends exactly where the button's is. */
-.list-head.searching .search { animation: search-open .34s var(--ease); }
-.list-head.searching .search > .i { animation: search-glass .34s var(--ease); }
-.list-head.searching .search input, .list-head.searching #search-clear { animation: search-words .3s var(--ease) .07s backwards; }
-.list-head.closing .search { animation: search-close .2s cubic-bezier(.4, 0, .2, 1) forwards; }
-.list-head.closing .search > .i { animation: search-glass-out .2s cubic-bezier(.4, 0, .2, 1) forwards; }
-.list-head.closing .search input, .list-head.closing #search-clear { animation: search-words-out .1s ease-in forwards; }
-@keyframes search-open { from { flex-basis: 32px; background-color: var(--hover); border-color: transparent; box-shadow: 0 0 0 0 transparent; } }
-@keyframes search-close { to { flex-basis: 32px; background-color: transparent; border-color: transparent; box-shadow: none; } }
-@keyframes search-glass { from { transform: scale(1.143); color: var(--text-2); } }
+   (app.js keeps it shown for those 160ms), so the glass ends exactly where the button's is.
+   Opening runs on a light spring (a hair past full width, then back); closing is a plain, quicker ease. */
+.list-head.searching .search { animation: search-open .26s cubic-bezier(.34, 1.28, .5, 1); }
+.list-head.searching .search > .i { animation: search-glass .26s cubic-bezier(.34, 1.28, .5, 1); }
+.list-head.searching .search input, .list-head.searching #search-clear { animation: search-words .2s cubic-bezier(.2, .8, .2, 1) .05s backwards; }
+.list-head.closing .search { animation: search-close .16s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search > .i { animation: search-glass-out .16s cubic-bezier(.4, 0, .2, 1) forwards; }
+.list-head.closing .search input, .list-head.closing #search-clear { animation: search-words-out .08s ease-in forwards; }
+@keyframes search-open { from { flex-basis: 32px; height: 32px; background-color: var(--hover); border-color: transparent; box-shadow: 0 0 0 0 transparent; } }
+@keyframes search-close { to { flex-basis: 32px; height: 32px; background-color: transparent; border-color: transparent; box-shadow: none; } }
+@keyframes search-glass { from { transform: scale(1.143) rotate(-12deg); color: var(--text-2); } }
 @keyframes search-glass-out { to { transform: scale(1.143); color: var(--text-2); } }
-@keyframes search-words { from { opacity: 0; transform: translateX(8px); } }
-@keyframes search-words-out { to { opacity: 0; } }
+@keyframes search-words { from { opacity: 0; transform: translateX(6px); filter: blur(2px); } }
+@keyframes search-words-out { to { opacity: 0; transform: translateX(-3px); } }
 @media (prefers-reduced-motion: reduce) { .list-head .search, .list-head .search * { animation: none !important; } }
-.search { flex: 0 1 220px; margin-left: 8px; overflow: hidden; display: flex; align-items: center; gap: 7px; height: 32px; min-width: 0; margin-right: 2px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
+.search { flex: 0 1 180px; margin-left: 8px; overflow: hidden; display: flex; align-items: center; gap: 6px; height: 28px; min-width: 0; margin-right: 2px; padding: 0 3px 0 8px; border-radius: 7px; background: var(--sunk); color: var(--text-3); border: 1px solid transparent; transition: background-color .15s, border-color .15s, box-shadow .2s; }
 .search:focus-within { background: var(--bg); border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
 .search > .i { width: 14px; height: 14px; }
-.search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; }
+.search .icon-btn.tiny { width: 20px; height: 20px; border-radius: 5px; }
+.search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; font-size: 13px; }
 .search input::placeholder { color: var(--text-3); }
 kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; flex: none; font: 11px/1 var(--font); color: var(--text-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
-.banner { margin: 0 10px 6px; padding: 8px 8px 8px 4px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-text); display: flex; align-items: flex-start; gap: 4px; font-size: 12px; }
-.banner .i { margin-top: 1px; }
-.banner-text { flex: 1; user-select: text; }
+/* a warning over the list: a soft card lined up with the rows (box 10px in, text 24px inside it, the sign
+   centred in those 24px), what is wrong in bold, what it means below, and a button named for the fix */
+.banner { margin: 2px 10px 8px; padding: 10px 10px 11px 0; border-radius: 10px; display: grid; grid-template-columns: 24px 1fr auto;
+  align-items: center; column-gap: 0; background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%, transparent);
+  font-size: 12.5px; line-height: 1.4; animation: enter .28s var(--ease); }
+.banner > .i { align-self: start; justify-self: center; width: 15px; height: 15px; margin-top: 1px; color: var(--warn-text); }
+.banner-text { min-width: 0; user-select: text; display: flex; flex-direction: column; gap: 1px; }
+.banner-text b { font-weight: 600; color: var(--text); }
+.banner-text span { color: var(--text-2); }
+.banner .btn { height: 26px; padding: 0 11px; margin-left: 10px; font-size: 12px; border-radius: 7px; background: var(--bg); border-color: color-mix(in srgb, var(--warn-text) 22%, var(--line-2)); }
+.banner .btn:hover { border-color: color-mix(in srgb, var(--warn-text) 40%, var(--line-2)); }
 .link-btn { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 /* the scrollbar's 10px is always kept (overflow-y: scroll), so nothing shifts when a list grows past the window */
 .rows { flex: 1; overflow-y: scroll; outline: 0; padding: 2px 0 24px 10px; }
@@ -193,7 +208,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row.on.on-next { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .row.on + .row.on { border-top-left-radius: 0; border-top-right-radius: 0; }
 .row.on::before, .row.on::after, .row:hover::before, .row:hover::after, .row.on + .row::before, .row:hover + .row::before { opacity: 0; }
-.row .dot { grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
+.row .dot { grid-column: 1; grid-row: 1; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); align-self: center; justify-self: center; opacity: 0; transform: scale(.4); transition: opacity .2s, transform .25s var(--ease); }
 .row.unread .dot { opacity: 1; transform: none; }
 .row .who { grid-column: 2; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13.5px; }
 /* a short date (Wed) ends on the same line as a long one: the column is as wide as the hover buttons */
@@ -209,9 +224,17 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row:hover .meta { opacity: 0; }
 .row.leaving .hover-acts { opacity: 0; }
 .row .tag { font-size: 11px; color: var(--text-2); }
-.row .done-ic { display: inline-flex; gap: 1px; margin-inline-end: 5px; vertical-align: -2px; color: var(--accent-ink); overflow: hidden; }
+/* replied and forwarded arrows stand in the left column, as on the Mac: the unread dot keeps the name's line,
+   the arrows take the lines below it, so names always start in the same place */
+.row .who { grid-row: 1; }
+.row .subj { grid-row: 2; }
+.row .snip { grid-row: 3; }
+.row .mk { grid-column: 1; grid-row: 1; justify-self: center; align-self: center; display: inline-flex; color: var(--accent-ink); }
+.row .mk .i { width: 12px; height: 12px; }
+.row.unread .mk-a, .row.has-a .mk-f { grid-row: 2; }
+.row.unread.has-a .mk-f { grid-row: 3; }
 .icon-btn.on { color: var(--text); }
-.icon-btn.on svg { fill: currentColor; }
+.icon-btn.on.fill svg { fill: currentColor; }      /* a starred star is solid; other "on" buttons keep their outline */
 .rows-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 20px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }
 .rows-empty .i.big { width: 28px; height: 28px; opacity: .7; }
 .rows-more { display: flex; justify-content: center; padding: 14px; color: var(--text-3); }
@@ -245,6 +268,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .icon-btn.tiny { width: 22px; height: 22px; border-radius: 6px; }
 .icon-btn.tiny .i { width: 14px; height: 14px; }
 .icon-btn.on { color: var(--text); background: var(--sel); }
+/* "mark as unread": the envelope carries a small dot on its corner, in the icon's own gray (the corner cut away round
+   it), so it reads as part of the icon and darkens with it on hover, not as a second unread mark */
+.icon-btn.unread-mark .i { -webkit-mask: radial-gradient(circle 4.5px at 14.5px 2.5px, transparent 96%, #000 100%); mask: radial-gradient(circle 4.5px at 14.5px 2.5px, transparent 96%, #000 100%); }
+.icon-btn.unread-mark::after { content: ""; position: absolute; left: 19.5px; top: 7.5px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; pointer-events: none; }
+.icon-btn.unread-mark:active:not(:disabled)::after { transform: scale(.9); }
 .btn { height: 30px; padding: 0 13px; border-radius: 7px; border: 1px solid var(--line-2); font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none;
   background: var(--raised); color: var(--text); box-shadow: 0 1px 1px rgba(0,0,0,.04); transition: background-color .15s, border-color .15s, transform .12s var(--ease), opacity .2s; }
 .btn .i { color: var(--text-2); }
@@ -334,6 +362,22 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .compose .atts { margin-top: 18px; }
 .msg-body > .atts { margin: 6px 0 16px; }
 /* all files of the mail at once: a quiet line under the files */
+.unsub { flex: none; align-self: center; font-size: 12px; color: var(--text-3); text-decoration: underline; text-underline-offset: 2px; margin-left: 2px; }
+.unsub:hover { color: var(--text); }
+.sheet-sub { margin: 0; color: var(--text-2); line-height: 1.5; }
+/* a meeting invitation: a small calendar leaf, what and when, and the way into the calendar */
+.invite { display: grid; grid-template-columns: 42px 1fr auto; gap: 14px; align-items: center; margin-top: 16px; padding: 12px 12px 12px 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.invite + .atts { margin-top: 8px; }
+.inv-day { width: 42px; border-radius: 8px; overflow: hidden; text-align: center; border: 1px solid var(--line-2); background: var(--bg); }
+.inv-day span { display: block; padding: 2px 0 1px; font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; background: var(--accent); color: var(--accent-text); }
+.inv-day b { display: block; padding: 3px 0 4px; font-size: 18px; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.inv-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.inv-text b { font-weight: 600; overflow-wrap: anywhere; }
+.inv-text span { color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }
+.inv-text .inv-org { color: var(--text-3); }
+.invite.cancelled .inv-text b { text-decoration: line-through; color: var(--text-2); }
+.invite.past { opacity: .72; }
 .atts-all { display: inline-flex; align-items: center; gap: 6px; margin: -6px 0 16px; font-size: 12.5px; font-weight: 500; text-decoration: none; color: var(--text-2); }
 .atts-all:hover { color: var(--text); }
 .atts-all:disabled { opacity: .5; }
