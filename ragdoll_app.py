@@ -53,6 +53,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(getattr(sys, "_MEIPASS", HERE), "app")
 FROZEN = bool(getattr(sys, "frozen", False))
 RELEASES_API = "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
+APP_NAME = "Ragdoll Mail"   # what people see: window title, Dock, menu bar; the repo and files keep ragdoll-mail
 RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
 FOLDER_KEYS = ("inbox", "drafts", "sent", "archive", "trash", "junk")
 LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled")      # the names the app's own lists go by
@@ -1427,7 +1428,7 @@ class Backend:
         whether the app may show them). Only the app's own window: a browser page shows its own."""
         if self.demo or WINDOW.w is None:
             return {"ok": False}
-        threading.Thread(target=system_notice, args=("Ragdoll Mail", text_in(a, "body")[:200]), daemon=True).start()
+        threading.Thread(target=system_notice, args=(APP_NAME, text_in(a, "body")[:200]), daemon=True).start()
         return {"ok": True}
 
     def api_notice_state(self, a):
@@ -2437,7 +2438,7 @@ def mac_notice(title, body):
 
         def show():
             c = UN.UNMutableNotificationContent.alloc().init()
-            c.setTitle_(title or "Ragdoll Mail")
+            c.setTitle_(title or APP_NAME)
             c.setBody_(body)
             req = UN.UNNotificationRequest.requestWithIdentifier_content_trigger_(secrets.token_hex(8), c, None)
             center.addNotificationRequest_withCompletionHandler_(req, lambda err: None)
@@ -2512,7 +2513,7 @@ def mac_notice_delegate(UN):
 def osa_notice(title, body):
     subprocess.run(["osascript", "-e", "on run argv",
                     "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
-                    "-e", "end run", title or "Ragdoll Mail", body], timeout=10, capture_output=True)
+                    "-e", "end run", title or APP_NAME, body], timeout=10, capture_output=True)
 
 
 def system_notice(title, body):
@@ -2531,7 +2532,7 @@ def system_notice(title, body):
                 info = Flash(ctypes.sizeof(Flash), WINDOW.hwnd, 0x3 | 0xC, 0, 0)
                 ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
         elif shutil.which("notify-send"):
-            subprocess.run(["notify-send", "-a", "Ragdoll Mail", title or "Ragdoll Mail", body], timeout=10,
+            subprocess.run(["notify-send", "-a", APP_NAME, title or APP_NAME, body], timeout=10,
                            capture_output=True)
     except Exception:       # noqa: BLE001 - a notice that can't be shown is not an error
         pass
@@ -2779,7 +2780,7 @@ def win_hwnd(window):
     except Exception:
         try:
             import ctypes
-            return ctypes.windll.user32.FindWindowW(None, "ragdoll-mail") or 0
+            return ctypes.windll.user32.FindWindowW(None, APP_NAME) or 0
         except Exception:
             return 0
 
@@ -2839,7 +2840,7 @@ def window_theme(dark, bg=None, text=None):
 def run_window(url, home):
     import webview
     dark = system_dark()
-    w = webview.create_window("ragdoll-mail", url, width=1280, height=820, min_size=(880, 560),
+    w = webview.create_window(APP_NAME, url, width=1280, height=820, min_size=(880, 560),
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
     if sys.platform == "darwin":

@@ -46,8 +46,8 @@ jobs:
       - run: pyinstaller --noconfirm ragdoll-mail.spec
       - name: Make the .dmg
         run: |
-          mkdir -p dmg && cp -R dist/ragdoll-mail.app dmg/ && ln -s /Applications dmg/Applications
-          hdiutil create -volname ragdoll-mail -srcfolder dmg -ov -format UDZO ragdoll-mail-mac.dmg
+          mkdir -p dmg && cp -R "dist/Ragdoll Mail.app" dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "Ragdoll Mail" -srcfolder dmg -ov -format UDZO ragdoll-mail-mac.dmg
       - name: Add to the release
         if: startsWith(github.ref, 'refs/tags/v')
         run: gh release upload "$GITHUB_REF_NAME" ragdoll-mail-mac.dmg --clobber -R "$GITHUB_REPOSITORY"
@@ -71,7 +71,7 @@ jobs:
           python-version: "3.12"
       - run: pip install pywebview pyinstaller pillow
       - run: pyinstaller --noconfirm ragdoll-mail.spec
-      - run: Compress-Archive -Path dist/ragdoll-mail.exe -DestinationPath ragdoll-mail-windows.zip
+      - run: Compress-Archive -Path "dist/Ragdoll Mail.exe" -DestinationPath ragdoll-mail-windows.zip
       - name: Add to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
