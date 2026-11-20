@@ -978,7 +978,8 @@ class Backend:
         return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
-                "prefs": self.prefs(), "news": self.news, "asks": self.asks}
+                "prefs": self.prefs(), "news": self.news, "asks": self.asks,
+                "window": WINDOW.w is not None}
 
     def flag_folders(self):
         """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
@@ -1728,6 +1729,9 @@ class Backend:
             fail("That attachment is not in the mail any more.")
         save = a.get("action") == "save"
         path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
+        if a.get("action") == "drag":
+            # the file under its own name in the app's open folder; Finder copies it where it is dropped
+            return {"path": path, "name": os.path.basename(path), "dragging": drag_out(path)}
         if not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
@@ -2729,6 +2733,51 @@ def bring_front():
         with contextlib.suppress(Exception):
             import ctypes
             ctypes.windll.user32.SetForegroundWindow(WINDOW.hwnd)
+
+
+_DRAG = SimpleNamespace(source=None)
+
+
+def drag_out(path):
+    """Start a Finder drag of this file from where the mouse is: the page asks while the button is held on an
+    attachment, and a drop on the desktop or a folder copies the file there. macOS only; False when no drag
+    could start (no window, the button already let go)."""
+    if sys.platform != "darwin" or WINDOW.w is None:
+        return False
+    try:
+        import objc
+        from AppKit import NSApp, NSDraggingItem, NSMakeRect, NSObject, NSURL, NSWorkspace
+        from PyObjCTools import AppHelper
+    except ImportError:
+        return False
+    if _DRAG.source is None:
+        class RagdollDragSource(NSObject, protocols=[objc.protocolNamed("NSDraggingSource")]):
+            def draggingSession_sourceOperationMaskForDraggingContext_(self, session, context):
+                return 1                                # NSDragOperationCopy: the file stays in the mail
+        _DRAG.source = RagdollDragSource.alloc().init()
+    done, ok = threading.Event(), []
+
+    def go():
+        try:
+            ev = NSApp.currentEvent()
+            win = ev.window() if ev is not None else None
+            if ev is None or win is None or ev.type() not in (1, 6):    # left mouse down / dragged
+                return
+            view = win.contentView()
+            p = view.convertPoint_fromView_(ev.locationInWindow(), None)
+            pic = NSWorkspace.sharedWorkspace().iconForFile_(path)
+            pic.setSize_((48, 48))
+            item = NSDraggingItem.alloc().initWithPasteboardWriter_(NSURL.fileURLWithPath_(path))
+            item.setDraggingFrame_contents_(NSMakeRect(p.x - 24, p.y - 24, 48, 48), pic)
+            view.beginDraggingSessionWithItems_event_source_([item], ev, _DRAG.source)
+            ok.append(True)
+        except Exception:
+            pass
+        finally:
+            done.set()
+    AppHelper.callAfter(go)
+    done.wait(3)
+    return bool(ok)
 
 
 def poke_page():

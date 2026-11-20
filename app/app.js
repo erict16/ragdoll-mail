@@ -74,10 +74,12 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 // Reply, reply all and forward: Remix arrow shapes drawn as a hollow, rounded outline (Apple Mail style); every other icon is Lucide.
 // Each arrow's frame holds the whole shape, its sharp tip and the outline's half width included, so nothing
 // is drawn outside the frame (WebKit cuts off what is); reply and forward share one size.
-const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 -0.65 25.3 25.3" };
+// reply all is wider than tall: its frame keeps reply's height, and its box is wider (style.css .i-wide), so its
+// arrows are drawn at the very size of reply's
+const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
 const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="${ARROW_BOX[n]}" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
   : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
-const icon = (n, cls = "") => `<span class="i ${cls}">${svg(n)}</span>`;
+const icon = (n, cls = "") => `<span class="i ${cls}${n === "reply-all" ? " i-wide" : ""}">${svg(n)}</span>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function el(tag, attrs = {}, ...kids) {
@@ -1345,10 +1347,31 @@ function attNode(a, id) {
       toast(t("saved_to") + " · " + r.name, { action: { label: t("show"), run: () => api("reveal", { path: r.path }).catch(fail) }, ms: 5000 });
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
-  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name, onclick: open, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+  let dragged = false;
+  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
+    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
     el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
+  // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
+  if (MAC && S.boot.window) {
+    node.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest(".att-acts")) return;
+      e.preventDefault();                 // no text selection, no drag of the card's picture
+      const x0 = e.clientX, y0 = e.clientY;
+      const move = (ev) => {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 5) return;
+        stop();
+        dragged = true;
+        node.classList.add("busy");
+        api("attachment", { id, i: a.i, name: a.name, action: "drag" })
+          .then((r) => { if (!r.dragging) dragged = false; }, fail)
+          .finally(() => node.classList.toggle("busy", false));
+      };
+      const stop = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", stop); };
+      addEventListener("mousemove", move); addEventListener("mouseup", stop);
+    });
+  }
   return node;
 }
 
