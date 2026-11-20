@@ -601,3 +601,16 @@ const MORE5 = {
   "de": { my_folders: "Ordner", fold: "Ordner ein- oder ausblenden" },
 };
 for (const [k, v] of Object.entries(MORE5)) Object.assign(LANGS[k], v);
+
+// the button and shortcut that hide and show the sidebar
+const MORE6 = {
+  "en": { side_hide: "Hide sidebar", side_show: "Show sidebar", side_toggle: "Show or hide sidebar" },
+  "zh-Hans": { side_hide: "收起侧栏", side_show: "显示侧栏", side_toggle: "显示或收起侧栏" },
+  "zh-Hant": { side_hide: "收合側欄", side_show: "顯示側欄", side_toggle: "顯示或收合側欄" },
+  "ja": { side_hide: "サイドバーを隠す", side_show: "サイドバーを表示", side_toggle: "サイドバーの表示/非表示" },
+  "ko": { side_hide: "사이드바 숨기기", side_show: "사이드바 보기", side_toggle: "사이드바 보기 또는 숨기기" },
+  "es": { side_hide: "Ocultar barra lateral", side_show: "Mostrar barra lateral", side_toggle: "Mostrar u ocultar la barra lateral" },
+  "fr": { side_hide: "Masquer la barre latérale", side_show: "Afficher la barre latérale", side_toggle: "Afficher ou masquer la barre latérale" },
+  "de": { side_hide: "Seitenleiste ausblenden", side_show: "Seitenleiste einblenden", side_toggle: "Seitenleiste ein- oder ausblenden" },
+};
+for (const [k, v] of Object.entries(MORE6)) Object.assign(LANGS[k], v);
