@@ -196,7 +196,7 @@ def cid_map(msg):
         if not ctype:
             continue
         data = p.get_payload(decode=True) or b""
-        if len(data) <= 8 * 1024 * 1024:
+        if data and len(data) <= 8 * 1024 * 1024:   # no data: a file the light mail left on the server
             out[p.get("Content-ID").strip().strip("<>")] = data_uri(ctype, data)
     return out
 
@@ -260,10 +260,19 @@ def file_parts(msg):
     return out
 
 
-def part_info(k, p):
+def left_out(p, light):
+    """The IMAP section of a file the light mail left on the server, else None. Only a mail from our
+    own light cache can say so: the same header in a mail somebody sent means nothing."""
+    if not light or p.is_multipart() or (p.get_payload() or "").strip():
+        return None
+    sec = str(p["X-Ragdoll-Part"] or "").strip()
+    return sec if R.SECTION_RE.fullmatch(sec) else None
+
+
+def part_info(k, p, light=False):
     name = R.fname(p) or "attachment"
     try:
-        size = int(p["X-Ragdoll-Size"]) if p["X-Ragdoll-Size"] else len(R.part_bytes(p))
+        size = int(p["X-Ragdoll-Size"]) if left_out(p, light) and p["X-Ragdoll-Size"] else len(R.part_bytes(p))
     except Exception:
         size = 0
     return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
@@ -288,18 +297,69 @@ def data_images(html):
 
 # ------------------------------------------------------------------ demo mailbox
 
-def demo_png(rgb, w=240, h=120):
+def png_bytes(rows, w, h):
+    """A PNG from its rows of RGB bytes."""
     import struct
     import zlib
-    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
 
     def chunk(t, d):
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", zlib.compress(b"".join(b"\x00" + bytes(r) for r in rows), 9)) + chunk(b"IEND", b""))
 
 
-def demo_pdf(title):
+def demo_png(rgb, w=240, h=120):
+    return png_bytes([bytes(rgb) * w] * h, w, h)
+
+
+def demo_photo(w=720, h=450):
+    """The picture in the demo mailbox: two switch cabinets in front of a wall. Drawn here, so the
+    demo needs no picture file."""
+    floor = h * 3 // 4
+    rows = []
+    for y in range(h):
+        if y < floor:
+            k = y / floor
+            c = (226 - 22 * k, 229 - 21 * k, 231 - 20 * k)
+        else:
+            k = (y - floor) / (h - floor)
+            c = (150 - 30 * k, 151 - 30 * k, 149 - 30 * k)
+        rows.append(bytearray(bytes(int(v) for v in c) * w))
+
+    def box(x0, y0, x1, y1, rgb):
+        px = bytes(rgb) * (x1 - x0)
+        for y in range(y0, y1):
+            rows[y][x0 * 3:x1 * 3] = px
+
+    top, foot = h * 14 // 100, floor + h * 6 // 100
+    cw, gap = w * 30 // 100, w * 5 // 100
+    left = (w - cw * 2 - gap) // 2
+    for k, base in enumerate(((104, 126, 136), (113, 135, 145))):
+        x0, x1 = left + k * (cw + gap), left + k * (cw + gap) + cw
+        dark, light = tuple(v - 26 for v in base), tuple(v + 22 for v in base)
+        box(x0 + 8, foot, x1 + 14, foot + 9, (104, 105, 103))                   # its shadow on the floor
+        box(x0, top, x1, foot, base)
+        box(x0, top, x1, top + 16, dark)                                        # the top rail
+        box(x0, foot - 14, x1, foot, dark)                                      # the plinth
+        box(x0, top, x0 + 3, foot, light)                                       # light from the left
+        mid = (x0 + x1) // 2
+        box(mid - 1, top + 16, mid + 1, foot - 14, dark)                        # the gap between the two doors
+        box(mid + 10, top + 150, mid + 15, top + 196, (52, 60, 66))             # the handle
+        box(x0 + 22, top + 34, x0 + 96, top + 58, (232, 235, 236))              # the name plate
+        box(x0 + 28, top + 43, x0 + 78, top + 46, (150, 158, 163))
+        for j, lamp in enumerate(((74, 176, 112), (226, 172, 64))):
+            box(mid + 30 + j * 24, top + 38, mid + 44 + j * 24, top + 52, lamp)
+        for j in range(6):                                                      # the vent slots
+            box(x0 + 24, foot - 86 + j * 10, mid - 22, foot - 82 + j * 10, dark)
+    return png_bytes(rows, w, h)
+
+
+def demo_size(name, low, high):
+    """A size in bytes for a demo file, the same each time for one name."""
+    return (low + sum(name.encode("utf-8")) * 37 % (high - low)) * 1024
+
+
+def demo_pdf(title, size=0):
     text = "BT /F1 18 Tf 72 720 Td (%s) Tj ET" % title.replace("(", "").replace(")", "")
     objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
@@ -307,6 +367,8 @@ def demo_pdf(title):
             "<< /Length %d >>\nstream\n%s\nendstream" % (len(text), text),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
     out, offs = "%PDF-1.4\n", []
+    if size:                # a comment line, so the file has the size of a real one
+        out += "%" + " " * max(0, size - 700) + "\n"
     for k, o in enumerate(objs, 1):
         offs.append(len(out))
         out += "%d 0 obj\n%s\nendobj\n" % (k, o)
@@ -427,16 +489,17 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     msg.set_content(body)
     html = R.text_to_html(body)
     if inline:
-        html += '<div><br></div><div><img src="cid:photo1@demo" width="240" height="120" alt="site photo"></div>'
+        html += '<div><br></div><div><img src="cid:photo1@demo" width="480" height="300" alt="site photo"></div>'
     msg.add_alternative('<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px">%s</div>' % html,
                         subtype="html")
     if inline:
-        msg.get_body(("html",)).add_related(demo_png((46, 125, 120)), "image", "png", cid="<photo1@demo>")
+        msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
         if kind == "pdf":
-            msg.add_attachment(demo_pdf(name), "application", "pdf", filename=name)
+            msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
-            msg.add_attachment(b"PK\x03\x04 demo", "application", "octet-stream", filename=name)
+            msg.add_attachment(b"PK\x03\x04 demo".ljust(demo_size(name, 24, 60), b"\x00"), "application",
+                               "octet-stream", filename=name)
     return msg.as_bytes(policy=R.OUT_POLICY)
 
 
@@ -480,9 +543,13 @@ class Backend:
         self.sched_wake = threading.Event()
         self.flag_q = queue.Queue()             # flag changes for the server, in the order they were made
         self.flag_thread = None
+        self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
+        self.marklock = threading.Lock()
+        self.badge_n = None                     # the unread count the Dock icon shows
         if demo:
-            self.make_demo()
-        self.c = R.db()
+            self.make_demo()                    # opens self.c on the demo's own index
+        else:
+            self.c = R.db()
         self.data_v = self.c.execute("pragma data_version").fetchone()[0]
         if not demo:
             with contextlib.suppress(Exception):
@@ -553,6 +620,8 @@ class Backend:
         m, self.m = self.m, None
         if m is not None:
             with contextlib.suppress(Exception):
+                m.sock.settimeout(3)            # a dead connection would keep LOGOUT waiting its whole timeout
+            with contextlib.suppress(Exception):
                 m.logout()
 
     def bump(self):
@@ -612,31 +681,38 @@ class Backend:
         return raw
 
     def view_raw(self, i):
-        """What showing the mail needs: the whole mail, or for a big one the mail without its big
-        files (R.fetch_light); those are fetched one by one when opened."""
+        return self.view(i)[0]
+
+    def view(self, i):
+        """What showing the mail needs, and whether it is the light one: the whole mail, or for a big
+        one the mail without its big files (R.fetch_light); those are fetched one by one when opened."""
         if self.demo:
-            return self.raw(i)
+            return self.raw(i), False
         r = self.row(i)
         if (r["size"] or 0) <= R.LIGHT_MIN or os.path.exists(self.cache_path(r)):
-            return self.raw(i)
+            return self.raw(i), False
         lp = R.light_path(r["folder"], r["uidv"], r["uid"])
         raw = R.cache_get(lp)
         if raw:
-            return raw
+            return raw, True
         k = (r["folder"], r["uidv"], r["uid"])
+        light = False
         self.fg += 1
         try:
             end = time.time() + 30
             while self.pre_now == k and time.time() < end:
                 time.sleep(0.05)
-            raw = R.cache_get(lp) or R.cache_get(self.cache_path(r))
+            raw = R.cache_get(lp)
+            light = bool(raw)
+            raw = raw or R.cache_get(self.cache_path(r))
             if not raw:
                 raw = self.imap(lambda m: R.fetch_light(m, r["folder"], r["uid"]))
                 if raw:
+                    light = True
                     R.cache_put(lp, raw)
         finally:
             self.fg -= 1
-        return raw or self.raw(i)
+        return (raw, light) if raw else (self.raw(i), False)
 
     # ---- mail brought in ahead of time, so opening it does not wait for the server
 
@@ -705,11 +781,18 @@ class Backend:
         root = os.path.join(R.CFG.home, "cache")
         cut = time.time() - days * 86400
         for d, _, files in os.walk(root):
+            gone = set()
             for n in files:
                 p = os.path.join(d, n)
                 with contextlib.suppress(OSError):
                     if os.path.getatime(p) < cut:
                         os.remove(p)
+                        gone.add(n)
+            for n in files:         # a file fetched by itself (R.part_path) goes when its light mail goes
+                if ".part" in n and n not in gone and not os.path.exists(
+                        os.path.join(d, n.split(".part")[0] + ".light.eml")):
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(d, n))
 
     # ---- sync
 
@@ -806,7 +889,7 @@ class Backend:
                                     extra = True
                                 for f in todo:
                                     try:
-                                        R.sync_headers(m, c, f)
+                                        R.sync_headers(m, c, f, held=self.held)
                                     except LookupError:
                                         if f in self.sync_folders():
                                             raise
@@ -838,6 +921,8 @@ class Backend:
                 m = None
             finally:
                 self.sync["running"] = False
+            with contextlib.suppress(Exception):
+                self.folder_counts()            # the Dock count follows new mail with the window in the back too
         if m is not None:
             with contextlib.suppress(Exception):
                 m.logout()
@@ -893,6 +978,9 @@ class Backend:
             return self.counts[1]
         out = self.count_folders()
         self.counts = (key, out)
+        n = next((x["unread"] for x in out if x["key"] == "inbox"), 0)
+        if n != self.badge_n and dock_badge(n):
+            self.badge_n = n
         return out
 
     def count_folders(self):
@@ -1098,25 +1186,34 @@ class Backend:
 
     def api_message(self, a):
         i = a["id"]
+        send = back = None
         if a.get("mark", True):         # read the moment it is opened, not once a big mail is in
             with contextlib.suppress(ApiError):
                 if not self.row(i)["seen"]:
-                    self.set_flag([i], "seen", True, wait=False)    # the server hears it in the background
-        with self.dblock:
-            out = None if self.demo else self.built.get(i)
-            if out is not None:
-                self.built.move_to_end(i)
-        if out is None:
-            out = self.build_message(i)
-            if not self.demo and len(out["html"]) < 1500000:
-                with self.dblock:
-                    self.built[i] = out
-                    while len(self.built) > 40:
-                        self.built.popitem(last=False)
+                    send, back = self.set_flag([i], "seen", True, wait=False, later=True)
+        try:
+            with self.dblock:
+                out = None if self.demo else self.built.get(i)
+                if out is not None:
+                    self.built.move_to_end(i)
+            if out is None:
+                out = self.build_message(i)
+                if not self.demo and len(out["html"]) < 1500000:
+                    with self.dblock:
+                        self.built[i] = out
+                        while len(self.built) > 40:
+                            self.built.popitem(last=False)
+        except BaseException:
+            if back:
+                back()                  # a mail that did not open was not read
+            raise
+        if send:
+            send()                      # the server hears it in the background, now that the mail is open
         return out
 
     def build_message(self, i):
-        msg = R.to_msg(self.view_raw(i))
+        raw, light = self.view(i)
+        msg = R.to_msg(raw)
         plain, html = R.bodies(msg)
         cids = cid_map(msg)
         body = page_html(html, cids) if html.strip() else plain_html(plain)
@@ -1129,70 +1226,203 @@ class Backend:
         out = {"id": i, "from": person(n, ad), "to": people_json(R.hdr(msg, "To")),
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
-               "remote": has_remote(body), "atts": [part_info(k, p) for k, p in enumerate(file_parts(msg))],
+               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
                "big": R.big_attachment_lines(R.html_to_text(html) or plain)}
         return out
 
-    def set_flag(self, ids, flag, on, wait=True):
+    def set_flag(self, ids, flag, on, wait=True, later=False):
         """wait: the server has it before this returns (an error is raised); else the index changes now,
-        the server hears it in the background and the index is put back if the server says no."""
-        col, imap_flag = {"seen": ("seen", "\\Seen"), "flagged": ("flagged", "\\Flagged")}[flag]
+        the server hears it in the background and the index is put back if the server says no.
+        later (not with wait): the index changes now and (send, back) comes back: send() tells the
+        server, back() puts the index back. For a mark that depends on what happens next."""
         by = {}
         for i in ids:
             f, u = self.parse(i)
             by.setdefault(f, []).append(u)
+        return self.flag_by(by, flag, on, wait, later)
+
+    def flag_by(self, by, flag, on, wait=True, later=False):
+        """set_flag for {folder: [uid, ...]}."""
+        col, imap_flag = {"seen": ("seen", "\\Seen"), "flagged": ("flagged", "\\Flagged")}[flag]
 
         def db(val):
             with self.dblock:
                 for f, uids in by.items():
-                    self.c.execute("update msgs set %s=? where folder=? and uid in (%s)" % (col, ",".join("?" * len(uids))),
-                                   [int(val), f, *uids])
+                    for k in range(0, len(uids), 500):      # a whole folder at once: under SQLite's limit
+                        part = uids[k:k + 500]
+                        self.c.execute("update msgs set %s=? where folder=? and uid in (%s)"
+                                       % (col, ",".join("?" * len(part))), [int(val), f, *part])
                 self.c.commit()
             self.bump()
         if self.demo:
-            return db(on)
+            db(on)
+            return (lambda: None, lambda: db(not on)) if later else None
 
         def go(m):
             for f, uids in by.items():
                 R.use(m, f, write=True)
-                m.uid("STORE", ",".join(map(str, uids)), "+FLAGS.SILENT" if on else "-FLAGS.SILENT",
-                      "(%s)" % imap_flag)
+                for k in range(0, len(uids), 200):
+                    typ, data = m.uid("STORE", ",".join(map(str, uids[k:k + 200])),
+                                      "+FLAGS.SILENT" if on else "-FLAGS.SILENT", "(%s)" % imap_flag)
+                    if typ != "OK":
+                        raise imaplib.IMAP4.error("the server refused: %s" % (data,))
+
+        def end(e):                     # called once, when the server has it (e is None) or will not
+            self.settle(by, col, e is None)
+            if wait and e is None:
+                db(on)
+            elif not wait and e is not None:
+                print("a mark did not reach the server: %s" % friendly(e), file=sys.stderr)
+                db(not on)
+        done = {"ev": threading.Event()} if wait else None
+
+        def send():
+            self.flag_q.put((go, done, end))
+            if self.flag_thread is None or not self.flag_thread.is_alive():
+                self.flag_thread = threading.Thread(target=self.flag_loop, daemon=True)
+                self.flag_thread.start()
+
+        def back():
+            self.settle(by, col, False)
+            db(not on)
+        self.hold(by, col, on)          # a sync that asks the server meanwhile must not put the old value back
         if not wait:
             db(on)
-            self.flag_q.put((go, None, lambda e: db(not on)))
-        else:
-            done = {"ev": threading.Event()}
-            self.flag_q.put((go, done, None))
-        if self.flag_thread is None or not self.flag_thread.is_alive():
-            self.flag_thread = threading.Thread(target=self.flag_loop, daemon=True)
-            self.flag_thread.start()
-        if wait:
-            done["ev"].wait()
-            if done.get("err"):
-                raise done["err"]
-            db(on)
+            if later:
+                return send, back
+            return send()
+        send()
+        if not done["ev"].wait(self.MARK_WAIT):
+            # still behind other marks: it is skipped. Already with the server: the index follows if it lands.
+            done["gone"] = True
+            raise TimeoutError("the mark took too long")
+        if done.get("err"):
+            raise done["err"]
+
+    MARK_WAIT = 60      # seconds an asked-for mark may take before whoever waits is told it failed
+    MARK_TIMEOUT = 20   # seconds the server may take to answer a mark: the connection is shared with opening mail
+    MARK_PAUSE = 2      # seconds before a failed mark is tried once more
+    QUIT_WAIT = 4       # seconds quitting waits for the marks still on their way
+
+    # ---- marks on their way to the server
+
+    def hold(self, by, col, val):
+        with self.marklock:
+            for f, uids in by.items():
+                for u in uids:
+                    e = self.marks.get((f, u, col))
+                    self.marks[(f, u, col)] = [int(val), (e[1] if e else 0) + 1, 0]
+
+    def settle(self, by, col, ok):
+        """The server has the mark (ok), or it was given up: a sync may then set the flag again."""
+        now = time.time()
+        with self.marklock:
+            for f, uids in by.items():
+                for u in uids:
+                    e = self.marks.get((f, u, col))
+                    if not e:
+                        continue
+                    e[1] -= 1
+                    if e[1] <= 0 and ok:
+                        e[2] = now
+                    elif e[1] <= 0:
+                        del self.marks[(f, u, col)]
+
+    def held(self, folder, since):
+        """{uid: {column: value}} for R.sync_headers: the flags changed here that the server may not
+        have had yet when the sync asked it at `since`."""
+        out, now = {}, time.time()
+        with self.marklock:
+            for (f, u, col), e in list(self.marks.items()):
+                if e[1] <= 0 and now - e[2] > 300:
+                    del self.marks[(f, u, col)]             # long with the server: nothing to keep
+                elif f == folder and (e[1] > 0 or e[2] >= since - 2):
+                    out.setdefault(u, {})[col] = e[0]
+        return out
+
+    def flag_try(self, go):
+        """One mark sent to the server; when that fails, once more on a new connection."""
+        def run(m):
+            with contextlib.suppress(Exception):
+                m.sock.settimeout(self.MARK_TIMEOUT)    # opening a mail waits for this connection
+            try:
+                return go(m)
+            finally:
+                with contextlib.suppress(Exception):
+                    m.sock.settimeout(90)
+        try:
+            return self.imap(run)
+        except (ApiError, LookupError):
+            raise                       # the server answered: asking again changes nothing
+        except BaseException:           # noqa: B036 - R.imap() dies with SystemExit
+            self.drop()
+            self.stopping.wait(self.MARK_PAUSE)     # a network that just dropped is often back in a moment
+            return self.imap(run)
+
+    def flag_end(self, job, err):
+        go, done, end = job
+        try:
+            end(err)
+        except Exception:               # noqa: BLE001 - the loop must live on
+            traceback.print_exc(file=sys.stderr)
+        finally:
+            if done is not None:
+                done["err"] = err
+                done["ev"].set()
+            self.flag_q.task_done()
 
     def flag_loop(self):
         while not self.stopping.is_set():
             try:
-                go, done, undo = self.flag_q.get(timeout=60)
+                job = self.flag_q.get(timeout=60)
             except queue.Empty:
                 continue
+            if job[1] is not None and job[1].get("gone"):
+                self.flag_end(job, TimeoutError("nobody waits for it any more"))
+                continue
+            err = None
             try:
-                self.imap(go)
-            except Exception as e:      # noqa: BLE001 - handed to whoever waits, or undone in the index
-                if done is not None:
-                    done["err"] = e
-                else:
-                    traceback.print_exc(file=sys.stderr)
-                    undo(e)
-            finally:
-                if done is not None:
-                    done["ev"].set()
+                self.flag_try(job[0])
+            except BaseException as e:  # noqa: B036 - handed to whoever waits, or undone in the index
+                err = e
+            self.flag_end(job, err)
+            if err is not None and self.m is None:
+                # the server cannot be reached: each mark waiting behind this one would wait that out
+                # again, and whoever opens a mail waits with them. They fail now.
+                while True:
+                    try:
+                        job = self.flag_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    self.flag_end(job, err)
 
     def api_mark(self, a):
         self.set_flag(ids_in(a), a.get("flag", "seen"), bool(a.get("on", True)))
         return {}
+
+    def api_notice_on(self, a):
+        """Notices were just switched on: show one, so the owner sees them work (and macOS asks, once,
+        whether the app may show them). Only the app's own window: a browser page shows its own."""
+        if self.demo or WINDOW.w is None:
+            return {"ok": False}
+        threading.Thread(target=system_notice, args=("Ragdoll Mail", text_in(a, "body")[:200]), daemon=True).start()
+        return {"ok": True}
+
+    def api_mark_all_read(self, a):
+        """Every unread mail of a list becomes read: the index now, the server in the background.
+        {"folder": the list's key, as for api_list} -> {"count": how many were unread}."""
+        key = text_in(a, "folder") or "inbox"
+        if key == "scheduled":
+            return {"count": 0}
+        fs = self.flag_folders() if key == "flagged" else [R.CFG.folders.get(key, key)]
+        rows = self.q("select folder, uid from msgs where seen=0%s and folder in (%s)"
+                      % (" and flagged=1" if key == "flagged" else "", ",".join("?" * len(fs))), fs) if fs else []
+        by = {}
+        for r in rows:
+            by.setdefault(r["folder"], []).append(r["uid"])
+        if by:
+            self.flag_by(by, "seen", True, wait=False)
+        return {"count": len(rows)}
 
     def api_move(self, a):
         """Move mails to archive, trash, inbox or junk (dest is the folder key), or to one of the other folders."""
@@ -1397,18 +1627,30 @@ class Backend:
         self.bump()
         return {}
 
-    def api_attachment(self, a):
-        msg = R.to_msg(self.view_raw(a["id"]))
-        parts = file_parts(msg)
-        k = int(a["i"])
-        if not 0 <= k < len(parts):
-            fail("That attachment is not in the mail any more.")
-        p = parts[k]
-        if p["X-Ragdoll-Part"]:                 # a big file the light mail left on the server: just this one
-            folder, uid = self.parse(a["id"])
-            p = self.imap(lambda m: R.fetch_part(m, folder, uid, str(p["X-Ragdoll-Part"])))
+    def files_of(self, i):
+        """(the mail's files, whether the mail is the light one)."""
+        raw, light = self.view(i)
+        return file_parts(R.to_msg(raw)), light
+
+    def whole_part(self, i, p, light):
+        """The file with its data. A big one the light mail left on the server is fetched by itself,
+        once: it is kept beside the light mail (R.part_path) for the next open or save."""
+        sec = left_out(p, light)
+        if not sec:
+            return p
+        r = self.row(i)
+        path = R.part_path(r["folder"], r["uidv"], r["uid"], sec)
+        raw = R.cache_get(path)
+        if not raw:
+            raw = self.imap(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
+            R.cache_put(path, raw)
+        return R.to_msg(raw)
+
+    def write_part(self, p, save):
+        """The file written to Downloads under a name that is free there (save), or to a folder of
+        its own to open it from. Returns its path."""
         name = R.safe_name(R.fname(p) or "attachment")
-        if a.get("action") == "save":
+        if save:
             path = R.unique_path(downloads_dir(), name, set())
             n = 2
             while os.path.exists(path):
@@ -1422,9 +1664,30 @@ class Backend:
         with open(path, "wb") as f:
             f.write(R.part_bytes(p))
         self.made.add(path)
-        if a.get("action") != "save":
+        return path
+
+    def api_attachment(self, a):
+        parts, light = self.files_of(a["id"])
+        k = int(a["i"])
+        if not 0 <= k < len(parts):
+            fail("That attachment is not in the mail any more.")
+        save = a.get("action") == "save"
+        path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
+        if not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
+
+    def api_save_all(self, a):
+        """Every file of the mail into Downloads, the way api_attachment's "save" does one.
+        {"id": the mail} -> {"count": files saved, "path": the last one (the folder when none), "folder": Downloads}."""
+        parts, light = self.files_of(a["id"])
+        folder = downloads_dir()
+        path = None
+        for p in parts:
+            path = self.write_part(self.whole_part(a["id"], p, light), True)
+        if path is None:
+            self.made.add(folder)       # so the page may show the folder
+        return {"count": len(parts), "path": path or folder, "folder": folder}
 
     def api_reveal(self, a):
         if a.get("path") not in self.made:
@@ -1526,11 +1789,6 @@ class Backend:
                         "atts": [self.keep_file(R.fname(p) or "attachment", R.part_bytes(p))
                                  for p in file_parts(msg)]})
             return out
-        if mode != "draft":
-            have = {x["addr"] for x in out["to"] + out["cc"]}
-            for x in R.CFG.require_cc or []:
-                if x.lower() not in have and x.lower() != R.CFG.user:
-                    out["cc"].append(person("", x.lower()))
         return out
 
     def state_path(self, mid):
@@ -1807,7 +2065,7 @@ class Backend:
     def api_settings(self, a):
         return {"name": R.CFG.name, "user": R.CFG.user, "imap_host": R.CFG.imap.get("host", ""),
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
-                "smtp_port": R.CFG.smtp.get("port", 465), "require_cc": ", ".join(R.CFG.require_cc or []),
+                "smtp_port": R.CFG.smtp.get("port", 465),
                 "signature": self.signature(), "has_password": self.has_password(),
                 "password_env": os.environ.get(R.CFG.password_env) is not None and not self.demo,
                 "folders": dict(R.CFG.folders), "config": config_path(), "demo": self.demo}
@@ -1882,8 +2140,6 @@ class Backend:
             raw["name"] = (a.get("name") or "").strip()
             raw["imap"] = {"host": (a.get("imap_host") or "").strip(), "port": int(a.get("imap_port") or 993)}
             raw["smtp"] = {"host": (a.get("smtp_host") or "").strip(), "port": int(a.get("smtp_port") or 465)}
-        if "require_cc" in a:
-            raw["require_cc"] = [x.lower() for _, x in people_in(R.split_list(a["require_cc"]))]
         if a.get("folders"):
             fs = dict(raw.get("folders") or {})
             fs.update({k: v for k, v in a["folders"].items() if k in FOLDER_KEYS and v})
@@ -1976,6 +2232,11 @@ class Backend:
             self.db_delete(i)
 
     def close(self):
+        # marks made a moment ago are still on their way to the server: a few seconds for them, never more
+        end = time.time() + self.QUIT_WAIT
+        while (self.flag_q.unfinished_tasks and self.flag_thread is not None and self.flag_thread.is_alive()
+               and time.time() < end):
+            time.sleep(0.05)
         self.stopping.set()
         self.wake.set()
         self.sched_wake.set()
@@ -2007,7 +2268,7 @@ def int_in(a, k, default):
 def app_problems(msg, reply):
     """ragdoll's pre-send check, worded for the app (no CLI flags; no table-layout rules)."""
     out = []
-    for p in R.check_message(msg, reply, blanks_ok=False, required_cc=True, attach_ok=False):
+    for p in R.check_message(msg, reply, blanks_ok=False, required_cc=False, attach_ok=False):
         if "table" in p or "no quoted history" in p or "signature" in p:
             continue
         out.append(re.split(r";\s*(?=.*--)", p)[0])
@@ -2105,13 +2366,75 @@ def folder_tree(found, taken):
     return out
 
 
+def mac_notice(title, body):
+    """A notice sent by the app itself, so it carries the app's icon and a click on it brings the
+    app to the front (one sent through osascript shows Script Editor's icon). True when it was
+    handed to macOS. Only the built app: run from the source, "the app" is Python.
+
+    macOS takes these only from an app signed with a certificate. A build without one (ad-hoc
+    signed, as ours is today) is refused with "Notifications are not allowed for this application"
+    (seen on macOS 26), and the notice then goes out through osascript."""
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        import UserNotifications as UN
+        center = UN.UNUserNotificationCenter.currentNotificationCenter()
+        if center is None:
+            return False
+        with MAC_NOTICES.lock:
+            if MAC_NOTICES.delegate is None:
+                MAC_NOTICES.delegate = mac_notice_delegate(UN)
+                center.setDelegate_(MAC_NOTICES.delegate)
+
+        def show():
+            c = UN.UNMutableNotificationContent.alloc().init()
+            c.setTitle_(title or "Ragdoll Mail")
+            c.setBody_(body)
+            req = UN.UNNotificationRequest.requestWithIdentifier_content_trigger_(secrets.token_hex(8), c, None)
+            center.addNotificationRequest_withCompletionHandler_(req, lambda err: None)
+
+        def answered(ok, err):
+            # macOS asks the owner once; later calls come straight back with that answer
+            with contextlib.suppress(Exception):
+                if ok:
+                    show()
+                elif err is not None:       # refused: a build with no certificate
+                    osa_notice(title, body)
+
+        center.requestAuthorizationWithOptions_completionHandler_(
+            UN.UNAuthorizationOptionAlert | UN.UNAuthorizationOptionSound, answered)
+        return True
+    except Exception:       # noqa: BLE001 - the old way still works
+        return False
+
+
+MAC_NOTICES = SimpleNamespace(delegate=None, lock=threading.Lock())
+
+
+def mac_notice_delegate(UN):
+    """Without it macOS keeps a notice back while the app is in front (the one Settings shows when
+    notices are switched on)."""
+    import objc
+    from Foundation import NSObject
+
+    class RagdollNotices(NSObject, protocols=[objc.protocolNamed("UNUserNotificationCenterDelegate")]):
+        def userNotificationCenter_willPresentNotification_withCompletionHandler_(self, center, note, done):
+            done(UN.UNNotificationPresentationOptionBanner | UN.UNNotificationPresentationOptionList)
+    return RagdollNotices.alloc().init()
+
+
+def osa_notice(title, body):
+    subprocess.run(["osascript", "-e", "on run argv",
+                    "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+                    "-e", "end run", title or "Ragdoll Mail", body], timeout=10, capture_output=True)
+
+
 def system_notice(title, body):
     """Tell the owner about new mail outside the window. Never raises."""
     try:
         if sys.platform == "darwin":
-            subprocess.run(["osascript", "-e", "on run argv",
-                            "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
-                            "-e", "end run", title or "Ragdoll Mail", body], timeout=10, capture_output=True)
+            if not mac_notice(title, body):
+                osa_notice(title, body)
         elif sys.platform == "win32":
             if WINDOW.hwnd:                     # the taskbar button flashes until the window is opened
                 import ctypes
@@ -2251,6 +2574,23 @@ def system_dark():
 
 
 WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
+
+
+def dock_badge(n):
+    """The inbox's unread count on the Mac Dock icon, nothing when 0. True when it was asked for."""
+    if sys.platform != "darwin" or WINDOW.w is None:        # in the browser there is no Dock icon of ours
+        return False
+    try:
+        import AppKit
+        from PyObjCTools import AppHelper
+
+        def go():
+            with contextlib.suppress(Exception):
+                AppKit.NSApplication.sharedApplication().dockTile().setBadgeLabel_(str(n) if n > 0 else "")
+        AppHelper.callAfter(go)         # AppKit wants it on the main thread
+        return True
+    except Exception:
+        return False
 
 
 def mac_clear_titlebar(w):

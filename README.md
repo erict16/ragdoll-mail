@@ -1,258 +1,154 @@
-<p align="center"><img src="assets/icon-256.png" width="112" alt=""></p>
+<p align="center"><img src="assets/icon-256.png" width="112" alt="Ragdoll Mail icon"></p>
 
-<h1 align="center">ragdoll-mail</h1>
+<h1 align="center">Ragdoll Mail</h1>
 
-<p align="center"><b>Mail search that works, on your own computer.<br>Every mail in milliseconds, for you and your AI agent.</b></p>
+<p align="center"><b>A free mail app for Mac and Windows.<br>Search finds your mail at once, even when your mailbox's own search does not.</b></p>
 
-<p align="center">Any IMAP mailbox · local SQLite index · Chinese and English · desktop app and <code>--json</code> command line · Mac and Windows · free and open source</p>
+<p align="center">Works with Tencent Exmail (腾讯企业邮箱), QQ Mail, 163, Gmail, iCloud, Fastmail and any other IMAP mailbox.</p>
 
 <p align="center">
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><img src="https://img.shields.io/github/v/release/erict16/ragdoll-mail" alt="Latest release"></a>
   <a href="https://github.com/erict16/ragdoll-mail/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/erict16/ragdoll-mail/build.yml?label=tests" alt="Tests"></a>
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/erict16/ragdoll-mail" alt="MIT license"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Mac</b></a> ·
   <a href="https://github.com/erict16/ragdoll-mail/releases/latest"><b>Download for Windows</b></a> ·
-  <a href="#search-that-works">Search</a> ·
-  <a href="#the-command-line">The command line</a> ·
-  <a href="#how-it-compares">How it compares</a>
+  <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Reading, flagging, searching, writing a formatted mail, scheduling it, then changing the font, theme and language"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: searching the mailbox, reading a mail, writing a reply, and taking a sent mail back"></p>
 
-Most mail apps ask your mail server to search, and many servers do it badly, slowly, or not at all. ragdoll keeps its own full-text index of your mailbox on your computer, so search is instant, works offline, and finds words in the body, the people and the attachment names. You get it in a calm desktop app, and your agent (Claude Code, Codex, or any script) gets the same index through the `ragdoll` command.
+## What is Ragdoll Mail?
 
-## Search that works
+Ragdoll Mail is an app for reading and writing email, like Apple Mail, Outlook or Foxmail. You sign in with the mailbox you already have. Nothing moves and nothing changes: your phone and your other mail apps keep working as before.
 
-A real mailbox on Tencent Exmail, 6,442 mails, searched both ways:
+It was made for one problem. On many mailboxes, and on Tencent Exmail most of all, search is slow or shows the wrong mails. Ragdoll Mail keeps its own list of your mail on your computer and searches that list. You type a word, and the right mail is there.
 
-| Search for | The server's IMAP search | ragdoll |
-|---|---|---|
-| `invoice` | 4,988 results (the whole inbox) | the matching mails, 15 ms |
-| `certificate origin` | 4,988 results (the whole inbox) | the matching mails, 8 ms |
-| `报价` (Chinese: "quotation") | 4,988 results (the whole inbox) | the matching mails, 23 ms |
-| `nonexistentzzq` (a made-up word) | 4,988 results (the whole inbox) | none, 0.4 ms |
+## Why you may like it
 
-<sub>Measured 18 Nov 2026 on Windows 11. ragdoll times are the search itself, best of 5, on a 382 MB index.</sub>
+- **Search that finds the mail.** Type a name, an order number, or a few words you remember from the text. Results show while you type. Chinese, Japanese and Korean work too. So does search with no internet.
+- **Your mail stays with you.** The app talks only to your own mail server. No other company sits in between to read or keep your mail. Your password goes into the system's own password store (Keychain on Mac, Credential Manager on Windows).
+- **Hard to send a mistake.** After you press Send you have up to 30 seconds to take the mail back. The app also stops you when you wrote "attached" but attached nothing, when the subject is empty, or when `[Name]` is still in the text.
+- **Send later.** Write now. Send this evening, tomorrow morning, or at any time you pick.
+- **Good with Chinese mail.** Names and file names from older Chinese mail systems show as they should, not as broken characters.
+- **Free.** No ads, no subscription, no account to make with us. The code is open, so anyone can check what it does.
 
-- **One index, every part of a mail.** Subject, sender, recipients, attachment file names and the full body text, in a SQLite FTS5 trigram index.
-- **Chinese, Japanese and Korean too.** Trigrams need no word splitting, so `分接开关` or `見積` are found inside running text. Two-letter words such as `PO` or `报价` still work.
-- **All words must match,** with filters: `--from`, `--to`, `--since`, `--until`, `--folder`, `--unread`, `--att`. In the app: `from:jane in:sent is:unread has:attachment`.
-- **Offline.** On a plane, on a bad hotel network, or when the server is down, search still answers from the index.
-- **The list never waits for the network.** Opening a folder takes about a millisecond; new mail comes in behind it.
-- **Your agent gets the same search.** `ragdoll search ... --json` gives an agent exact hits instead of a whole mailbox to read, so it spends fewer tokens and makes fewer mistakes.
+## Start in two minutes
 
-## Agents draft. You send.
+1. **Download** the app from the [latest release](https://github.com/erict16/ragdoll-mail/releases/latest):
+   - Mac (M1 or newer): `ragdoll-mail-mac.dmg`
+   - Windows 10 or 11: `ragdoll-mail-windows.zip`
+2. **Open it.** We have not paid Apple or Microsoft for a signature yet, so the system asks once:
+   - Mac: when macOS says it could not check the app, open **System Settings → Privacy & Security**, scroll down and press **Open Anyway**. (On older macOS: right-click the app and choose **Open**.)
+   - Windows: choose **More info**, then **Run anyway**.
+3. **Sign in** with your mail address and password. For the mailboxes named above, the app fills in the server settings by itself.
 
-```console
-you    › Reply to Lucas, attach the certificate of origin, cc Bao.
+The first time, the app reads your mailbox. For a big mailbox this takes a few minutes. You can read and write mail while it works.
 
-agent  $ ragdoll search Lucas "certificate of origin" --since 2026-11-01 --json
-agent  $ ragdoll thread inbox:312 --json
-agent  $ ragdoll draft --reply inbox:312 --cc bao.tran@saigon-grid.example \
-              --body reply.html --attach CO-4471.pdf
-agent  $ ragdoll check drafts:14 --reply
-         To:      Lucas Martin <lucas.martin@blueharbor.example>
-         Cc:      bao.tran@saigon-grid.example
-         Subject: Re: Order 4471 - shipping documents
-         Attach:  CO-4471.pdf (212 KB)
-         CHECK OK
+> **Which password?** Many mailboxes want a special password for mail apps, not the one you use on the website. Tencent Exmail calls it 客户端专用密码. QQ Mail and 163 call it 授权码. Gmail, iCloud and Fastmail call it an app password. You make it in the settings of your mailbox's website.
 
-agent  › The draft is in your Drafts folder. Shall I send it?
-you    › Yes.
-agent  $ ragdoll send drafts:14 --yes
-```
+## What it can do
 
-Every step is a plain command with `--json` output, so any agent can learn it from `ragdoll --help`. Nothing leaves your computer until a person says so:
+**Read**
+- A whole conversation on one page, with the newest mail on top. Old quoted text folds away.
+- Click a picture to see it large. Save one attachment, or all of them at once.
+- Hold the pointer on a link to see where it goes before you click.
 
-- **Drafts go where you can see them.** `draft` saves to your server's real Drafts folder, with your signature, the quoted history and its inline images. Open it in ragdoll, your phone or any mail app before anything is sent.
-- **A check before every send.** `check` fails on an empty To or subject, a missing signature, lost images, garbled characters (�), the sender as a recipient, a missing required Cc, placeholders such as `[Name]`, `XXX` or `TBD` left in the text, and text that says "attached" when nothing is.
-- **No double sends.** Every sent Message-ID is logged. Sending the same draft twice is refused. If tidying up fails after a mail has gone, ragdoll says so instead of inviting a second send.
-- **Nothing is destroyed by accident.** `send`, `trash` and `delete-draft` need `--yes`. Trash moves mail to the Trash folder, where you can get it back.
-- **No API quota, no OAuth app, no vendor.** ragdoll talks plain IMAP and SMTP to your own mail server. The password stays in the system keychain and is never printed.
+**Find**
+- Press ⌘K (Mac) or Ctrl+K (Windows) and type. Search looks at the subject, the people, the text and the names of attached files.
+- Narrow it down with `from:jane`, `is:unread`, `has:attachment` or `in:sent`.
+- Show only unread mail, starred mail, mail with attachments, or mail from one person.
 
-### Teach your agent in one paragraph
+**Write**
+- Fonts, sizes, bold, lists and links. Text pasted from Word or a web page keeps its look.
+- Your signature goes under every mail by itself.
+- A reply or a forward keeps the earlier mails and their pictures.
+- Undo send, and send later.
 
-Put this in your `CLAUDE.md`, `AGENTS.md` or system prompt:
+**Keep order**
+- All folders of your mailbox are in the sidebar. Make your own, and drag mail into them.
+- Star, archive, delete or move one mail or many at once. Right-click a mail for the same actions.
+- Mark a whole folder as read with one click.
+- A short note tells you when new mail comes in.
 
-```markdown
-Mail: use the `ragdoll` command (`ragdoll --help` lists everything; add --json).
-Find with `search` / `thread`, read with `read --new`, write with `draft --reply <id>`,
-then run `check <draft id> --reply` and fix every problem. Never run `send` until I
-have said yes to that draft.
-```
+**Make it yours**
+- Light or dark.
+- English, 简体中文, 繁體中文, 日本語, 한국어, Español, Français, Deutsch.
+- Bigger or smaller text.
+- A key for everything: **C** new mail, **R** reply, **E** archive. Press **?** to see them all.
 
 ## Screenshots
 
 <table>
-<tr><td><img src="docs/hero-light.png" alt="Reading a thread in light mode"></td><td><img src="docs/hero-dark.png" alt="The same thread in dark mode"></td></tr>
-<tr><td><img src="docs/compose-light.png" alt="Writing a mail with formatting"></td><td><img src="docs/compose-dark.png" alt="Writing a mail in dark mode"></td></tr>
+<tr>
+<td><img src="docs/hero-light.png" alt="Ragdoll Mail showing the inbox and an open conversation with attachments"></td>
+<td><img src="docs/search-light.png" alt="Searching the mailbox in Ragdoll Mail: results while you type"></td>
+</tr>
+<tr>
+<td><img src="docs/compose-light.png" alt="Writing a mail in Ragdoll Mail with fonts, lists and a signature"></td>
+<td><img src="docs/hero-dark.png" alt="Ragdoll Mail in dark mode"></td>
+</tr>
 </table>
 
 ## How it compares
 
-|  | **ragdoll** | Thunderbird | Superhuman | Spark | Shortwave | himalaya | NeoMutt / aerc |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Any IMAP mailbox | ✅ | ✅ | Gmail, Outlook | ✅ | Gmail only | ✅ | ✅ |
-| Desktop app | ✅ | ✅ | ✅ | ✅ | ✅ | — | terminal UI |
-| Command line an agent can drive (`--json`) | ✅ | — | — | — | — | ✅ | — |
-| Local full-text search (works when server search doesn't) | ✅ | ✅ | — | — | — | — | with notmuch |
-| Checks a draft before it is sent | ✅ | attachment reminder | — | — | — | — | — |
-| Mail stays on your computer, no vendor cloud | ✅ | ✅ | — | — | — | ✅ | ✅ |
-| Free and open source | ✅ MIT | ✅ | paid | free tier, closed | free tier, closed | ✅ | ✅ |
+|  | **Ragdoll Mail** | Apple Mail | Outlook (new) | Thunderbird | Foxmail | Spark |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Price | free | free | free with ads, or paid | free | free | free plan, paid plan |
+| Mac and Windows | both | Mac only | both | both | both | both |
+| Mail goes straight between you and your mail server | ✅ | ✅ | a copy is kept in Microsoft's cloud | ✅ | ✅ | goes through Spark's servers |
+| Open code that anyone can check | ✅ | no | no | ✅ | no | no |
+| Your own AI assistant can use the mailbox | ✅ | no | no | no | no | no |
+| Phone app | no | ✅ | ✅ | Android | no | ✅ |
+| Several mailboxes in one window | not yet | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-**In short:** Thunderbird is a great desktop client with no way for an agent in. himalaya is a great CLI with no app for you. Superhuman, Spark and Shortwave are polished, but they run through their own cloud and cost a subscription for the good parts. ragdoll is the one place where you and your agent work on the same mailbox, on your own machine.
+**Where Ragdoll Mail is strong:** search, privacy, the checks before a mail goes out, and Chinese mail. It is small and does one thing: mail.
 
-### For agents: ragdoll vs. the usual ways in
+**Where the others are better:** Ragdoll Mail has no phone app and no calendar, and it shows one mailbox at a time. If you need those, use one of the others, or use both: Ragdoll Mail does not change anything in your mailbox.
 
-|  | **ragdoll** | Gmail API / MCP connector | Your own IMAP script |
-|---|:---:|:---:|:---:|
-| Works with Exmail, QQ, 163, iCloud, Fastmail, any IMAP | ✅ | Gmail only | ✅ |
-| No API quota or OAuth app to register | ✅ | — | ✅ |
-| Fast local search in Chinese and English | ✅ | server search | write it yourself |
-| Replies keep signature, quote and inline images | ✅ | partly | write it yourself |
-| Pre-send check and double-send guard | ✅ | — | write it yourself |
-| A human app on the same mailbox | ✅ | Gmail web | — |
+<sub>Compared from each product's public pages, November 2026. Is something wrong or out of date? <a href="https://github.com/erict16/ragdoll-mail/issues">Tell us</a> and we will fix it.</sub>
 
-<sub>Compared from each product's public pages, November 2026. Something wrong or out of date? <a href="https://github.com/erict16/ragdoll-mail/issues">Open an issue</a> and we will fix it.</sub>
+## Questions and answers
 
-## What you get in the app
+**Is there a Mac or Windows app for Tencent Exmail (腾讯企业邮箱) with search that works?**
+Yes, this one. We tried it on a real Exmail mailbox with 6,442 mails. The mailbox's own search gave back 4,988 mails for every word we typed, even for a word we made up. Ragdoll Mail gave back only the mails with that word, in less than a tenth of a second.
 
-**Read**
-- Whole conversations on one page, newest mail on top. Long quoted history folds away.
-- Search everything with ⌘K / Ctrl+K: `from:jane`, `in:sent`, `is:unread`, `has:attachment`, or any words.
-- Star mail with **S** and find it again in **Starred**. Select many rows with ⌘/Ctrl or Shift and act on them at once.
-- Filter any list: unread, starred, with attachments, or one person.
-- Every folder of the mailbox is in the sidebar, your own folders and Junk too. Move mail with **V**, or drag it onto a folder.
-- Make a folder from the Move menu or the account menu; right-click one of your folders (or its **…**) to rename or delete it. Only an empty folder can be deleted, so no mail is lost that way.
-- New mail shows a short note with who wrote and the subject. When the window is in the background, the browser's own notification shows it (allow it once when asked), and a click on it opens the mail. On or off in Settings.
-- Text size from ⌘− to ⌘+, for the list and the reader together.
+**Is my mail safe?**
+Your mail is stored on your computer and on your own mail server, nowhere else. The app sends nothing to us. We have no server.
 
-**Write**
-- A real editor: font and size, bold, italic, underline, lists, quotes and links. Paste from Word or a web page and only the formatting that mail clients show is kept.
-- Your signature, made in Settings with the same editor, goes under every new mail, reply and forward.
-- A default font and size for every mail you write.
-- Reply, reply all and forward keep the quoted history and its inline images.
-- The same pre-send check as the command line: empty To or subject, a missing attachment the text talks about, placeholders such as `[Name]` or `TBD`, broken characters.
+**Where is my password kept?**
+In the password store of your system: Keychain on Mac, Credential Manager on Windows. It is never written into a file.
 
-**Send on your terms**
-- **Undo send:** the mail waits 5, 10, 20 or 30 seconds (your choice) before it leaves. Press Undo and it goes back to the editor.
-- **Send later:** this evening, tomorrow morning, Monday, or any date and time. Scheduled mail waits in **Scheduled**, where you can change it, send it now, or cancel it.
-- **Plain truth about recall:** once a mail has left your computer, no app can take it back from the other person's inbox. ragdoll gives you the undo window and scheduled send instead, so you can stop a mail before it goes.
+**Does it work with no internet?**
+Reading and searching mail you already have: yes. Sending and getting new mail need the internet.
 
-**Make it yours**
-- Light, dark, or follow the system. Native window on Mac and Windows.
-- English, 简体中文, 繁體中文, 日本語, 한국어, Español, Français, Deutsch.
-- Show times in any time zone.
-- Keyboard first: **J/K** move, **R** reply, **A** reply all, **F** forward, **E** archive, **V** move, **#** delete, **U** unread, **C** new mail. Press **?** to see them all.
-- Small windows get a slim icon sidebar; very small ones show the list and the mail one at a time.
+**Will it change my mailbox?**
+No. It shows the same folders and the same mail as your mailbox's website. What you do in the app (read, move, delete, send) also shows on your phone and on the website.
 
-**Private by design**
-- Mail is indexed on your computer. Nothing goes to any server except your own mail server.
-- The password is kept in the macOS Keychain or the Windows Credential Manager, never in a file.
-- The app only listens on 127.0.0.1, and every call needs a random token made at start.
+**Can I try it without my mailbox?**
+Yes. With the code on your computer, `python ragdoll.py app --demo` opens a made-up mailbox. Nothing is sent.
 
-**Made for mail in Chinese, too**
-- Text in GB2312, GBK, GB18030 and Big5 is read with the superset codecs, so names such as 陈喆 labelled GB2312 stay intact.
-- Raw 8-bit GBK headers and file names are repaired, and an unknown charset never stops a sync.
-- Presets for Tencent Exmail, QQ Mail and NetEase 163, next to Gmail, iCloud and Fastmail.
+**Is it really free?**
+Yes. It is open source under the MIT license.
 
-## Install
+## For AI assistants and the command line
 
-- **Download:** [Releases](https://github.com/erict16/ragdoll-mail/releases/latest): `ragdoll-mail-mac.dmg` (Apple silicon) or `ragdoll-mail-windows.zip`. The builds are not signed: on macOS right-click the app and choose **Open** the first time; on Windows choose **More info → Run anyway**. Windows needs the WebView2 runtime (built into Windows 11).
-- **From a clone:** `pip install pywebview`, then `ragdoll app`. Without pywebview it opens in the browser.
-- **Just looking?** `ragdoll app --demo` opens a made-up mailbox. No account, nothing is sent.
+Ragdoll Mail also comes as a command, `ragdoll`. An AI assistant such as Claude Code or Codex can use it to find mail and write drafts for you. It cannot send by itself: every mail waits in your Drafts folder until you say yes.
 
-## The command line
-
-`ragdoll` is the same mailbox from the terminal. One Python file, standard library only, Windows and macOS.
-
-### Setup
-
-1. Python 3.10+ (SQLite 3.34+ for the trigram index; the python.org builds have it).
-2. Copy `config.example.json` to `~/.config/ragdoll-mail/config.json` and fill it in. Dates use the computer's time zone; add `"utc_offset_hours": 8` (for example) to use a fixed one.
-3. Put the IMAP app password in the environment variable named by `password_env` (or sign in once in the desktop app, which saves it in the system keychain). Windows (stays set for new programs):
-   ```powershell
-   [Environment]::SetEnvironmentVariable('RAGDOLL_PASSWORD', '<password>', 'User')
-   ```
-   macOS: `export RAGDOLL_PASSWORD=...` in your shell profile. ragdoll never prints it.
-4. Make the `ragdoll` command. macOS / Linux (with `~/.local/bin` on your PATH):
-   ```sh
-   printf '#!/bin/sh\nexec python3 -I "%s/ragdoll.py" "$@"\n' "$PWD" > ~/.local/bin/ragdoll && chmod +x ~/.local/bin/ragdoll
-   ```
-   Windows: a `ragdoll.cmd` with `@python -I "%USERPROFILE%\Github\ragdoll-mail\ragdoll.py" %*` in a folder on your PATH. `python ragdoll.py ...` always works too.
-5. First index: `ragdoll sync --bodies` (headers first, then bodies on 4 connections). Later commands only fetch what is new.
-
-### Commands
-
-```
-ragdoll status
-ragdoll search PO-1234 报价 --since 2026-11-01 --att
-ragdoll search --from jane --unread            # filters alone, no word needed
-ragdoll list --starred --limit 50
-ragdoll thread inbox:9255
-ragdoll read inbox:9255 --new
-ragdoll attach inbox:9255 --out ./files
-ragdoll draft --reply inbox:9255 --all --cc a@b.com --body body.html --attach file.pdf
-ragdoll check drafts:12 --reply
-ragdoll send drafts:12 --yes
-ragdoll mark inbox:9255 inbox:9256 --read --star
-ragdoll archive inbox:9255
-ragdoll move inbox:9256 --to "Projects/Acme"
-ragdoll folders
+```console
+you    › Reply to Jane and attach the signed quote.
+agent  $ ragdoll search Jane quote --json
+agent  $ ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
+agent  › The draft is in your Drafts folder. Shall I send it?
 ```
 
-`ragdoll --help` lists every option. Ids are `<folder>:<uid>`. Add `--json` for machine output.
+Setup, every command, and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
 
-`search` and `list` take the same filters: `--from`, `--to`, `--since`, `--until`, `--folder`, `--unread`, `--starred`, `--att`. When `--limit` cuts the list, the last line says how many there are in all: `(showing the newest 20 of 137; --limit 137 shows all)`. Junk mail is left out unless you ask for `--folder junk`.
+## Help and feedback
 
-`mark` (`--read` / `--unread`, `--star` / `--unstar`), `archive` and `move` change the server and the index together. `move --to` takes a short name (`inbox`, `archive`, `junk`) or a folder name from `ragdoll folders`. Nothing is deleted; move the mail back to undo. The trash stays behind `ragdoll trash <ids> --yes`.
-
-<details>
-<summary><b>How drafts work, in detail</b></summary>
-
-`draft` writes only the new text you give it, then adds the signature file, a quote header and the original mail (with its inline images), and saves the result in the server's Drafts folder, so it shows up in the normal mail apps. To change a draft, build it again with `--replace drafts:<old>`.
-
-`check` fails on a missing signature or quote, a lost image, an empty To or subject, the sender as a recipient, a missing required Cc, garbled characters (�) in names, subject, text or file names, placeholders left in the text (`[Name]`, `XXX`, `TBD`, `待定`; `--blanks-ok` to allow), text that mentions an attachment when none is attached (`--attach-ok` to allow), and email tables that will render badly.
-
-`send` sends a draft over SMTP with the current date, makes sure one copy is in Sent (Exmail files its own and rewrites the Message-ID as `<XXXX+id>`), deletes the draft and marks the original answered. Every sent Message-ID goes to `sent.log` in the data dir; sending the same draft again is refused, and if tidying up fails after the mail went out, the output says so instead of inviting a second send. `--replace`, `send` and `delete-draft` only touch the Drafts folder.
-
-An attached mail (message/rfc822) is kept as one .eml attachment.
-
-</details>
-
-<details>
-<summary><b>Updates</b></summary>
-
-ragdoll updates itself the careful way (the model is S2Arm's updater):
-
-- **It looks, it does not touch.** At most every 6 hours a command starts a quiet background check (`git fetch` of `main`, never asks for a password, never slows the command). When a newer version is waiting, commands print one line on stderr: `ragdoll 0.4.1 is out (2 change(s); this is 0.4.0). Run: ragdoll update`. No network, no line. `status` shows `version` and `update_available`.
-- **It replaces only when asked:** `ragdoll update` (`--check` only says what is new). It refuses while another ragdoll command runs (a sync, a send), when the clone has changed files, is not on `main`, or has commits that are not on GitHub.
-- **It tests before it keeps.** After the fast-forward it runs `ragdoll.py --version` and the offline tests of the new version. If they fail, it puts the old version back by itself and says why.
-- **It says what changed** (the commit titles) and logs every step to `<data dir>/logs/update.log`.
-- **One step back:** `ragdoll update --rollback` returns to the version before the last update and stops offering the one you left.
-
-Off: `"update_check": false` in the config, or `RAGDOLL_NO_UPDATE_CHECK=1`. `RAGDOLL_UPDATE_REMOTE` points the check at another remote (for testing). Updating needs a git clone; a copied `ragdoll.py` only says so.
-
-</details>
-
-<details>
-<summary><b>Renamed from hmail</b></summary>
-
-Before 0.4.0 the program was `hmail` (`hmail.py`, `~/.config/hmail`, `~/.local/share/hmail`, `HMAIL_*` variables). The first run of 0.4.0 moves both folders to their new names and fixes the paths in the config; the `HMAIL_*` variables still work. `hmail.py` stays as a thin alias so older copies can update and `import hmail` keeps working. `update --rollback` will not go back past the rename.
-
-</details>
-
-## Tests
-
-```
-python -m unittest discover -s tests
-```
-
-The tests are offline; they build and check messages without a server.
+Found a problem, or does your mailbox not work? [Open an issue](https://github.com/erict16/ragdoll-mail/issues). Want to help with code or a translation? Read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

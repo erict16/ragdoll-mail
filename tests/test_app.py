@@ -1,5 +1,5 @@
 """Offline tests of the desktop app's local server, in demo mode (no account, no network)."""
-import http.client, json, os, shutil, sys, threading, time, unittest
+import contextlib, http.client, io, json, os, queue, shutil, sys, tempfile, threading, time, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll_app as A  # noqa: E402
@@ -355,6 +355,547 @@ class AppServer(unittest.TestCase):
         self.assertIs(self.api("prefs", {"notify": False})[1]["data"]["notify"], False)
         self.assertIs(self.api("prefs", {"notify": "yes"})[1]["data"]["notify"], False)
         self.assertIs(self.api("prefs", {"notify": True})[1]["data"]["notify"], True)
+
+def no_server():
+    raise OSError("the tests have no mail server")
+
+
+class FakeServer:
+    """Stands in for the IMAP connection: keeps what was asked; says NO to a STORE of a uid in `refuse`."""
+    def __init__(self, refuse=()):
+        self.calls, self.refuse = [], set(refuse)
+
+    def select(self, name, readonly=True):
+        self.calls.append(("select", name, readonly))
+        return "OK", [b"1"]
+
+    def response(self, code):
+        return code, [b"1"]
+
+    def uid(self, *args):
+        self.calls.append(("uid",) + args)
+        if args[0] == "STORE" and self.refuse & set(args[1].split(",")):
+            return "NO", [b"not allowed"]
+        return "OK", [b""]
+
+    def stores(self):
+        return [c[1:] for c in self.calls if c[:2] == ("uid", "STORE")]
+
+    def logout(self):
+        pass
+
+
+class FakeQueue:
+    """Keeps the marks for the server instead of sending them."""
+    unfinished_tasks = 0
+
+    def __init__(self):
+        self.jobs = []
+
+    def put(self, job):
+        self.jobs.append(job)
+
+
+class Busy:
+    """A background thread that looks alive, so no real one is started."""
+    @staticmethod
+    def is_alive():
+        return True
+
+
+class OwnBackend(unittest.TestCase):
+    """Each test gets a demo mailbox of its own. `online()` makes the backend act as with an account,
+    with a fake in place of the server."""
+    def setUp(self):
+        self.patch(A.R, "imap", no_server)      # whatever a test forgets to fake fails here, not on the network
+        cfg = A.R.CFG                           # demo mode swaps the config; the other tests need it back
+        self.b = A.Backend(demo=True)
+        self.b.MARK_PAUSE = 0
+        self.home = A.R.CFG.home
+        self.err = io.StringIO()
+        self.addCleanup(self.done, cfg)
+
+    def done(self, cfg):
+        self.b.close()
+        with self.b.dblock:
+            self.b.c.close()
+        shutil.rmtree(self.home, ignore_errors=True)
+        A.R.CFG = cfg
+
+    def patch(self, obj, name, value):
+        old = getattr(obj, name)
+        setattr(obj, name, value)
+        self.addCleanup(setattr, obj, name, old)
+
+    def online(self, server=None, fail=()):
+        """fail: for each connection use in turn, the error it raises (None = it works)."""
+        b, fail = self.b, list(fail)
+        b.demo = False
+        self.server = server or FakeServer()
+        self.uses = []
+
+        def imap(fn):
+            self.uses.append(1)
+            e = fail.pop(0) if fail else None
+            if e is not None:
+                b.m = None
+                raise e
+            b.m = self.server
+            return fn(self.server)
+        b.imap = imap
+
+    def hold_queue(self):
+        self.b.flag_q, self.b.flag_thread = FakeQueue(), Busy
+        return self.b.flag_q.jobs
+
+    def run_queue(self):
+        b = self.b
+        b.flag_thread = threading.Thread(target=b.flag_loop, daemon=True)
+        b.flag_thread.start()
+        end = time.time() + 5
+        while b.flag_q.unfinished_tasks and time.time() < end:
+            time.sleep(0.01)
+        self.assertEqual(b.flag_q.unfinished_tasks, 0)
+
+    def unread(self, folder="INBOX"):
+        return [r["uid"] for r in self.b.q("select uid from msgs where folder=? and seen=0 order by uid", (folder,))]
+
+    def ids(self, folder="INBOX", seen=0):
+        return [A.R.make_id(folder, r["uid"]) for r in
+                self.b.q("select uid from msgs where folder=? and seen=? order by uid", (folder, seen))]
+
+    def by_subject(self, subject, folder="INBOX"):
+        r = self.b.q("select uid from msgs where folder=? and subject=?", (folder, subject))[0]
+        return A.R.make_id(folder, r["uid"])
+
+
+class MarkAllRead(OwnBackend):
+    def test_folder_becomes_read(self):
+        n, junk = len(self.unread()), self.unread("Junk")
+        self.assertGreater(n, 1)
+        self.assertTrue(junk)
+        rev = self.b.rev
+        self.assertEqual(self.b.api_mark_all_read({"folder": "inbox"}), {"count": n})
+        self.assertEqual(self.unread(), [])
+        self.assertEqual(self.unread("Junk"), junk)                 # the other folders are not touched
+        self.assertGreater(self.b.rev, rev)                         # the page hears about it
+        self.assertEqual(self.b.api_mark_all_read({"folder": "inbox"}), {"count": 0})
+        self.assertEqual(self.b.api_mark_all_read({}), {"count": 0})
+        self.assertEqual(self.b.api_mark_all_read({"folder": "scheduled"}), {"count": 0})
+        self.assertEqual(self.b.api_mark_all_read({"folder": "No such folder"}), {"count": 0})
+
+    def test_own_folder_and_flagged_list(self):
+        self.assertEqual(self.b.api_mark_all_read({"folder": "Projects/Acme"}), {"count": 1})
+        self.assertEqual(self.unread("Projects/Acme"), [])
+        n = len(self.unread())
+        self.assertEqual(self.b.api_mark_all_read({"folder": "flagged"}), {"count": 1})    # the unread flagged one
+        self.assertEqual(len(self.unread()), n - 1)
+
+    def test_it_is_one_of_the_calls_the_page_can_make(self):
+        n = len(self.unread())
+        self.assertEqual(self.b.call("mark_all_read", {"folder": "inbox"}), (200, {"ok": True, "data": {"count": n}}))
+
+    def test_server_hears_it_in_the_background(self):
+        self.online()
+        jobs = self.hold_queue()
+        uids = self.unread()
+        self.assertEqual(self.b.api_mark_all_read({"folder": "inbox"}), {"count": len(uids)})
+        self.assertEqual(self.unread(), [])                         # read at once, before the server knows
+        self.assertEqual((len(jobs), self.uses), (1, []))
+        go, done, end = jobs[0]
+        self.assertIsNone(done)                                     # nobody waits for it
+        go(self.server)
+        self.assertEqual(self.server.calls[0], ("select", '"INBOX"', False))
+        (cmd, sent, how, flag), = self.server.stores()
+        self.assertEqual((cmd, sorted(map(int, sent.split(","))), how, flag), ("STORE", uids, "+FLAGS.SILENT", "(\\Seen)"))
+        # a sync that asks the server before it has them must not show them unread again
+        self.assertEqual(self.b.held("INBOX", time.time()), {u: {"seen": 1} for u in uids})
+        end(None)
+        self.assertEqual(self.unread(), [])
+
+    def test_mails_are_unread_again_when_the_server_cannot_be_told(self):
+        self.online()
+        jobs = self.hold_queue()
+        uids = self.unread()
+        self.b.api_mark_all_read({"folder": "inbox"})
+        with contextlib.redirect_stderr(self.err):
+            jobs[0][2](OSError("network is down"))
+        self.assertEqual(self.unread(), uids)
+        self.assertIn("did not reach the server", self.err.getvalue())
+        self.assertEqual(self.b.held("INBOX", 0), {})
+
+    def test_many_mails_go_in_pieces(self):
+        with self.b.dblock:
+            for uid in range(1000, 1650):
+                self.b.c.execute("insert into msgs(folder,uidv,uid,msgid,ts,seen) values('INBOX',1,?,?,1700000000,0)",
+                                 (uid, "<m%d@x>" % uid))
+            self.b.c.commit()
+        self.online()
+        jobs = self.hold_queue()
+        n = len(self.unread())
+        self.assertEqual(self.b.api_mark_all_read({"folder": "inbox"}), {"count": n})
+        self.assertEqual(self.unread(), [])
+        jobs[0][0](self.server)
+        sent = [len(c[1].split(",")) for c in self.server.stores()]
+        self.assertEqual((sum(sent), max(sent)), (n, 200))
+
+
+class MarksOnTheirWay(OwnBackend):
+    """Read and flag marks: the index first, the server in the background, and what happens when it fails."""
+
+    def test_mail_that_does_not_open_stays_unread(self):
+        i = self.ids()[0]
+        self.b.demo_raw.pop(A.R.parse_id(i))
+        n = len(self.unread())
+        with self.assertRaises(A.ApiError):
+            self.b.api_message({"id": i})
+        self.assertEqual(len(self.unread()), n)
+        self.assertTrue(self.b.api_message({"id": self.ids()[1]})["subject"])     # one that opens is read
+        self.assertEqual(len(self.unread()), n - 1)
+        self.b.api_message({"id": self.ids()[1], "mark": False})    # a look that is not a read
+        self.assertEqual(len(self.unread()), n - 1)
+
+    def test_server_is_told_only_after_the_mail_opened(self):
+        self.online()
+        jobs = self.hold_queue()
+        i, n = self.ids()[0], len(self.unread())
+        f, uid = A.R.parse_id(i)
+
+        def broken(i):
+            self.assertEqual(len(self.unread()), n - 1)            # shown read while it loads
+            raise OSError("connection lost")
+        self.b.build_message = broken
+        with self.assertRaises(OSError):
+            self.b.api_message({"id": i})
+        self.assertEqual((jobs, len(self.unread())), ([], n))
+        self.assertEqual(self.b.held(f, 0), {})
+        self.b.build_message = lambda i: {"id": i, "html": ""}
+        self.b.api_message({"id": i})
+        self.assertEqual((len(jobs), len(self.unread())), (1, n - 1))
+        self.assertEqual(self.b.held(f, time.time()), {uid: {"seen": 1}})
+        self.b.api_message({"id": i})                               # read already: nothing more to tell
+        self.assertEqual(len(jobs), 1)
+
+    def test_failed_mark_is_tried_once_more(self):
+        self.online(fail=[ConnectionResetError("dropped")])
+        i = self.ids()[0]
+        f, uid = A.R.parse_id(i)
+        self.b.set_flag([i], "seen", True)                          # waits for the server; no error comes back
+        self.assertEqual(len(self.uses), 2)
+        self.assertEqual(self.server.stores(), [("STORE", str(uid), "+FLAGS.SILENT", "(\\Seen)")])
+        self.assertNotIn(uid, self.unread())
+
+    def test_mark_that_fails_twice_is_undone(self):
+        self.online(fail=[ConnectionResetError("dropped"), OSError("still down")])
+        i = self.ids()[0]
+        uid = A.R.parse_id(i)[1]
+        with self.assertRaises(OSError):
+            self.b.set_flag([i], "seen", True)
+        self.assertIn(uid, self.unread())
+        self.online(fail=[OSError("down"), OSError("down")])
+        with contextlib.redirect_stderr(self.err):
+            self.b.set_flag([i], "flagged", True, wait=False)       # shown at once ...
+            self.run_queue()
+        self.assertEqual(self.b.row(i)["flagged"], 0)               # ... and taken back
+        self.assertEqual(len(self.uses), 2)
+        self.assertEqual(self.b.held("INBOX", 0), {})
+
+    def test_server_down_fails_the_waiting_marks_at_once(self):
+        self.online(fail=[OSError("down")] * 9)
+        self.hold_queue()
+        self.b.flag_q = queue.Queue()
+        ids = self.ids()[:3]
+        for i in ids:
+            self.b.set_flag([i], "flagged", True, wait=False)
+        self.assertEqual([self.b.row(i)["flagged"] for i in ids], [1, 1, 1])
+        with contextlib.redirect_stderr(self.err):
+            self.run_queue()
+        self.assertEqual(len(self.uses), 2)                         # the first mark twice; the others not at all
+        self.assertEqual([self.b.row(i)["flagged"] for i in ids], [0, 0, 0])
+
+    def test_one_refused_mark_does_not_fail_the_others(self):
+        ids = self.ids()[:3]
+        self.online(FakeServer(refuse=[str(A.R.parse_id(ids[0])[1])]))
+        self.hold_queue()
+        self.b.flag_q = queue.Queue()
+        for i in ids:
+            self.b.set_flag([i], "flagged", True, wait=False)
+        with contextlib.redirect_stderr(self.err):
+            self.run_queue()
+        self.assertEqual([self.b.row(i)["flagged"] for i in ids], [0, 1, 1])
+        self.assertIn("refused", self.err.getvalue())
+
+    def test_folder_that_is_gone_is_not_asked_twice(self):
+        class Gone(FakeServer):
+            def select(self, name, readonly=True):
+                return "NO", [b"no such folder"]
+        self.online(Gone())
+        i = self.ids()[0]
+        with self.assertRaises(LookupError):
+            self.b.set_flag([i], "seen", True)
+        self.assertEqual(len(self.uses), 1)
+        self.assertIn(A.R.parse_id(i)[1], self.unread())
+
+    def test_waiting_for_a_mark_ends(self):
+        self.online()
+        self.hold_queue()
+        self.b.flag_q = queue.Queue()                               # nothing takes the mark from the queue
+        self.b.MARK_WAIT = 0.05
+        i = self.ids()[0]
+        with self.assertRaises(TimeoutError) as cm:
+            self.b.set_flag([i], "seen", True)
+        self.assertIn("did not answer in time", A.friendly(cm.exception))
+        self.run_queue()                                            # nobody waits for it: it is not sent
+        self.assertEqual((self.uses, self.server.stores()), ([], []))
+        self.assertIn(A.R.parse_id(i)[1], self.unread())
+        self.assertEqual(self.b.held("INBOX", 0), {})
+
+    def test_quit_waits_for_marks_on_their_way(self):
+        self.online()
+        real = self.b.imap
+
+        def slow(fn):
+            time.sleep(0.3)
+            return real(fn)
+        self.b.imap = slow
+        i = self.ids()[0]
+        self.b.set_flag([i], "seen", True, wait=False)
+        t = time.time()
+        self.b.close()
+        self.assertEqual(len(self.server.stores()), 1)
+        self.assertLess(time.time() - t, 3)
+
+    def test_quit_does_not_wait_for_ever(self):
+        self.assertLessEqual(self.b.QUIT_WAIT, 5)
+        self.online()
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        self.b.imap = lambda fn: stuck.wait(30)
+        self.b.QUIT_WAIT = 0.3
+        self.b.set_flag([self.ids()[0]], "seen", True, wait=False)
+        t = time.time()
+        self.b.close()
+        self.assertTrue(0.25 < time.time() - t < 2, time.time() - t)
+
+    def test_sync_keeps_a_mark_the_server_does_not_have_yet(self):
+        b, by = self.b, {"INBOX": [5, 6]}
+        now = time.time()
+        b.hold(by, "seen", True)
+        self.assertEqual(b.held("INBOX", now), {5: {"seen": 1}, 6: {"seen": 1}})
+        self.assertEqual(b.held("Sent Messages", now), {})
+        b.hold({"INBOX": [5]}, "seen", False)                       # marked again before the first arrived
+        b.settle(by, "seen", True)
+        self.assertEqual(b.held("INBOX", time.time() + 60), {5: {"seen": 0}})     # 6 is with the server
+        self.assertEqual(b.held("INBOX", now), {5: {"seen": 0}, 6: {"seen": 1}})  # this sync asked before that
+        b.settle({"INBOX": [5]}, "seen", False)                     # given up: the server's flag counts again
+        self.assertEqual(b.held("INBOX", now), {6: {"seen": 1}})
+        b.marks[("INBOX", 6, "seen")][2] = now - 1000
+        self.assertEqual((b.held("INBOX", 0), b.marks), ({}, {}))  # long done: forgotten
+
+    def test_sync_is_given_the_marks(self):
+        got = []
+
+        def sync_headers(m, c, folder, **kw):
+            got.append((folder, kw["held"](folder, time.time())))
+            self.b.stopping.set()               # one pass is enough
+            return []
+        self.patch(A.R, "imap", FakeServer)
+        self.patch(A.R, "sync_headers", sync_headers)
+        self.patch(A.R, "sync_bodies", lambda *a, **kw: None)
+        self.b.note_folders = self.b.note_new = lambda *a: None
+        self.b.hold({"INBOX": [5]}, "seen", True)
+        self.b.wake.set()
+        self.b.sync_loop()
+        self.assertEqual(got[0], ("INBOX", {5: {"seen": 1}}))
+
+
+LIGHT = (b"From: Linh <linh@cust.vn>\r\nTo: you@example.com\r\nSubject: Drawing\r\nMIME-Version: 1.0\r\n"
+         b"Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n"
+         b"--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nSee the drawing.\r\n"
+         b"--B\r\nContent-Type: application/pdf; name=\"big.pdf\"\r\n"
+         b"Content-Disposition: attachment; filename=\"big.pdf\"\r\nContent-Transfer-Encoding: base64\r\n"
+         b"X-Ragdoll-Part: 2\r\nX-Ragdoll-Size: 292307\r\n\r\n\r\n--B--\r\n")
+PART = (b"Content-Type: application/pdf; name=\"big.pdf\"\r\nContent-Disposition: attachment; filename=\"big.pdf\"\r\n"
+        b"Content-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQ=")
+
+
+class Files(OwnBackend):
+    """Files of a mail: saved one by one or all, and the big ones a light mail left on the server."""
+
+    def setUp(self):
+        super().setUp()
+        self.down = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.down, True)
+        self.patch(A, "downloads_dir", lambda: self.down)
+        self.opened = []
+        self.patch(A, "open_path", lambda path, reveal=False: self.opened.append((path, reveal)))
+
+    def light(self):
+        """The backend with an account, and a mail that opens light: its PDF is still on the server."""
+        self.online()
+        self.asked = []
+
+        def fetch_part_raw(m, folder, uid, sec):
+            self.asked.append((folder, uid, sec))
+            return PART
+        self.patch(A.R, "fetch_part_raw", fetch_part_raw)
+        self.b.view = lambda i: (LIGHT, True)
+        i = self.ids(seen=1)[0]
+        r = self.b.row(i)
+        return i, (r["folder"], r["uidv"], r["uid"])
+
+    def test_only_our_own_light_mail_names_a_part(self):
+        part = lambda headers, body=b"": A.R.to_msg(b"Content-Type: application/pdf\r\n" + headers + b"\r\n" + body)
+        ours = part(b"X-Ragdoll-Part: 2.1\r\n")
+        self.assertEqual(A.left_out(ours, True), "2.1")
+        self.assertIsNone(A.left_out(ours, False))                  # a mail somebody sent can carry the header too
+        self.assertIsNone(A.left_out(part(b""), True))
+        self.assertIsNone(A.left_out(part(b"X-Ragdoll-Part: 2\r\n", b"JVBERi0xLjQ="), True))    # the file is here
+        for bad in (b"1] BODY[", b"HEADER", b"1.", b"2 3", b"-1", b"1.a"):
+            self.assertIsNone(A.left_out(part(b"X-Ragdoll-Part: " + bad + b"\r\n"), True), bad)
+
+    def test_header_in_a_mail_somebody_sent_is_not_followed(self):
+        i, _ = self.light()
+        self.b.view = lambda i: (LIGHT, False)                      # the same bytes, but as they came in
+        self.assertEqual(self.b.build_message(i)["atts"][0]["size"], 0)
+        out = self.b.api_attachment({"id": i, "i": 0, "action": "save"})
+        self.assertEqual((self.asked, self.uses), ([], []))         # the server was not asked for "part 2"
+        self.assertEqual(os.path.getsize(out["path"]), 0)
+
+    def test_big_file_is_fetched_once_and_kept(self):
+        i, key = self.light()
+        self.assertEqual(self.b.build_message(i)["atts"],
+                         [{"i": 0, "name": "big.pdf", "size": 292307, "type": "application/pdf"}])
+        self.assertEqual(self.asked, [])                            # showing the mail does not fetch the file
+        out = self.b.api_attachment({"id": i, "i": 0, "action": "save"})
+        self.assertEqual(out, {"path": os.path.join(self.down, "big.pdf"), "name": "big.pdf"})
+        with open(out["path"], "rb") as f:
+            self.assertEqual(f.read(), b"%PDF-1.4")
+        self.assertEqual(self.asked, [(key[0], key[2], "2")])
+        kept = A.R.part_path(*key, "2")
+        with open(kept, "rb") as f:
+            self.assertEqual(f.read(), PART)
+        again = self.b.api_attachment({"id": i, "i": 0, "action": "save"})
+        self.assertEqual(again["name"], "big (2).pdf")              # the first one is not written over
+        opened = self.b.api_attachment({"id": i, "i": 0, "action": "open"})
+        self.assertEqual(self.opened, [(opened["path"], False)])
+        self.assertEqual(self.b.api_save_all({"id": i})["count"], 1)
+        self.assertEqual(len(self.asked), 1)                        # all from the kept file
+        self.assertFalse(self.b.call("attachment", {"id": i, "i": 5, "action": "save"})[1]["ok"])
+
+    def test_kept_file_goes_when_its_light_mail_goes(self):
+        i, key = self.light()
+        light, kept = A.R.light_path(*key), A.R.part_path(*key, "2")
+        A.R.cache_put(light, LIGHT)
+        self.b.api_attachment({"id": i, "i": 0, "action": "save"})
+        self.b.prune_cache()
+        self.assertTrue(os.path.exists(light) and os.path.exists(kept))
+        old = time.time() - 100 * 86400
+        os.utime(light, (old, old))                                 # not opened for a long time
+        self.b.prune_cache()
+        self.assertFalse(os.path.exists(light) or os.path.exists(kept))
+        whole = A.R.cache_path(*key)                                # a whole mail has no such files to lose
+        A.R.cache_put(whole, b"x")
+        self.b.prune_cache()
+        self.assertTrue(os.path.exists(whole))
+
+    def test_all_files_are_saved_to_downloads(self):
+        i = self.by_subject("Quote for PO-1234")
+        names = ["Quote_PO-1234_signed.pdf", "Delivery_schedule.xlsx"]
+        out = self.b.call("save_all", {"id": i})[1]
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["data"], {"count": 2, "path": os.path.join(self.down, names[1]), "folder": self.down})
+        self.assertEqual(sorted(os.listdir(self.down)), sorted(names))
+        one = self.b.api_attachment({"id": i, "i": 0, "action": "save"})     # the same file as "save" gives
+        with open(one["path"], "rb") as a, open(os.path.join(self.down, names[0]), "rb") as b:
+            self.assertEqual(a.read(), b.read())
+        out = self.b.api_save_all({"id": i})
+        self.assertEqual(out["path"], os.path.join(self.down, "Delivery_schedule (2).xlsx"))
+        self.assertEqual(sorted(os.listdir(self.down)), sorted(
+            names + ["Quote_PO-1234_signed (2).pdf", "Quote_PO-1234_signed (3).pdf", "Delivery_schedule (2).xlsx"]))
+        self.b.api_reveal({"path": out["path"]})                    # the page may show what was saved
+        self.assertEqual(self.opened, [(out["path"], True)])
+        self.assertEqual(self.unread().count(A.R.parse_id(i)[1]), 1)    # saving is not reading
+
+    def test_mail_without_files(self):
+        out = self.b.api_save_all({"id": self.by_subject("Lunch on Thursday?")})
+        self.assertEqual(out, {"count": 0, "path": self.down, "folder": self.down})
+        self.assertEqual(os.listdir(self.down), [])
+        self.b.api_reveal({"path": out["path"]})
+        self.assertFalse(self.b.call("save_all", {"id": "inbox:99999"})[1]["ok"])
+
+
+class NoCcRule(OwnBackend):
+    """The "always Cc" rule belongs to the command line: the app neither shows, applies nor changes it."""
+    BOSS = "boss@example.com"
+
+    def setUp(self):
+        super().setUp()
+        A.R.CFG.d["require_cc"] = [self.BOSS]
+
+    def test_settings_do_not_show_it(self):
+        self.assertEqual(A.R.CFG.require_cc, [self.BOSS])
+        self.assertNotIn("require_cc", self.b.api_settings({}))
+        self.assertNotIn(self.BOSS, json.dumps(self.b.api_boot({})))
+
+    def test_new_mail_and_reply_are_not_filled_with_it(self):
+        self.assertEqual(self.b.api_compose({"mode": "new"})["cc"], [])
+        for mode in ("reply", "replyall", "forward"):
+            out = self.b.api_compose({"mode": mode, "id": self.by_subject("Lunch on Thursday?")})
+            self.assertNotIn(self.BOSS, json.dumps(out["to"] + out["cc"] + out["bcc"]), mode)
+
+    def test_send_check_does_not_ask_for_it(self):
+        msg = A.R.to_msg(b"From: you@example.com\r\nTo: a@example.org\r\nSubject: Hi\r\n"
+                         b"Content-Type: text/html; charset=utf-8\r\n\r\n<p>Hello</p>")
+        self.assertTrue(any(self.BOSS in p for p in A.R.check_message(msg, False)))     # the command line still does
+        self.assertFalse(any(self.BOSS in p for p in A.app_problems(msg, False)))
+
+    def test_saving_settings_leaves_it_in_the_file(self):
+        path = os.path.join(self.home, "config.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"user": "you@example.com", "data_dir": self.home, "require_cc": [self.BOSS],
+                       "imap": {"host": "demo", "port": 993}, "smtp": {"host": "demo", "port": 465}}, f)
+        self.patch(A, "config_path", lambda: path)
+        self.online()
+        self.b.start_sync = lambda: None
+
+        def saved():
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        self.b.api_save_settings({"account": False, "signature": "<p>Alex</p>"})
+        self.assertEqual(saved()["require_cc"], [self.BOSS])
+        # a page that still sends the field changes nothing either
+        self.b.api_save_settings({"user": "you@example.com", "name": "Alex", "imap_host": "demo", "imap_port": 993,
+                                  "smtp_host": "demo", "smtp_port": 465, "require_cc": []})
+        self.assertEqual((saved()["require_cc"], saved()["name"]), ([self.BOSS], "Alex"))
+        self.b.api_save_settings({"account": False, "require_cc": ["other@example.com"]})
+        self.assertEqual(saved()["require_cc"], [self.BOSS])
+        self.assertEqual(A.R.CFG.require_cc, [self.BOSS])           # and the command line goes on using it
+
+
+class DockBadge(OwnBackend):
+    def test_unread_count_goes_to_the_dock(self):
+        shown = []
+        self.patch(A, "dock_badge", lambda n: shown.append(n) or True)
+        n = len(self.unread())
+        self.b.folder_counts()
+        self.b.folder_counts()
+        self.assertEqual(shown, [n])                                # asked once, not on every look
+        self.b.set_flag([self.ids()[0]], "seen", True)
+        self.b.folder_counts()
+        self.assertEqual(shown, [n, n - 1])
+        self.b.api_mark_all_read({"folder": "inbox"})
+        self.b.folder_counts()
+        self.assertEqual(shown[-1], 0)
+        self.b.api_mark_all_read({"folder": "junk"})                # another folder's count is not the badge
+        self.b.folder_counts()
+        self.assertEqual(shown, [n, n - 1, 0])
+
+    def test_nothing_is_shown_without_a_window_of_ours(self):
+        self.assertIsNone(A.WINDOW.w)                               # as in the browser
+        self.assertIs(A.dock_badge(3), False)
+        self.b.folder_counts()
+        self.assertIsNone(self.b.badge_n)                           # so it is shown once there is one
 
 
 if __name__ == "__main__":
