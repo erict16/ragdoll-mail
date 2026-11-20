@@ -343,6 +343,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .form .msg-err { color: var(--danger); font-size: 12.5px; user-select: text; display: flex; gap: 6px; align-items: flex-start; }
 .form .msg-err .i { margin-top: 1px; }
 .form .msg-warn { color: var(--warn-text); background: var(--warn-bg); padding: 8px 10px; border-radius: 8px; font-size: 12.5px; }
+.form .notice-off { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; }
+.form .notice-off .btn { background: var(--bg); color: var(--text); }
 .disclose { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-weight: 500; width: fit-content; }
 .disclose .i { transition: transform .2s var(--ease); }
 .disclose.open .i { transform: rotate(90deg); }

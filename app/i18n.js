@@ -575,3 +575,16 @@ const MORE3 = {
   "de": { open_link: "Link öffnen", copy_link: "Linkadresse kopieren", copy_addr: "Adresse kopieren", open_picture: "Bild öffnen", copied: "Kopiert", read_all: "Alle als gelesen markieren", save_all: "Alle in Downloads sichern", saved_n: "%s Dateien in Downloads gesichert" },
 };
 for (const [k, v] of Object.entries(MORE3)) Object.assign(LANGS[k], v);
+
+// macOS has this app's notifications switched off: say so in Settings, with the way to the switch
+const MORE4 = {
+  "en": { notice_off: "macOS has notifications turned off for Ragdoll Mail. Turn on “Allow notifications” in System Settings.", notice_open: "Open System Settings" },
+  "zh-Hans": { notice_off: "macOS 里 Ragdoll Mail 的通知是关着的。请在“系统设置”里打开“允许通知”。", notice_open: "打开系统设置" },
+  "zh-Hant": { notice_off: "macOS 裡 Ragdoll Mail 的通知是關閉的。請在「系統設定」裡打開「允許通知」。", notice_open: "打開系統設定" },
+  "ja": { notice_off: "macOS で Ragdoll Mail の通知がオフになっています。「システム設定」で「通知を許可」をオンにしてください。", notice_open: "システム設定を開く" },
+  "ko": { notice_off: "macOS에서 Ragdoll Mail의 알림이 꺼져 있습니다. ‘시스템 설정’에서 ‘알림 허용’을 켜세요.", notice_open: "시스템 설정 열기" },
+  "es": { notice_off: "macOS tiene desactivadas las notificaciones de Ragdoll Mail. Activa «Permitir notificaciones» en Ajustes del Sistema.", notice_open: "Abrir Ajustes del Sistema" },
+  "fr": { notice_off: "macOS a désactivé les notifications de Ragdoll Mail. Activez « Autoriser les notifications » dans Réglages Système.", notice_open: "Ouvrir Réglages Système" },
+  "de": { notice_off: "macOS hat die Mitteilungen für Ragdoll Mail ausgeschaltet. Schalte „Mitteilungen erlauben“ in den Systemeinstellungen ein.", notice_open: "Systemeinstellungen öffnen" },
+};
+for (const [k, v] of Object.entries(MORE4)) Object.assign(LANGS[k], v);
