@@ -277,6 +277,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .msg-to.open { white-space: normal; user-select: text; }
 .msg-snip { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .msg-date { flex: none; color: var(--text-3); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.msg-acts { flex: none; display: flex; gap: 2px; margin: -6px -6px -6px 2px; }
 /* the text starts on the avatar's line: no empty strip beside it */
 .msg-body { padding: 4px 0 20px; }
 .frame { width: 100%; border: 0; display: block; min-height: 40px; background: transparent; color-scheme: light; }
