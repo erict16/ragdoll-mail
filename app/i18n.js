@@ -652,3 +652,30 @@ const MORE8 = {
   "de": { b_pw_title: "Kein Passwort gespeichert", b_pw_btn: "Passwort hinzufügen", b_signin_title: "Anmeldung fehlgeschlagen", b_fix: "Einstellungen" },
 };
 for (const [k, v] of Object.entries(MORE8)) Object.assign(LANGS[k], v);
+const MORE9 = {
+  "en": { unsub: "Unsubscribe", unsub_title: "Unsubscribe from %s?", unsub_one: "You'll stop getting these mails. The app tells the sender for you.",
+    unsub_web: "The sender's unsubscribe page opens in your browser.", unsub_mail: "A mail asking to unsubscribe opens. Send it to finish.",
+    unsub_done: "Unsubscribed from %s", all_day: "All day", invite: "Invitation", inv_cancelled: "Cancelled", inv_from: "From %s", add_cal: "Add to Calendar" },
+  "zh-Hans": { unsub: "退订", unsub_title: "退订 %s？", unsub_one: "以后不会再收到这类邮件。应用会替你通知发件方。",
+    unsub_web: "发件方的退订页面会在浏览器里打开。", unsub_mail: "会打开一封退订邮件，发出后即完成。",
+    unsub_done: "已退订 %s", all_day: "全天", invite: "会议邀请", inv_cancelled: "已取消", inv_from: "发起人：%s", add_cal: "添加到日历" },
+  "zh-Hant": { unsub: "取消訂閱", unsub_title: "取消訂閱 %s？", unsub_one: "以後不會再收到這類郵件。應用程式會替你通知寄件方。",
+    unsub_web: "寄件方的取消訂閱頁面會在瀏覽器中開啟。", unsub_mail: "會開啟一封取消訂閱郵件，寄出後即完成。",
+    unsub_done: "已取消訂閱 %s", all_day: "全天", invite: "會議邀請", inv_cancelled: "已取消", inv_from: "發起人：%s", add_cal: "加入行事曆" },
+  "ja": { unsub: "配信停止", unsub_title: "%s の配信を停止しますか？", unsub_one: "今後このメールは届きません。送信元にはアプリが知らせます。",
+    unsub_web: "送信元の配信停止ページがブラウザで開きます。", unsub_mail: "配信停止のメールが開きます。送信すると完了します。",
+    unsub_done: "%s の配信を停止しました", all_day: "終日", invite: "招待", inv_cancelled: "キャンセル", inv_from: "主催：%s", add_cal: "カレンダーに追加" },
+  "ko": { unsub: "구독 취소", unsub_title: "%s 구독을 취소할까요?", unsub_one: "이런 메일을 더 받지 않습니다. 앱이 보낸 쪽에 알려 줍니다.",
+    unsub_web: "보낸 쪽의 구독 취소 페이지가 브라우저에서 열립니다.", unsub_mail: "구독 취소 메일이 열립니다. 보내면 끝납니다.",
+    unsub_done: "%s 구독을 취소했습니다", all_day: "종일", invite: "초대", inv_cancelled: "취소됨", inv_from: "주최: %s", add_cal: "캘린더에 추가" },
+  "es": { unsub: "Cancelar suscripción", unsub_title: "¿Cancelar la suscripción a %s?", unsub_one: "Dejarás de recibir estos correos. La app avisa al remitente.",
+    unsub_web: "La página para darte de baja se abre en el navegador.", unsub_mail: "Se abre un correo para darte de baja. Envíalo para terminar.",
+    unsub_done: "Suscripción a %s cancelada", all_day: "Todo el día", invite: "Invitación", inv_cancelled: "Cancelada", inv_from: "De %s", add_cal: "Añadir al calendario" },
+  "fr": { unsub: "Se désabonner", unsub_title: "Se désabonner de %s ?", unsub_one: "Vous ne recevrez plus ces e-mails. L'app prévient l'expéditeur.",
+    unsub_web: "La page de désabonnement s'ouvre dans le navigateur.", unsub_mail: "Un e-mail de désabonnement s'ouvre. Envoyez-le pour terminer.",
+    unsub_done: "Désabonné de %s", all_day: "Toute la journée", invite: "Invitation", inv_cancelled: "Annulée", inv_from: "De %s", add_cal: "Ajouter au calendrier" },
+  "de": { unsub: "Abbestellen", unsub_title: "%s abbestellen?", unsub_one: "Diese Mails kommen nicht mehr. Die App sagt es dem Absender.",
+    unsub_web: "Die Abmeldeseite des Absenders öffnet sich im Browser.", unsub_mail: "Eine Abmelde-Mail öffnet sich. Senden Sie sie, um fertig zu werden.",
+    unsub_done: "%s abbestellt", all_day: "Ganztägig", invite: "Einladung", inv_cancelled: "Abgesagt", inv_from: "Von %s", add_cal: "Zum Kalender hinzufügen" },
+};
+for (const [k, v] of Object.entries(MORE9)) Object.assign(LANGS[k], v);

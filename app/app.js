@@ -1306,12 +1306,15 @@ async function loadBody(node, r) {
 
 function renderBody(body, m) {
   body.replaceChildren();
-  // attachments sit right under the mail's header, above the text
-  if (m.atts.length) {
+  if (m.unsub) unsubLink(body.closest(".msg"), m);
+  if (m.invite) body.append(inviteCard(m));
+  // attachments sit right under the mail's header, above the text; an invitation's .ics is the card above
+  const files = m.invite ? m.atts.filter((a) => !/\.ics$/i.test(a.name)) : m.atts;
+  if (files.length) {
     const atts = el("div", { class: "atts" });
-    for (const a of m.atts) atts.append(attNode(a, m.id));
+    for (const a of files) atts.append(attNode(a, m.id));
     body.append(atts);
-    if (m.atts.length > 1) {
+    if (files.length > 1) {
       const all = el("button", { class: "link-btn atts-all", html: icon("download", "small") + `<span>${esc(t("save_all"))}</span>`, onclick: async () => {
         all.disabled = true;
         try {
@@ -1329,6 +1332,53 @@ function renderBody(body, m) {
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
+}
+
+// a mailing list's way out, beside the sender's address, as in Gmail and Apple Mail
+function unsubLink(node, m) {
+  const from = node?.querySelector(".msg-from");
+  if (!from || from.querySelector(".unsub")) return;
+  const name = nameOf(m.from);
+  from.append(el("button", { class: "unsub", onclick: (e) => {
+    e.stopPropagation();
+    const box = sheet(el("div", {},
+      el("h2", {}, t("unsub_title", name)),
+      el("p", { class: "sheet-sub" }, t(m.unsub.one_click ? "unsub_one" : m.unsub.url ? "unsub_web" : "unsub_mail")),
+      el("div", { class: "sheet-acts" },
+        el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
+        el("button", { class: "btn primary", onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            const r = await api("unsubscribe", { id: m.id });
+            closeLayer();
+            if (r.done) { toast(t("unsub_done", name)); from.querySelector(".unsub")?.remove(); }
+            else if (r.mailto) openCompose({ mode: "new", to: [{ name: "", addr: r.mailto.toLowerCase() }], subject: r.subject });
+          } catch (err) { ev.target.disabled = false; fail(err); }
+        } }, t("unsub")))));
+    box.querySelector(".btn.primary").focus();
+  } }, t("unsub")));
+}
+
+// a meeting invitation: when and where, and a way into the system's calendar
+function inviteCard(m) {
+  const v = m.invite;
+  const day = { weekday: "short", month: "short", day: "numeric" };
+  const same = v.end && fmt(v.end, { year: "numeric", month: "numeric", day: "numeric" }) === fmt(v.start, { year: "numeric", month: "numeric", day: "numeric" });
+  let when = fmt(v.start, day);
+  if (v.all_day) when += " · " + t("all_day");
+  else when += " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, day) + " " + fmt(v.end, HM)) : "");
+  const past = (v.end || v.start) * 1000 < Date.now();
+  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") },
+    el("div", { class: "inv-day" }, el("span", {}, fmt(v.start, { month: "short" })), el("b", {}, fmt(v.start, { day: "numeric" }).replace(/\D+$/, ""))),
+    el("div", { class: "inv-text" },
+      el("b", {}, v.title || t("invite")),
+      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + when),
+      v.where ? el("span", {}, v.where) : null,
+      v.organizer ? el("span", { class: "inv-org" }, t("inv_from", v.organizer)) : null),
+    v.cancelled ? null : el("button", { class: "btn", onclick: async (e) => {
+      e.target.disabled = true;
+      try { await api("open_invite", { id: m.id }); } catch (err) { fail(err); } finally { e.target.disabled = false; }
+    } }, t("add_cal")));
 }
 
 function attNode(a, id) {
@@ -1640,6 +1690,7 @@ async function openCompose(opts) {
     c = await api("compose", { mode: opts.mode, id: opts.id });
   } catch (e) { return fail(e); }
   if (opts.to) c.to = [...opts.to, ...c.to];
+  if (opts.subject) c.subject = opts.subject;
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;

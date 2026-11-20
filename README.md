@@ -56,6 +56,8 @@ The first time, the app reads your mailbox. For a big mailbox this takes a few m
 - A whole conversation on one page, with the newest mail on top. Old quoted text folds away.
 - Click a picture to see it large. Save one attachment, or all of them at once.
 - Hold the pointer on a link to see where it goes before you click.
+- A meeting invitation shows what, when and where, with a button to add it to your calendar.
+- Newsletters get an **Unsubscribe** link beside the sender. One click, and they stop.
 
 **Find**
 - Press ⌘K (Mac) or Ctrl+K (Windows) and type. Search looks at the subject, the people, the text and the names of attached files.

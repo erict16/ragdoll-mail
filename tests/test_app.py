@@ -1004,3 +1004,51 @@ class HandOffs(OwnBackend):
         with self.assertRaises(A.ApiError):
             self.b.api_install_cli({})
         self.assertIn("installed", self.b.api_cli_state({}))
+
+
+class ListsAndInvites(unittest.TestCase):
+    """Unsubscribe headers and meeting invitations, read from the mail itself."""
+
+    def msg(self, headers="", body=""):
+        return A.R.to_msg((headers + "From: a@b.c\r\nSubject: x\r\n\r\n" + body).encode())
+
+    def test_one_click_needs_https_and_the_post_header(self):
+        u = A.list_unsub(self.msg("List-Unsubscribe: <mailto:u@l.com?subject=bye>, <https://l.com/u?x=1>\r\n"
+                                  "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"))
+        self.assertEqual(u, {"url": "https://l.com/u?x=1", "mailto": "mailto:u@l.com?subject=bye", "one_click": True})
+        u = A.list_unsub(self.msg("List-Unsubscribe: <https://l.com/u>\r\n"))
+        self.assertFalse(u["one_click"])
+        self.assertIsNone(A.list_unsub(self.msg()))
+        self.assertIsNone(A.list_unsub(self.msg("List-Unsubscribe: <ftp://x>\r\n")))
+
+    def test_invite(self):
+        ics = ("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nDTSTART;TZID=China Standard Time:20261125T140000\r\n"
+               "DTEND;TZID=China Standard Time:20261125T150000\r\nSUMMARY:Review\\, Q4\r\nLOCATION:Room 3\r\n"
+               " A\r\nORGANIZER;CN=\"Li, Ming\":mailto:li@x.cn\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+        m = self.msg("MIME-Version: 1.0\r\nContent-Type: text/calendar; method=REQUEST; charset=utf-8\r\n", ics)
+        v = A.invite_of(m)
+        self.assertEqual((v["title"], v["where"], v["organizer"], v["all_day"], v["cancelled"]),
+                         ("Review, Q4", "Room 3A", "Li, Ming", False, False))
+        self.assertEqual(v["start"], 1795586400)            # 06:00 UTC: 14:00 in Shanghai
+        self.assertEqual(v["end"] - v["start"], 3600)
+        self.assertTrue(A.invite_of(A.R.to_msg(m.as_bytes().replace(b"METHOD:REQUEST", b"METHOD:CANCEL")))["cancelled"])
+        self.assertIsNone(A.invite_of(self.msg(body="hello")))
+
+    def test_times(self):
+        self.assertEqual(A.ics_time("20261125T060000Z", {}), (1795586400, False))
+        self.assertTrue(A.ics_time("20261125", {"VALUE": "DATE"})[1])
+        self.assertEqual(A.ics_time("nonsense", {}), (None, False))
+
+    def test_demo_has_both(self):
+        cfg = A.R.CFG                           # demo mode swaps the config; the CLI tests need it back
+        b = A.Backend(demo=True)
+        try:
+            rows = b.api_list({"folder": "inbox"})["rows"]
+            gh = next(r for r in rows if r["subject"].startswith("[ragdoll-mail]"))
+            tr = next(r for r in rows if r["subject"] == "下周培训安排")
+            self.assertTrue(b.api_message({"id": gh["id"]})["unsub"]["one_click"])
+            self.assertEqual(b.api_unsubscribe({"id": gh["id"]}), {"done": True})
+            self.assertEqual(b.api_message({"id": tr["id"]})["invite"]["title"], "产品培训")
+            self.assertTrue(b.api_open_invite({"id": tr["id"]})["path"].endswith(".ics"))
+        finally:
+            A.R.CFG = cfg

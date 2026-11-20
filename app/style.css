@@ -362,6 +362,22 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .compose .atts { margin-top: 18px; }
 .msg-body > .atts { margin: 6px 0 16px; }
 /* all files of the mail at once: a quiet line under the files */
+.unsub { flex: none; align-self: center; font-size: 12px; color: var(--text-3); text-decoration: underline; text-underline-offset: 2px; margin-left: 2px; }
+.unsub:hover { color: var(--text); }
+.sheet-sub { margin: 0; color: var(--text-2); line-height: 1.5; }
+/* a meeting invitation: a small calendar leaf, what and when, and the way into the calendar */
+.invite { display: grid; grid-template-columns: 42px 1fr auto; gap: 14px; align-items: center; margin-top: 16px; padding: 12px 12px 12px 14px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.invite + .atts { margin-top: 8px; }
+.inv-day { width: 42px; border-radius: 8px; overflow: hidden; text-align: center; border: 1px solid var(--line-2); background: var(--bg); }
+.inv-day span { display: block; padding: 2px 0 1px; font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; background: var(--accent); color: var(--accent-text); }
+.inv-day b { display: block; padding: 3px 0 4px; font-size: 18px; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.inv-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.inv-text b { font-weight: 600; overflow-wrap: anywhere; }
+.inv-text span { color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }
+.inv-text .inv-org { color: var(--text-3); }
+.invite.cancelled .inv-text b { text-decoration: line-through; color: var(--text-2); }
+.invite.past { opacity: .72; }
 .atts-all { display: inline-flex; align-items: center; gap: 6px; margin: -6px 0 16px; font-size: 12.5px; font-weight: 500; text-decoration: none; color: var(--text-2); }
 .atts-all:hover { color: var(--text); }
 .atts-all:disabled { opacity: .5; }

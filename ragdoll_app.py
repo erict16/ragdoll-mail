@@ -292,6 +292,102 @@ def part_info(k, p, light=False):
     return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
 
 
+
+def list_unsub(msg):
+    """The mail's own way out of a mailing list (List-Unsubscribe, RFC 2369; one click per RFC 8058):
+    {"url", "mailto", "one_click"}, or None for a mail that has none."""
+    h = R.hdr(msg, "List-Unsubscribe") or ""
+    links = re.findall(r"<\s*([^>\s]+)\s*>", h)
+    url = next((u for u in links if re.match(r"(?i)https://", u)), None) or \
+        next((u for u in links if re.match(r"(?i)http://", u)), None)
+    mailto = next((u for u in links if re.match(r"(?i)mailto:[^@\s]+@", u)), None)
+    if not url and not mailto:
+        return None
+    one = bool(url and url.lower().startswith("https://")
+               and re.search(r"(?i)List-Unsubscribe\s*=\s*One-Click", R.hdr(msg, "List-Unsubscribe-Post") or ""))
+    return {"url": url, "mailto": mailto, "one_click": one}
+
+
+# Outlook names Windows time zones, not IANA ones
+WIN_TZ = {"China Standard Time": "Asia/Shanghai", "Singapore Standard Time": "Asia/Singapore",
+          "Taipei Standard Time": "Asia/Taipei", "Tokyo Standard Time": "Asia/Tokyo", "Korea Standard Time": "Asia/Seoul",
+          "India Standard Time": "Asia/Kolkata", "SE Asia Standard Time": "Asia/Bangkok",
+          "W. Australia Standard Time": "Australia/Perth", "AUS Eastern Standard Time": "Australia/Sydney",
+          "GMT Standard Time": "Europe/London", "W. Europe Standard Time": "Europe/Berlin",
+          "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest",
+          "Russian Standard Time": "Europe/Moscow", "Arabian Standard Time": "Asia/Dubai",
+          "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago",
+          "Mountain Standard Time": "America/Denver", "Pacific Standard Time": "America/Los_Angeles",
+          "UTC": "UTC", "Coordinated Universal Time": "UTC"}
+
+
+def ics_time(value, params):
+    """An iCalendar date or date-time -> (unix time, all day)."""
+    v = value.strip()
+    if re.fullmatch(r"\d{8}", v):           # a whole day: midnight where the reader is
+        d = dt.datetime.strptime(v, "%Y%m%d")
+        return int(d.timestamp()), True
+    m = re.fullmatch(r"(\d{8}T\d{4})(\d{2})?(Z?)", v)
+    if not m:
+        return None, False
+    d = dt.datetime.strptime(m.group(1) + (m.group(2) or "00"), "%Y%m%dT%H%M%S")
+    if m.group(3):
+        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False
+    tz = None
+    name = (params.get("TZID") or "").strip('"')
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(WIN_TZ.get(name, name))
+        except Exception:
+            tz = None
+    return int(d.replace(tzinfo=tz).timestamp() if tz else d.timestamp()), False
+
+
+def ics_part(msg):
+    """The mail's calendar part (an invitation), or None."""
+    for p in msg.walk():
+        if p.is_multipart():
+            continue
+        if p.get_content_type() == "text/calendar" or (R.fname(p) or "").lower().endswith(".ics"):
+            return p
+    return None
+
+
+def invite_of(msg):
+    """What a meeting invitation says: {"title", "start", "end", "all_day", "where", "organizer", "method"}, or None."""
+    p = ics_part(msg)
+    if p is None:
+        return None
+    try:
+        text = R.part_bytes(p).decode("utf-8", "replace")
+    except Exception:
+        return None
+    text = re.sub(r"\r?\n[ \t]", "", text)               # unfold
+    method = (re.search(r"(?mi)^METHOD:(.*)$", text) or [None, ""])[1].strip().upper()
+    ev = re.search(r"(?s)BEGIN:VEVENT(.*?)END:VEVENT", text)
+    if not ev:
+        return None
+    props = {}
+    for line in ev.group(1).splitlines():
+        m = re.match(r"([A-Za-z-]+)((?:;[^:]*)?):(.*)", line)
+        if not m or m.group(1).upper() in props:
+            continue
+        params = dict(re.findall(r';([A-Za-z-]+)=("[^"]*"|[^;]*)', m.group(2)))
+        props[m.group(1).upper()] = (m.group(3), {k.upper(): v for k, v in params.items()})
+    unesc = lambda v: re.sub(r"\\([,;\\])", r"\1", v.replace("\\n", "\n").replace("\\N", "\n")).strip()
+    start, all_day = ics_time(*props["DTSTART"]) if "DTSTART" in props else (None, False)
+    if start is None:
+        return None
+    end = ics_time(*props["DTEND"])[0] if "DTEND" in props else None
+    org = props.get("ORGANIZER")
+    organizer = ""
+    if org:
+        organizer = org[1].get("CN", "").strip('"') or re.sub(r"(?i)^mailto:", "", org[0])
+    return {"title": unesc(props.get("SUMMARY", ("", {}))[0]), "start": start, "end": end, "all_day": all_day,
+            "where": unesc(props.get("LOCATION", ("", {}))[0]), "organizer": organizer,
+            "method": method, "cancelled": method == "CANCEL" or props.get("STATUS", ("", {}))[0].upper() == "CANCELLED"}
+
 def data_images(html):
     """Pasted data: images in the editor -> (html with cid: links, [(cid, bytes, maintype, subtype)])."""
     found = []
@@ -442,7 +538,7 @@ DEMO = [
      "Kind regards,\nHannah Weber", [], True, None, None),
     ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME], [],
      "下周培训安排",
-     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [], True, None, None),
+     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -488,6 +584,19 @@ DEMO = [
 DEMO_FOLDERS = [("Projects", ""), ("Projects/Acme", "")]
 
 
+
+def demo_ics(name, ts):
+    """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
+    d = dt.datetime.now() + dt.timedelta(days=1)
+    d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
+    u = d.astimezone(dt.timezone.utc)
+    f = "%Y%m%dT%H%M%SZ"
+    return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
+            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:产品培训\r\n"
+            "LOCATION:三楼会议室\r\nORGANIZER;CN=王芳:mailto:wang.fang@example.cn\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f)))
+
+
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False):
     msg = EmailMessage()
     msg["From"] = formataddr(frm)
@@ -500,6 +609,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     if irt:
         msg["In-Reply-To"] = irt
         msg["References"] = refs
+    if frm[1] in ("noreply@github.com", "news@acme-industrial.com", "offers@example.net"):
+        msg["List-Unsubscribe"] = "<https://example.com/unsubscribe/demo>, <mailto:unsubscribe@example.com?subject=unsubscribe>"
+        msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     msg.set_content(body)
     html = R.text_to_html(body)
     if inline:
@@ -510,7 +622,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     if inline:
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
-        if kind == "pdf":
+        if kind == "ics":
+            msg.add_attachment(demo_ics(name, ts), subtype="calendar", filename=name, params={"method": "REQUEST"})
+        elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
             msg.add_attachment(b"PK\x03\x04 demo".ljust(demo_size(name, 24, 60), b"\x00"), "application",
@@ -1258,7 +1372,8 @@ class Backend:
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
                "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
-               "big": R.big_attachment_lines(R.html_to_text(html) or plain)}
+               "big": R.big_attachment_lines(R.html_to_text(html) or plain),
+               "unsub": list_unsub(msg), "invite": invite_of(msg)}
         return out
 
     def set_flag(self, ids, flag, on, wait=True, later=False):
@@ -1735,6 +1850,48 @@ class Backend:
         if not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
+
+    def api_unsubscribe(self, a):
+        """Leave the mailing list the mail came from. One click (RFC 8058): the app asks the list itself.
+        Else the list's page opens in the browser, or the page writes the mail the list asks for."""
+        u = list_unsub(R.to_msg(self.view(a["id"])[0]))
+        if not u:
+            fail("This mail has no way to unsubscribe.")
+        if u["one_click"]:
+            if not self.demo:
+                req = urllib.request.Request(u["url"], data=b"List-Unsubscribe=One-Click", method="POST",
+                                             headers={"Content-Type": "application/x-www-form-urlencoded",
+                                                      "User-Agent": APP_NAME})
+                try:
+                    with urllib.request.urlopen(req, timeout=15) as r:
+                        r.read(4096)
+                except Exception as e:
+                    fail("The list did not answer: %s" % (getattr(e, "reason", None) or e))
+            return {"done": True}
+        if u["url"]:
+            webbrowser.open(u["url"])
+            return {"opened": True}
+        to, _, query = u["mailto"][7:].partition("?")
+        subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
+        return {"mailto": urllib.parse.unquote(to), "subject": subj}
+
+    def api_open_invite(self, a):
+        """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""
+        p = ics_part(R.to_msg(self.view(a["id"])[0]))
+        if p is None:
+            fail("This mail has no invitation.")
+        data = R.part_bytes(p)
+        d = os.path.join(R.CFG.home, "open", hashlib.sha256(data).hexdigest()[:12])
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, R.safe_name(R.fname(p) or "invite.ics"))
+        if not path.lower().endswith(".ics"):
+            path += ".ics"
+        with open(path, "wb") as f:
+            f.write(data)
+        self.made.add(path)
+        if not self.demo:
+            open_path(path)
+        return {"path": path}
 
     def api_save_all(self, a):
         """Every file of the mail into Downloads, the way api_attachment's "save" does one.
