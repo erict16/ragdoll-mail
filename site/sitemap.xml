@@ -10,4 +10,14 @@
     <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/"/>
     <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/"/>
   </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/exmail/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/exmail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/exmail/"/>
+  </url>
+  <url>
+    <loc>https://erict16.github.io/ragdoll-mail/zh/exmail/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/exmail/"/>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/exmail/"/>
+  </url>
 </urlset>

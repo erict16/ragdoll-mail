@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Make the site's pages from one template: python3 site/build.py  (writes index.html and zh/index.html).
+"""Make the site's pages: python3 site/build.py  (the home page and the Exmail guide, English and
+Chinese, and sitemap.xml).
 Both languages share the layout; only the words differ, so the pages cannot drift apart."""
 import html, json, os
 
@@ -105,11 +106,11 @@ EN = {
          "license, so anyone can check what it does."),
     ],
     "e_h2": "Try it on your own mailbox.", "e_sub": "Free. No account. No ads.",
-    "foot": ["Source code", "Command line", "Report a problem"],
+    "foot": ["Source code", "Command line", "Report a problem", "Tencent Exmail setup"],
 }
 
 ZH = dict(EN, **{
-    "lang": "zh-Hans", "path": "zh/", "other": "../", "other_name": "English", "hreflang": "en",
+    "lang": "zh-Hans", "path": "zh/", "og": "og-zh.png", "other": "../", "other_name": "English", "hreflang": "en",
     "title": "Ragdoll Mail：免费的 Mac / Windows 邮件客户端，腾讯企业邮箱也能秒搜",
     "desc": "免费开源的 Mac 和 Windows 邮件软件。本地索引，搜索秒出结果。支持腾讯企业邮箱、QQ 邮箱、163、Gmail、iCloud "
             "和任何 IMAP 邮箱。邮件只在你电脑上，断网也能搜。",
@@ -166,7 +167,7 @@ ZH = dict(EN, **{
         ("真的免费吗？", "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
     "e_h2": "用你自己的邮箱试试。", "e_sub": "免费，不用注册，没有广告。",
-    "foot": ["源代码", "命令行", "反馈问题"],
+    "foot": ["源代码", "命令行", "反馈问题", "腾讯企业邮箱设置"],
 })
 
 
@@ -221,7 +222,10 @@ def page(L):
 <meta property="og:title" content="{e(L['title'])}">
 <meta property="og:description" content="{e(L['desc'])}">
 <meta property="og:url" content="{url}">
-<meta property="og:image" content="{SITE}img/og.png">
+<meta property="og:image" content="{SITE}img/{L.get('og', 'og.png')}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="{L['lang'].replace('-Hans', '_CN').replace('en', 'en_US')}">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="{up}style.css">
 <script type="application/ld+json">{json.dumps(ld, ensure_ascii=False)}</script>
@@ -332,6 +336,7 @@ def page(L):
   <a href="{REPO}">{e(L['foot'][0])}</a>
   <a href="{REPO}/blob/main/docs/command-line.md">{e(L['foot'][1])}</a>
   <a href="{REPO}/issues">{e(L['foot'][2])}</a>
+  <a href="exmail/">{e(L['foot'][3])}</a>
   <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
 </div></footer>
 <script src="{up}main.js" defer></script>
@@ -340,10 +345,235 @@ def page(L):
 """
 
 
+# ---------------------------------------------------------------- the Tencent Exmail guide
+# One page per language for what people search before they find the app: how to use Tencent
+# Exmail on a Mac or a Windows PC, its server settings, and why its own search finds nothing.
+
+GUIDE_EN = {
+    "lang": "en", "path": "exmail/", "other": "../zh/exmail/", "other_name": "简体中文", "hreflang": "zh-Hans",
+    "home": "../", "og": "og.png",
+    "title": "Tencent Exmail on Mac and Windows: IMAP settings and a search that works",
+    "desc": "Use Tencent Exmail (腾讯企业邮箱) in a mail app on Mac or Windows: IMAP imap.exmail.qq.com:993, "
+            "SMTP smtp.exmail.qq.com:465, the client password, and a local search that finds the right mail.",
+    "kick": "Guide",
+    "h1": "Tencent Exmail on a Mac or a Windows PC",
+    "lead": "Sign in with your address and password. Ragdoll Mail sees that your company's mail is on Tencent "
+            "Exmail and fills in the servers itself.",
+    "steps_h": "Three steps",
+    "steps": [
+        ("Check that IMAP is on",
+         "In Exmail on the web, open the settings and make sure the IMAP/SMTP service is on. If your company "
+         "turned it off for everyone, ask whoever runs your mail."),
+        ("Make a client password if you need one",
+         "If you sign in to Exmail with WeChat or a dynamic code, mail apps need a client password "
+         "(客户端专用密码) instead of your web password. You make it in the account security part of the settings."),
+        ("Sign in to Ragdoll Mail",
+         "Type your address and that password. The first time, it reads your mail into a local index; "
+         "after that, search answers at once, also offline."),
+    ],
+    "srv_h": "Server settings",
+    "srv_sub": "For Ragdoll Mail these are filled in for you. They are the same in any other mail app.",
+    "srv_cols": ["", "Server", "Port", "Security"],
+    "srv": [("Incoming (IMAP)", "imap.exmail.qq.com", "993", "SSL/TLS"),
+            ("Outgoing (SMTP)", "smtp.exmail.qq.com", "465", "SSL/TLS")],
+    "srv_user": "User name: your full email address.",
+    "why_h": "Why Exmail's own search finds everything, or nothing",
+    "why": [
+        "Exmail does not search inside mails when a mail app asks it to: it gives back the whole folder. "
+        "On a real Exmail mailbox with 6,442 mails, a search returned 4,988 mails for any word, even for a "
+        "word we made up.",
+        "Ragdoll Mail keeps its own full-text index on your computer. It returns only the mails with your words, "
+        "in under a tenth of a second, in Chinese and English, also with no network.",
+    ],
+    "q_h": "Questions",
+    "q": [
+        ("It says the password is wrong. What now?",
+         "Most of the time Exmail wants the client password (客户端专用密码), not the one you use on the web. "
+         "If that is not it, check that IMAP/SMTP is on in the settings."),
+        ("Does it work with other company mail?",
+         "Yes. It also finds the servers itself for Alibaba Mail, NetEase enterprise mail, Google Workspace, "
+         "Zoho and Fastmail. For any other IMAP mailbox, type the server names once."),
+        ("Does my mail go to your servers?",
+         "No. The app talks only to your own mail server. The index and your password stay on your computer."),
+        ("What does it cost?", "Nothing. It is free and open source (MIT)."),
+    ],
+    "cta_h": "Try it on your Exmail",
+    "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
+    "nav_home": "Ragdoll Mail", "foot": ["Source code", "Command line", "Report a problem"],
+}
+
+GUIDE_ZH = {
+    "lang": "zh-Hans", "path": "zh/exmail/", "other": "../../exmail/", "other_name": "English", "hreflang": "en",
+    "home": "../", "og": "og-zh.png",
+    "title": "腾讯企业邮箱 Mac / Windows 客户端设置：IMAP 服务器、专用密码、搜索",
+    "desc": "在 Mac 和 Windows 上用腾讯企业邮箱：收信 imap.exmail.qq.com:993，发信 smtp.exmail.qq.com:465，"
+            "客户端专用密码怎么用，以及企业邮箱自带搜索为什么搜不准、怎么秒搜。",
+    "kick": "使用指南",
+    "h1": "腾讯企业邮箱，在 Mac 和 Windows 上用",
+    "lead": "填邮箱地址和密码就能登录。Ragdoll Mail 会自己认出你公司的邮箱在腾讯企业邮箱上，服务器不用手填。",
+    "steps_h": "三步",
+    "steps": [
+        ("确认 IMAP 已开启",
+         "在企业邮箱网页版的设置里，确认 IMAP/SMTP 服务是开着的。如果公司统一关掉了，问一下邮箱管理员。"),
+        ("需要的话，生成客户端专用密码",
+         "如果你登录网页版用微信扫码或动态密码，邮件软件就要用“客户端专用密码”，不是网页登录的密码。"
+         "在设置的账户安全里生成。"),
+        ("登录 Ragdoll Mail",
+         "填邮箱地址和这个密码。第一次会把邮件建成本地索引，之后搜索不用等，断网也能搜。"),
+    ],
+    "srv_h": "服务器设置",
+    "srv_sub": "用 Ragdoll Mail 不用手填。其它邮件软件（Foxmail、Outlook、苹果邮件）也是这几项。",
+    "srv_cols": ["", "服务器", "端口", "加密"],
+    "srv": [("收信（IMAP）", "imap.exmail.qq.com", "993", "SSL/TLS"),
+            ("发信（SMTP）", "smtp.exmail.qq.com", "465", "SSL/TLS")],
+    "srv_user": "用户名：完整的邮箱地址。",
+    "why_h": "为什么企业邮箱自带的搜索，要么全给你，要么搜不到",
+    "why": [
+        "邮件软件让腾讯企业邮箱按内容搜索时，它并不真的搜，而是把整个文件夹都返回。"
+        "在一个有 6,442 封邮件的真实企业邮箱里，随便搜什么词都返回 4,988 封，连编出来的词也一样。",
+        "Ragdoll Mail 在你电脑上自己建全文索引，只返回真正含这些词的邮件，0.1 秒以内，中文英文都行，断网也能搜。",
+    ],
+    "q_h": "常见问题",
+    "q": [
+        ("提示密码错误怎么办？",
+         "多半是要用“客户端专用密码”，不是网页登录的密码。如果不是这个原因，看一下设置里 IMAP/SMTP 服务有没有开。"),
+        ("别的企业邮箱能用吗？",
+         "能。阿里企业邮箱、网易企业邮箱、Google Workspace、Zoho、Fastmail 也会自己认出服务器。"
+         "其它 IMAP 邮箱手填一次服务器地址就行。"),
+        ("邮件会传到你们的服务器吗？", "不会。软件只连你自己的邮件服务器，索引和密码都留在你电脑上。"),
+        ("收费吗？", "免费，开源（MIT 协议）。"),
+    ],
+    "cta_h": "用你的企业邮箱试试",
+    "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
+    "nav_home": "Ragdoll Mail", "foot": ["源代码", "命令行", "反馈问题"],
+}
+
+
+def guide(G):
+    e = html.escape
+    up = "../" * G["path"].count("/")
+    url = SITE + G["path"]
+    other_url = SITE + ("zh/exmail/" if G["lang"] == "en" else "exmail/")
+    ld = [
+        {"@context": "https://schema.org", "@type": "HowTo", "name": G["h1"], "description": G["desc"],
+         "inLanguage": G["lang"], "url": url,
+         "step": [{"@type": "HowToStep", "position": i + 1, "name": h, "text": t} for i, (h, t) in enumerate(G["steps"])]},
+        {"@context": "https://schema.org", "@type": "FAQPage", "inLanguage": G["lang"],
+         "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in G["q"]]},
+        {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Ragdoll Mail", "item": SITE + ("" if G["lang"] == "en" else "zh/")},
+            {"@type": "ListItem", "position": 2, "name": G["kick"], "item": url}]},
+    ]
+    dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
+        cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
+        icon("download"), e(G[os_][0]), e(G[os_][1])))
+    steps = "".join('<li><h3>%s</h3><p>%s</p></li>' % (e(h), e(t)) for h, t in G["steps"])
+    rows = "".join("<tr><th>%s</th><td><code>%s</code></td><td>%s</td><td>%s</td></tr>" % tuple(map(e, r)) for r in G["srv"])
+    return f"""<!doctype html>
+<html lang="{G['lang']}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{e(G['title'])}</title>
+<meta name="description" content="{e(G['desc'])}">
+<link rel="canonical" href="{url}">
+<link rel="alternate" hreflang="{G['lang']}" href="{url}">
+<link rel="alternate" hreflang="{G['hreflang']}" href="{other_url}">
+<link rel="alternate" hreflang="x-default" href="{SITE}exmail/">
+<link rel="icon" href="{up}img/icon-256.png">
+<link rel="apple-touch-icon" href="{up}img/icon-256.png">
+<meta name="theme-color" content="#fbf9f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="article">
+<meta property="og:title" content="{e(G['title'])}">
+<meta property="og:description" content="{e(G['desc'])}">
+<meta property="og:url" content="{url}">
+<meta property="og:image" content="{SITE}img/{G['og']}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="{up}style.css">
+<script type="application/ld+json">{json.dumps(ld, ensure_ascii=False)}</script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="{G['home']}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
+  <nav>
+    <a href="{G['other']}" hreflang="{G['hreflang']}">{e(G['other_name'])}</a>
+    <a href="{REPO}">GitHub</a>
+  </nav>
+  <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(G['mac'][0].split()[0])}</a>
+</div></header>
+
+<main class="doc">
+<div class="wrap narrow">
+  <div class="kicker">{e(G['kick'])}</div>
+  <h1>{e(G['h1'])}</h1>
+  <p class="lead">{e(G['lead'])}</p>
+  <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
+
+  <h2>{e(G['steps_h'])}</h2>
+  <ol class="steps">{steps}</ol>
+
+  <h2>{e(G['srv_h'])}</h2>
+  <p class="sub">{e(G['srv_sub'])}</p>
+  <div class="table"><table>
+    <thead><tr>{''.join('<th>%s</th>' % e(c) for c in G['srv_cols'])}</tr></thead>
+    <tbody>{rows}</tbody>
+  </table></div>
+  <p class="note">{e(G['srv_user'])}</p>
+
+  <h2>{e(G['why_h'])}</h2>
+  {''.join('<p class="sub">%s</p>' % e(x) for x in G['why'])}
+
+  <h2>{e(G['q_h'])}</h2>
+  <div class="faq">
+    {''.join(f'<details><summary>{e(q)}{icon("chevron")}</summary><p>{e(a)}</p></details>' for q, a in G['q'])}
+  </div>
+</div>
+
+<div class="end"><div class="wrap">
+  <img src="{up}img/icon.webp" alt="" width="72" height="72" loading="lazy">
+  <h2 style="margin:0 auto">{e(G['cta_h'])}</h2>
+  <div class="cta" style="animation:none">{dl('mac', 'primary')}{dl('win', '')}</div>
+</div></div>
+</main>
+
+<footer><div class="wrap">
+  <span class="grow"><a href="{G['home']}">Ragdoll Mail</a> · MIT</span>
+  <a href="{REPO}">{e(G['foot'][0])}</a>
+  <a href="{REPO}/blob/main/docs/command-line.md">{e(G['foot'][1])}</a>
+  <a href="{REPO}/issues">{e(G['foot'][2])}</a>
+</div></footer>
+<script src="{up}main.js" defer></script>
+</body>
+</html>
+"""
+
+
+PAGES = [("", "zh/"), ("exmail/", "zh/exmail/")]
+
+
+def sitemap():
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">']
+    for en, zh in PAGES:
+        for loc in (en, zh):
+            out += ["  <url>", "    <loc>%s%s</loc>" % (SITE, loc),
+                    '    <xhtml:link rel="alternate" hreflang="en" href="%s%s"/>' % (SITE, en),
+                    '    <xhtml:link rel="alternate" hreflang="zh-Hans" href="%s%s"/>' % (SITE, zh),
+                    "  </url>"]
+    return "\n".join(out + ["</urlset>", ""])
+
+
 if __name__ == "__main__":
-    for L in (EN, ZH):
-        out = os.path.join(HERE, L["path"], "index.html")
+    jobs = [(L["path"], page(L)) for L in (EN, ZH)] + [(G["path"], guide(G)) for G in (GUIDE_EN, GUIDE_ZH)]
+    for path, text in jobs:
+        out = os.path.join(HERE, path, "index.html")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
-            f.write(page(L))
+            f.write(text)
         print("wrote", os.path.relpath(out, HERE))
+    with open(os.path.join(HERE, "sitemap.xml"), "w", encoding="utf-8") as f:
+        f.write(sitemap())
+    print("wrote sitemap.xml")

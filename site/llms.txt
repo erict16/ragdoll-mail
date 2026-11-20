@@ -6,6 +6,7 @@
 - Price: free, MIT license, no ads, no account, no server of ours.
 - Platforms: macOS (Apple silicon) and Windows 10/11. No phone app. One mailbox per window.
 - Safety: up to 30 s to undo a send; warns when the text says "attached" and nothing is attached, the subject is empty, or a placeholder such as [Name] is left. Send later.
+- Setup: type the address and password. For a company domain the app reads the domain's MX records and fills in the servers for Tencent Exmail, Google Workspace, Alibaba Mail, NetEase enterprise mail, iCloud, Fastmail, Zoho and Yandex.
 - Password: kept in macOS Keychain or Windows Credential Manager. Many mailboxes need an app password (Exmail: 客户端专用密码; QQ Mail and 163: 授权码).
 - For AI assistants: the `ragdoll` command (install it from the app: Settings → Command line). Claude Code, Codex and other assistants that run commands can search, read, write and check drafts, and open a draft in the app. Nothing is sent until the person presses Send.
 
@@ -15,3 +16,4 @@
 - [Source code and README](https://github.com/erict16/ragdoll-mail)
 - [Command-line guide](https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md)
 - [中文介绍](https://erict16.github.io/ragdoll-mail/zh/)
+- [Tencent Exmail setup guide](https://erict16.github.io/ragdoll-mail/exmail/) ([中文](https://erict16.github.io/ragdoll-mail/zh/exmail/)): IMAP imap.exmail.qq.com:993 SSL, SMTP smtp.exmail.qq.com:465 SSL, user name = full address; with WeChat or dynamic-code sign-in, use the 客户端专用密码

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>腾讯企业邮箱 Mac / Windows 客户端设置：IMAP 服务器、专用密码、搜索</title>
+<meta name="description" content="在 Mac 和 Windows 上用腾讯企业邮箱：收信 imap.exmail.qq.com:993，发信 smtp.exmail.qq.com:465，客户端专用密码怎么用，以及企业邮箱自带搜索为什么搜不准、怎么秒搜。">
+<link rel="canonical" href="https://erict16.github.io/ragdoll-mail/zh/exmail/">
+<link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/exmail/">
+<link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/exmail/">
+<link rel="alternate" hreflang="x-default" href="https://erict16.github.io/ragdoll-mail/exmail/">
+<link rel="icon" href="../../img/icon-256.png">
+<link rel="apple-touch-icon" href="../../img/icon-256.png">
+<meta name="theme-color" content="#fbf9f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="article">
+<meta property="og:title" content="腾讯企业邮箱 Mac / Windows 客户端设置：IMAP 服务器、专用密码、搜索">
+<meta property="og:description" content="在 Mac 和 Windows 上用腾讯企业邮箱：收信 imap.exmail.qq.com:993，发信 smtp.exmail.qq.com:465，客户端专用密码怎么用，以及企业邮箱自带搜索为什么搜不准、怎么秒搜。">
+<meta property="og:url" content="https://erict16.github.io/ragdoll-mail/zh/exmail/">
+<meta property="og:image" content="https://erict16.github.io/ragdoll-mail/img/og-zh.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="../../style.css">
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "HowTo", "name": "腾讯企业邮箱，在 Mac 和 Windows 上用", "description": "在 Mac 和 Windows 上用腾讯企业邮箱：收信 imap.exmail.qq.com:993，发信 smtp.exmail.qq.com:465，客户端专用密码怎么用，以及企业邮箱自带搜索为什么搜不准、怎么秒搜。", "inLanguage": "zh-Hans", "url": "https://erict16.github.io/ragdoll-mail/zh/exmail/", "step": [{"@type": "HowToStep", "position": 1, "name": "确认 IMAP 已开启", "text": "在企业邮箱网页版的设置里，确认 IMAP/SMTP 服务是开着的。如果公司统一关掉了，问一下邮箱管理员。"}, {"@type": "HowToStep", "position": 2, "name": "需要的话，生成客户端专用密码", "text": "如果你登录网页版用微信扫码或动态密码，邮件软件就要用“客户端专用密码”，不是网页登录的密码。在设置的账户安全里生成。"}, {"@type": "HowToStep", "position": 3, "name": "登录 Ragdoll Mail", "text": "填邮箱地址和这个密码。第一次会把邮件建成本地索引，之后搜索不用等，断网也能搜。"}]}, {"@context": "https://schema.org", "@type": "FAQPage", "inLanguage": "zh-Hans", "mainEntity": [{"@type": "Question", "name": "提示密码错误怎么办？", "acceptedAnswer": {"@type": "Answer", "text": "多半是要用“客户端专用密码”，不是网页登录的密码。如果不是这个原因，看一下设置里 IMAP/SMTP 服务有没有开。"}}, {"@type": "Question", "name": "别的企业邮箱能用吗？", "acceptedAnswer": {"@type": "Answer", "text": "能。阿里企业邮箱、网易企业邮箱、Google Workspace、Zoho、Fastmail 也会自己认出服务器。其它 IMAP 邮箱手填一次服务器地址就行。"}}, {"@type": "Question", "name": "邮件会传到你们的服务器吗？", "acceptedAnswer": {"@type": "Answer", "text": "不会。软件只连你自己的邮件服务器，索引和密码都留在你电脑上。"}}, {"@type": "Question", "name": "收费吗？", "acceptedAnswer": {"@type": "Answer", "text": "免费，开源（MIT 协议）。"}}]}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Ragdoll Mail", "item": "https://erict16.github.io/ragdoll-mail/zh/"}, {"@type": "ListItem", "position": 2, "name": "使用指南", "item": "https://erict16.github.io/ragdoll-mail/zh/exmail/"}]}]</script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="../"><img src="../../img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
+  <nav>
+    <a href="../../exmail/" hreflang="en">English</a>
+    <a href="https://github.com/erict16/ragdoll-mail">GitHub</a>
+  </nav>
+  <a class="btn primary" data-dl href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg">下载</a>
+</div></header>
+
+<main class="doc">
+<div class="wrap narrow">
+  <div class="kicker">使用指南</div>
+  <h1>腾讯企业邮箱，在 Mac 和 Windows 上用</h1>
+  <p class="lead">填邮箱地址和密码就能登录。Ragdoll Mail 会自己认出你公司的邮箱在腾讯企业邮箱上，服务器不用手填。</p>
+  <div class="cta"><a class="btn primary" data-os="mac" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Mac 版 <small>M 系列芯片</small></a><a class="btn " data-os="win" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Windows 版 <small>Windows 10 / 11</small></a></div>
+
+  <h2>三步</h2>
+  <ol class="steps"><li><h3>确认 IMAP 已开启</h3><p>在企业邮箱网页版的设置里，确认 IMAP/SMTP 服务是开着的。如果公司统一关掉了，问一下邮箱管理员。</p></li><li><h3>需要的话，生成客户端专用密码</h3><p>如果你登录网页版用微信扫码或动态密码，邮件软件就要用“客户端专用密码”，不是网页登录的密码。在设置的账户安全里生成。</p></li><li><h3>登录 Ragdoll Mail</h3><p>填邮箱地址和这个密码。第一次会把邮件建成本地索引，之后搜索不用等，断网也能搜。</p></li></ol>
+
+  <h2>服务器设置</h2>
+  <p class="sub">用 Ragdoll Mail 不用手填。其它邮件软件（Foxmail、Outlook、苹果邮件）也是这几项。</p>
+  <div class="table"><table>
+    <thead><tr><th></th><th>服务器</th><th>端口</th><th>加密</th></tr></thead>
+    <tbody><tr><th>收信（IMAP）</th><td><code>imap.exmail.qq.com</code></td><td>993</td><td>SSL/TLS</td></tr><tr><th>发信（SMTP）</th><td><code>smtp.exmail.qq.com</code></td><td>465</td><td>SSL/TLS</td></tr></tbody>
+  </table></div>
+  <p class="note">用户名：完整的邮箱地址。</p>
+
+  <h2>为什么企业邮箱自带的搜索，要么全给你，要么搜不到</h2>
+  <p class="sub">邮件软件让腾讯企业邮箱按内容搜索时，它并不真的搜，而是把整个文件夹都返回。在一个有 6,442 封邮件的真实企业邮箱里，随便搜什么词都返回 4,988 封，连编出来的词也一样。</p><p class="sub">Ragdoll Mail 在你电脑上自己建全文索引，只返回真正含这些词的邮件，0.1 秒以内，中文英文都行，断网也能搜。</p>
+
+  <h2>常见问题</h2>
+  <div class="faq">
+    <details><summary>提示密码错误怎么办？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>多半是要用“客户端专用密码”，不是网页登录的密码。如果不是这个原因，看一下设置里 IMAP/SMTP 服务有没有开。</p></details><details><summary>别的企业邮箱能用吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>能。阿里企业邮箱、网易企业邮箱、Google Workspace、Zoho、Fastmail 也会自己认出服务器。其它 IMAP 邮箱手填一次服务器地址就行。</p></details><details><summary>邮件会传到你们的服务器吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>不会。软件只连你自己的邮件服务器，索引和密码都留在你电脑上。</p></details><details><summary>收费吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>免费，开源（MIT 协议）。</p></details>
+  </div>
+</div>
+
+<div class="end"><div class="wrap">
+  <img src="../../img/icon.webp" alt="" width="72" height="72" loading="lazy">
+  <h2 style="margin:0 auto">用你的企业邮箱试试</h2>
+  <div class="cta" style="animation:none"><a class="btn primary" data-os="mac" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Mac 版 <small>M 系列芯片</small></a><a class="btn " data-os="win" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Windows 版 <small>Windows 10 / 11</small></a></div>
+</div></div>
+</main>
+
+<footer><div class="wrap">
+  <span class="grow"><a href="../">Ragdoll Mail</a> · MIT</span>
+  <a href="https://github.com/erict16/ragdoll-mail">源代码</a>
+  <a href="https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md">命令行</a>
+  <a href="https://github.com/erict16/ragdoll-mail/issues">反馈问题</a>
+</div></footer>
+<script src="../../main.js" defer></script>
+</body>
+</html>
