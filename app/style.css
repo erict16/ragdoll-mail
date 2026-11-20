@@ -68,7 +68,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .grow { flex: 1; align-self: stretch; }
 .i { display: inline-flex; width: 16px; height: 16px; flex: none; }
 .i svg { width: 100%; height: 100%; stroke-width: 1.75; }
-.i svg.tight { stroke-width: 1.4; overflow: visible; }
+.i svg.arrowshape { stroke-width: 1.4; overflow: visible; }
 .i.small { width: 14px; height: 14px; }
 .i.big { width: 20px; height: 20px; }
 ::selection { background: rgba(63, 135, 132, .22); }
@@ -265,7 +265,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .msg:first-of-type { border-top: 0; }
 .msg-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 10px; margin: 0 -10px; }
 .msg.collapsed .msg-head { padding: 12px 10px; }
-.msg-head { transition: background-color .15s; border-radius: 8px; }
+.msg-head { transition: background-color .15s; border-radius: 8px; container-type: inline-size; }
+.msg-date .d-short { display: none; }
+@container (max-width: 520px) { .msg-date .d-long { display: none; } .msg-date .d-short { display: inline; } }
 .msg.collapsed .msg-head:hover { background: var(--hover); }
 .msg-body > * { animation: fade .24s ease-out; }
 .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--sunk); color: var(--text-2); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 13px; flex: none; border: 1px solid var(--line); }
@@ -558,8 +560,6 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 .app.drawer .head-title { display: none; }
 .app.drawer .search { margin-left: auto; }
 .app.drawer .side-grip { display: none; }
-#side-btn[hidden] { display: none; }
-.list-head #side-btn { margin-right: 2px; }
 @media (max-width: 860px) {
   .toolbar { padding: 0 12px; }
   .doc, .compose { padding-left: 20px; padding-right: 10px; }

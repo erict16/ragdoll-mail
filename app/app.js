@@ -1,5 +1,6 @@
 // ragdoll-mail desktop app. Talks to ragdoll_app.py over /api/<name> (JSON, X-Token header).
 import { ICONS } from "./icons.js";
+import { REMIX } from "./icons-remix.js";
 import { FILE_ICONS, FILE_EXT } from "./fileicons.js";
 import { LANGS, LANG_NAMES } from "./i18n.js";
 
@@ -70,9 +71,9 @@ function tr(msg) {
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-// The three reply arrows are drawn small and low in their square; show them closer so they weigh the same as the other icons.
-const TIGHT = new Set(["reply", "reply-all", "forward"]);
-const svg = (n) => `<svg xmlns="http://www.w3.org/2000/svg" ${TIGHT.has(n) ? 'class="tight" viewBox="2.5 3 19 19"' : 'viewBox="0 0 24 24"'} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
+// Reply, reply all and forward: Remix arrow shapes drawn as a hollow, rounded outline (Apple Mail style); every other icon is Lucide.
+const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="2.5 2.5 19 19" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
+  : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const icon = (n, cls = "") => `<span class="i ${cls}">${svg(n)}</span>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -217,6 +218,8 @@ function laterTime(ts) {
   if (ms - now < 6 * 86400e3) return fmt(ts, { weekday: "short", ...HM });
   return fmt(ts, { month: "short", day: "numeric", ...HM });
 }
+// an open message shows the full date, or the short one when its header is narrow (see .d-short in style.css)
+const openDate = (ts) => `<span class="d-long">${esc(longTime(ts))}</span><span class="d-short">${esc(shortTime(ts))}</span>`;
 function longTime(ts) {
   if (!ts) return "";
   return fmt(ts, { weekday: "short", year: "numeric", month: "short", day: "numeric", ...HM });
@@ -279,25 +282,11 @@ let tipEl = null, tipTimer = null;
 // narrow windows: the sidebar is a drawer, opened from the folder button in the list header (see style.css)
 const RAIL = matchMedia("(max-width: 860px)");
 const sideOpen = (on) => { $("#app").classList.add("side-moves"); $("#app").classList.toggle("side-open", on); };
-// the sidebar hidden (the button at its top, or Cmd+\): it becomes the same drawer as in a narrow window, and its
-// button moves to the start of the list header to bring it back
 function placeCompose() {
-  const app = $("#app"), drawer = RAIL.matches || !!PREFS.side_hidden, btn = $("#side-btn");
+  const app = $("#app"), drawer = RAIL.matches;
   app.classList.remove("side-open", "side-moves");     // no slide when the window only changes width
   app.classList.toggle("drawer", drawer);
   if (drawer) $(".list-head").append($("#compose-btn")); else $(".side-top").append($("#compose-btn"));
-  btn.hidden = RAIL.matches;
-  if (drawer) $(".list-head").prepend(btn); else $(".side-top").prepend(btn);
-  const tip = t(drawer ? "side_show" : "side_hide");
-  Object.assign(btn.dataset, { tip, key: MOD + "\\" });
-  btn.setAttribute("aria-label", tip);
-}
-function toggleSide() {
-  if (RAIL.matches) { sideOpen(!$("#app").classList.contains("side-open")); return; }
-  PREFS.side_hidden = !PREFS.side_hidden;
-  tipEl?.remove(); tipEl = null;
-  placeCompose();
-  api("prefs", { side_hidden: PREFS.side_hidden }).catch(() => {});
 }
 RAIL.addEventListener("change", placeCompose);
 document.addEventListener("mouseover", (e) => {
@@ -544,7 +533,7 @@ function rowTemplate(r) {
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(folderName(r.folder))}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
-  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("arrow-right", "small") : ""}</span>` : "";
+  const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("forward", "small") : ""}</span>` : "";
   const acts = r.sched
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
     : (S.folder === "trash" || S.folder === "junk") && !S.query
@@ -1259,7 +1248,7 @@ function msgNode(r, expanded) {
     iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id: r.id }), { key: "R" }),
     iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id: r.id }), { key: "A" }),
     iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id: r.id }), { key: "F" }));
-  head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts) }, expanded ? longTime(r.ts) : shortTime(r.ts)));
+  head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts), html: expanded ? openDate(r.ts) : esc(shortTime(r.ts)) }));
   if (expanded) head.append(acts());
   node.append(head);
   head.addEventListener("click", (e) => {
@@ -1267,7 +1256,7 @@ function msgNode(r, expanded) {
     if (node.classList.contains("collapsed")) {
       node.classList.remove("collapsed");
       whoBox.replaceChildren(whoBox.firstChild, toLine);
-      head.querySelector(".msg-date").textContent = longTime(r.ts);
+      head.querySelector(".msg-date").innerHTML = openDate(r.ts);
       head.append(acts());
       loadBody(node, r);
       S.focus = r.id; renderToolbar();
@@ -2425,7 +2414,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], [MOD + "\\", "side_toggle"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -2450,7 +2439,6 @@ function onKey(e) {
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
-  if (mod && e.key === "\\") { e.preventDefault(); toggleSide(); return; }
   if (mod && !e.altKey && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
     e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
   }
@@ -2635,14 +2623,12 @@ function start(boot) {
   applyTheme(boot.theme);
   $("#app").hidden = false;
   $("#setup").hidden = true;
-  document.title = "ragdoll-mail";
+  document.title = "Ragdoll Mail";
   $("#compose-btn").innerHTML = icon("square-pen");
   $("#compose-btn").dataset.tip = t("compose");
   $("#compose-btn").dataset.key = "C";
   $("#compose-btn").onclick = () => { sideOpen(false); openCompose({ mode: "new" }); };
   $("#here-btn").onclick = () => sideOpen(true);
-  $("#side-btn").innerHTML = icon("panel-left");
-  $("#side-btn").onclick = toggleSide;
   $("#side-scrim").onclick = () => sideOpen(false);
   placeCompose();
   $("#account").onclick = accountMenu;
