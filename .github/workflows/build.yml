@@ -82,3 +82,33 @@ jobs:
           name: windows
           path: ragdoll-mail-windows.zip
           retention-days: 1
+
+  checksums:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Add SHA256SUMS.txt to the release (packaging/bump.py reads it)
+        run: |
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p "ragdoll-mail-*"
+          sha256sum ragdoll-mail-* > SHA256SUMS.txt && cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber -R "$GITHUB_REPOSITORY"
+
+  # Off until PyPI trusted publishing is set up and the repo variable PYPI is "on"
+  # (see packaging/README.md).
+  pypi:
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PYPI == 'on'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1

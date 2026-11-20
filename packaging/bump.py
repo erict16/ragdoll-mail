@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Point the Homebrew cask and the winget manifests at a release.
+
+    python3 packaging/bump.py            # the version in pyproject.toml
+    python3 packaging/bump.py 0.10.0
+
+It reads SHA256SUMS.txt from the GitHub release (the build workflow adds it). For an older
+release without that file it downloads the two files and hashes them itself.
+"""
+import hashlib, os, re, sys, urllib.request
+
+REPO = "erict16/ragdoll-mail"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+FILES = {"mac": "ragdoll-mail-mac.dmg", "win": "ragdoll-mail-windows.zip"}
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ragdoll-mail-bump"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read()
+
+
+def sums(version):
+    base = "https://github.com/%s/releases/download/v%s/" % (REPO, version)
+    try:
+        text = get(base + "SHA256SUMS.txt").decode()
+        found = dict(reversed(line.split()) for line in text.splitlines() if line.strip())
+    except Exception:
+        found = {}
+    for name in FILES.values():
+        if name not in found:
+            print("hashing", name, "...", file=sys.stderr)
+            found[name] = hashlib.sha256(get(base + name)).hexdigest()
+    return found
+
+
+def rewrite(path, pairs):
+    s = open(path, encoding="utf-8").read()
+    for pat, new in pairs:
+        s, n = re.subn(pat, new, s, flags=re.M)
+        if not n:
+            sys.exit("%s: nothing matched %s" % (path, pat))
+    open(path, "w", encoding="utf-8").write(s)
+
+
+def main():
+    if len(sys.argv) > 1:
+        version = sys.argv[1].lstrip("v")
+    else:
+        version = re.search(r'^version = "(.+)"', open(os.path.join(ROOT, "pyproject.toml")).read(), re.M).group(1)
+    h = sums(version)
+    rewrite(os.path.join(HERE, "homebrew", "Casks", "ragdoll-mail.rb"), [
+        (r'^  version ".*"', '  version "%s"' % version),
+        (r'^  sha256 ".*"', '  sha256 "%s"' % h[FILES["mac"]]),
+    ])
+    wg = os.path.join(HERE, "winget")
+    for f in sorted(os.listdir(wg)):
+        if f.endswith(".yaml"):
+            pairs = [(r"^PackageVersion: .*", "PackageVersion: " + version)]
+            if f.endswith(".installer.yaml"):
+                pairs += [(r"/download/v[^/]+/", "/download/v%s/" % version),
+                          (r"^    InstallerSha256: .*", "    InstallerSha256: " + h[FILES["win"]].upper())]
+            rewrite(os.path.join(wg, f), pairs)
+    print("cask and winget now point at v%s" % version)
+
+
+if __name__ == "__main__":
+    main()
