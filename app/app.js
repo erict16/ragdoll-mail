@@ -50,7 +50,10 @@ const MSGS = [
   [/^Can't find the mail server\./, "err_dns"], [/^The mail server did not answer in time\./, "err_timeout"],
   [/^Secure connection failed \((.*)\)\. Check/, "err_ssl"], [/^The mail server refused the connection\./, "err_refused"],
   [/^Can't reach the mail server \((.*)\)\.$/, "err_reach"], [/^The mail server said: (.*)$/s, "err_server"],
-  [/^This mail is no longer here/, "err_gone"], [/^The draft is gone\./, "err_draft_gone"],
+  [/^This mail is no longer here/, "err_gone"], [/^The folder (.*) is no longer on the server\.$/, "err_no_folder"], [/^The draft is gone\./, "err_draft_gone"],
+  [/^Give the folder a name\./, "err_folder_name"], [/^That folder name is too long\./, "err_folder_long"],
+  [/^A folder name can't have (.*) in it\.$/, "err_folder_char"], [/^There is already a folder called (.*)\.$/, "err_folder_exists"],
+  [/^(.*) still has mail in it\./, "err_folder_mail"], [/^(.*) has folders inside it\./, "err_folder_kids"],
   [/^An attachment is missing: (.*)$/, "err_att_missing"], [/^That time has already passed\./, "err_past"],
   [/^To is empty/, "p_to_empty"], [/^the sender is also a recipient/, "p_self"], [/^(.*) is not in To or Cc/, "p_not_cc"],
   [/^the subject is empty/, "p_no_subject"], [/^garbled characters \(.\) in: (.*)$/, "p_garbled"],
@@ -66,7 +69,9 @@ function tr(msg) {
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const svg = (n) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
+// The three reply arrows are drawn small and low in their square; show them closer so they weigh the same as the other icons.
+const TIGHT = new Set(["reply", "reply-all", "forward"]);
+const svg = (n) => `<svg xmlns="http://www.w3.org/2000/svg" ${TIGHT.has(n) ? 'class="tight" viewBox="2.5 3 19 19"' : 'viewBox="0 0 24 24"'} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const icon = (n, cls = "") => `<span class="i ${cls}">${svg(n)}</span>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -105,6 +110,7 @@ const S = {
   boot: null, folder: "inbox", rows: [], more: false, query: "", loadingMore: false,
   sel: null, thread: null, focus: null, compose: null, rev: 0, update: null, error: null,
   theme: "system", showImages: new Set(), syncing: false, sched: null, multi: new Set(), anchor: null,
+  filter: {}, newsN: 0,
 };
 let PREFS = {};
 const undoSeconds = () => (Number.isInteger(PREFS.undo) ? PREFS.undo : 5);
@@ -126,7 +132,11 @@ const fontLabel = (k) => FONT_NAMES[k] || t("system");
 const mailFont = () => fontStack(PREFS.font || "system");
 const mailSize = () => (FONT_SIZES.includes(PREFS.font_size) ? PREFS.font_size : 14);
 const savePref = (patch) => { Object.assign(PREFS, patch); api("prefs", patch).catch(() => {}); };
-const FOLDER_ICON = { inbox: "inbox", flagged: "star", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", trash: "trash-2" };
+const FOLDER_ICON = { inbox: "inbox", flagged: "star", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", junk: "archive-x", trash: "trash-2" };
+// the server's other folders keep their own names; only the built-in ones are translated
+const otherFolder = (key) => S.boot?.folders.find((f) => f.key === key && f.other);
+const folderName = (key) => otherFolder(key)?.label || (FOLDER_ICON[key] ? t(key) : key);
+const backLabel = (folder) => t(folder === "junk" ? "not_junk" : "restore");
 
 // ---------------------------------------------------------------- theme
 
@@ -267,15 +277,21 @@ function toast(text, opts = {}) {
 const fail = (e) => toast(e?.message || String(e), { error: true });
 
 let tipEl = null, tipTimer = null;
-// narrow windows: the sidebar turns into an icon rail (see style.css)
+// narrow windows: the sidebar is a drawer, opened from the folder button in the list header (see style.css)
 const RAIL = matchMedia("(max-width: 860px)");
+const sideOpen = (on) => { $("#app").classList.add("side-moves"); $("#app").classList.toggle("side-open", on); };
+function placeCompose() {
+  $("#app").classList.remove("side-open", "side-moves");     // no slide when the window only changes width
+  if (RAIL.matches) $(".list-head").append($("#compose-btn")); else $(".side-top").append($("#compose-btn"));
+}
+RAIL.addEventListener("change", placeCompose);
 document.addEventListener("mouseover", (e) => {
   const b = e.target.closest?.("[data-tip]");
   clearTimeout(tipTimer);
   if (tipEl) { tipEl.remove(); tipEl = null; }
   if (!b || b.disabled) return;
   const side = b.dataset.rail != null;
-  if (side && !RAIL.matches) return;
+  if (side) return;
   tipTimer = setTimeout(() => {
     const r = b.getBoundingClientRect();
     tipEl = el("div", { class: "tip", html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
@@ -295,8 +311,8 @@ function menu(anchor, items, { above = false } = {}) {
   for (const it of items) {
     if (it === "-") m.append(el("hr"));
     else if (it.note) m.append(el("div", { class: "menu-note" }, it.note));
-    else m.append(el("button", { onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + esc(it.label) +
-      (it.key ? `<span class="grow"></span><kbd>${esc(it.key)}</kbd>` : it.hint ? `<span class="grow"></span><span class="hint">${esc(it.hint)}</span>` : "") }));
+    else m.append(el("button", { onclick: () => { closeLayer(); it.run(); }, html: icon(it.icon) + `<span class="label">${esc(it.label)}</span>` +
+      (it.on ? icon("check", "small on-mark") : it.key ? `<span class="grow"></span><kbd>${esc(it.key)}</kbd>` : it.hint ? `<span class="grow"></span><span class="hint">${esc(it.hint)}</span>` : "") }));
   }
   const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
   $("#layer").append(catcher, m);
@@ -315,21 +331,41 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 
 // ---------------------------------------------------------------- sidebar
 
+let navSig = "", navKeys = null;
 function renderNav() {
   const nav = $("#nav");
-  nav.replaceChildren();
   const folders = [...S.boot.folders];
   for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
+  // most calls come from the 5 second check and change nothing: leave the page alone then
+  const sig = JSON.stringify([folders, S.folder, !!S.query, t("inbox"), S.boot.user, S.update?.version]);
+  if (sig === navSig) return;
+  navSig = sig;
+  const was = navKeys;
+  navKeys = new Set(folders.map((f) => f.key));
+  nav.replaceChildren();
+  const here = folders.find((f) => f.key === S.folder);
+  const unread = folders.find((f) => f.key === "inbox")?.unread;
+  $("#here-btn").className = "here-btn" + (unread && S.folder !== "inbox" ? " dot" : "");
+  $("#here-btn").innerHTML = icon(here?.other ? "folder-open" : FOLDER_ICON[S.folder] || "folder-open") + `<span class="label" dir="auto">${esc(folderName(S.folder))}</span>`;
+  let seenOther = false;
   for (const f of folders) {
-    const n = f.key === "inbox" ? f.unread : ["drafts", "scheduled", "flagged"].includes(f.key) ? f.total : 0;
-    const b = el("button", { class: "nav-item" + (f.key === S.folder && !S.query ? " on" : ""), "data-folder": f.key, "data-tip": t(f.key), "data-rail": "", onclick: () => openFolder(f.key),
-      html: icon(FOLDER_ICON[f.key] || "folder-open") + `<span class="label">${esc(t(f.key))}</span>` + (n ? `<span class="count">${n}</span>` : "") });
-    if (f.key === "archive" || f.key === "trash" || f.key === "inbox") {
+    const n = f.key === "inbox" || f.other ? f.unread : ["drafts", "scheduled", "flagged"].includes(f.key) ? f.total : 0;
+    const name = f.other ? f.label : t(f.key);
+    const b = el("button", { class: "nav-item" + (f.other ? " other" : "") + (f.other && !seenOther ? " first" : "") + (f.key === S.folder && !S.query ? " on" : "") + (was && !was.has(f.key) && f.other ? " new" : ""),
+      style: f.other && f.depth ? `--depth:${f.depth}` : null, "data-folder": f.key, "data-tip": f.other ? f.key : name, "data-rail": "", onclick: () => { sideOpen(false); openFolder(f.key); },
+      html: icon(f.other ? "folder-open" : FOLDER_ICON[f.key] || "folder-open") + `<span class="label" dir="auto">${esc(name)}</span>` + (n ? `<span class="count">${n}</span>` : "") +
+        (f.other ? `<span class="nav-more" role="button" aria-label="${esc(t("folder_menu"))}">${icon("ellipsis", "small")}</span>` : "") });
+    if (f.other) {
+      seenOther = true;
+      b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
+      $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); folderMenu(b, f); });
+    }
+    if (["archive", "trash", "inbox", "junk"].includes(f.key) || f.other) {
       b.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("x-ragdoll/ids")) { e.preventDefault(); b.classList.add("drop"); } });
       b.addEventListener("dragleave", () => b.classList.remove("drop"));
-      b.addEventListener("drop", (e) => { b.classList.remove("drop"); const ids = JSON.parse(e.dataTransfer.getData("x-ragdoll/ids") || "[]"); if (ids.length) moveMail(ids, f.key); });
+      b.addEventListener("drop", (e) => { b.classList.remove("drop"); const ids = JSON.parse(e.dataTransfer.getData("x-ragdoll/ids") || "[]").filter((i) => rowOf(i)?.folder !== f.key); if (ids.length) moveMail(ids, f.key); });
     }
     nav.append(b);
   }
@@ -339,11 +375,61 @@ function renderNav() {
   if (S.update) up.innerHTML = icon("download") + `<span>${esc(t("update_to", "v" + S.update.version))}</span>`;
 }
 
+// the owner's own folders: make one, rename one, delete an empty one
+function nameSheet(title, value, run) {
+  const input = el("input", { type: "text", value, maxlength: "60", dir: "auto", spellcheck: "false", autocomplete: "off", "aria-label": title });
+  let busy = false;
+  const go = async () => {
+    const name = input.value.trim();
+    if (!name || busy) return input.focus();
+    busy = true;
+    try { await run(name); closeLayer(); } catch (e) { fail(e); input.focus(); }
+    busy = false;
+  };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  sheet(el("div", {}, el("h2", {}, title), el("div", { class: "form" }, input),
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
+      el("button", { class: "btn primary", onclick: go }, t("ok")))));
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+// then: what to do with the new folder (the move menu puts the mail in it)
+function newFolder(then) {
+  nameSheet(t("new_folder"), "", async (name) => {
+    const r = await api("folder_new", { name });
+    await refreshCounts();
+    then?.(r.key);
+  });
+}
+function renameFolder(f) {
+  nameSheet(t("rename_folder"), f.label, async (name) => {
+    const r = await api("folder_rename", { key: f.key, name });
+    if (S.folder === f.key) S.folder = r.key;
+    await refreshCounts();
+    loadList({ quiet: true });
+  });
+}
+async function deleteFolder(f) {
+  try {
+    await api("folder_delete", { key: f.key });
+    if (S.folder === f.key) await openFolder("inbox");
+    await refreshCounts();
+  } catch (e) { fail(e); }
+}
+function folderMenu(anchor, f) {
+  menu(anchor, [
+    { icon: "pencil", label: t("rename_folder"), run: () => renameFolder(f) },
+    { icon: "trash-2", label: t("delete_folder"), run: () => deleteFolder(f) },
+    "-",
+    { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
+  ]);
+}
+
 function accountMenu() {
   menu($("#account"), [
     { note: S.boot.demo ? t("demo") : S.boot.user },
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
     { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
+    { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: "?", run: shortcutsSheet },
     "-",
     { note: t("version", S.boot.version) },
@@ -361,13 +447,13 @@ function rowTemplate(r) {
   } else name = who(r.from);
   const clip = r.atts.length ? icon("paperclip", "small") : "";
   const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
-  const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(t(r.folder) || r.folder)}</span>` : "";
+  const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(folderName(r.folder))}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
   const done = r.answered || r.forwarded ? `<span class="done-ic">${r.answered ? icon("reply", "small") : ""}${r.forwarded ? icon("arrow-right", "small") : ""}</span>` : "";
   const acts = r.sched
     ? `<button class="icon-btn tiny" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
-    : S.folder === "trash" && !S.query
-    ? `<button class="icon-btn tiny" data-act="inbox" data-tip="${esc(t("restore"))}">${icon("inbox")}</button>`
+    : (S.folder === "trash" || S.folder === "junk") && !S.query
+    ? `<button class="icon-btn tiny" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
   return `<div class="row${r.unread ? " unread" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
@@ -383,15 +469,16 @@ let shownIds = new Set(), shownKey = null, shownMarks = new Map();
 const marksOf = (r) => ({ a: !!r.answered, f: !!r.forwarded, s: !!r.flagged });
 function renderRows() {
   const box = $("#rows");
-  const key = S.folder + "\n" + S.query;
+  const key = S.folder + "\n" + S.query + "\n" + JSON.stringify(filterArgs());
   const same = key === shownKey && shownIds.size > 0;
   const oldMarks = same ? shownMarks : new Map();
   shownIds = new Set(S.rows.map((x) => x.id)); shownKey = key;
   shownMarks = new Map(S.rows.map((x) => [x.id, marksOf(x)]));
   if (!S.rows.length) {
     if (S.loading) { box.replaceChildren(); return; }
-    const msg = S.query ? t("no_results") : (S.syncing && S.folder === "inbox" ? t("syncing") : t("no_mail"));
-    box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query ? icon("loader-circle", "big spin") : icon(S.query ? "search" : FOLDER_ICON[S.folder] || "inbox", "big")}<span>${esc(msg)}</span></div>`;
+    const filtered = filterOn();
+    const msg = S.query || filtered ? t("no_results") : (S.syncing && S.folder === "inbox" ? t("syncing") : t("no_mail"));
+    box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query && !filtered ? icon("loader-circle", "big spin") : icon(S.query ? "search" : filtered ? "list-filter" : FOLDER_ICON[S.folder] || "folder-open", "big")}<span>${esc(msg)}</span></div>`;
     return;
   }
   const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
@@ -491,21 +578,75 @@ function growRows(nodes) {
   }
 }
 
+// ---------------------------------------------------------------- filter
+
+const filterArgs = () => {
+  const f = S.filter;
+  if (S.query || S.folder === "scheduled") return {};
+  return { unread: f.unread || undefined, att: f.att || undefined, from: f.from || undefined, starred: (f.starred && S.folder !== "flagged") || undefined };
+};
+const filterOn = () => Object.values(filterArgs()).some(Boolean);
+function syncFilterUI() {
+  const b = $("#filter-btn");
+  b.disabled = !!S.query || S.folder === "scheduled";
+  b.classList.toggle("on", filterOn());
+  b.dataset.tip = t("filter");
+  b.setAttribute("aria-label", t("filter"));
+}
+function setFilter(patch) {
+  S.filter = patch ? { ...S.filter, ...patch } : {};
+  S.rows = []; S.more = false; S.loading = true;
+  renderRows();
+  loadList();
+}
+async function filterMenu() {
+  const folder = S.folder, f = S.filter;
+  let people = [];
+  try { people = (await api("senders", { folder })).people; } catch { /* the marks still work */ }
+  if (folder !== S.folder || S.query) return;
+  // the person of the mail that is open comes first, then who writes most
+  const cur = rowOf(S.focus || S.sel), out = folder === "sent" || folder === "drafts";
+  const first = cur && (out ? cur.to?.[0] : cur.from);
+  if (first?.addr && first.addr !== S.boot.user) people = [first, ...people.filter((p) => p.addr !== first.addr)].slice(0, 6);
+  if (f.from && !people.some((p) => p.addr === f.from)) people.unshift({ name: f.fromName, addr: f.from });
+  const items = [{ icon: "mail", label: t("f_unread"), on: !!f.unread, run: () => setFilter({ unread: !f.unread }) }];
+  if (folder !== "flagged") items.push({ icon: "star", label: t("flagged"), on: !!f.starred, run: () => setFilter({ starred: !f.starred }) });
+  items.push({ icon: "paperclip", label: t("f_att"), on: !!f.att, run: () => setFilter({ att: !f.att }) });
+  if (people.length) items.push("-");
+  for (const p of people) {
+    const on = f.from === p.addr;
+    items.push({ icon: "circle-user-round", label: p.name || p.addr, on, run: () => setFilter(on ? { from: "", fromName: "" } : { from: p.addr, fromName: p.name || "" }) });
+  }
+  if (filterOn()) items.push("-", { icon: "x", label: t("f_clear"), run: () => setFilter(null) });
+  menu($("#filter-btn"), items);
+}
+$("#filter-btn").innerHTML = icon("list-filter");
+$("#filter-btn").addEventListener("click", filterMenu);
+
 let listSeq = 0;
 async function loadList({ quiet = false } = {}) {
   const seq = ++listSeq;
+  syncFilterUI();
   if (!quiet) S.loading = true;
   try {
     let rows, more = false;
     if (S.query) rows = (await api("search", { q: S.query })).rows;
     else {
       const limit = quiet ? Math.max(100, S.rows.length) : 100;
-      const r = await api("list", { folder: S.folder, limit, offset: 0 });
+      const r = await api("list", { folder: S.folder, limit, offset: 0, ...filterArgs() });
       rows = r.rows; more = r.more;
     }
     if (seq !== listSeq) return;
     S.loading = false;
     rows = rows.filter((x) => !hidden.has(x.id));
+    // with "unread" on, the mail being read stays in the list until another one is opened
+    if (quiet && S.filter.unread && filterOn()) {
+      const cur = S.rows.find((x) => x.id === S.sel);
+      if (cur && !rows.some((x) => x.id === cur.id)) {
+        const at = rows.findIndex((x) => x.ts < cur.ts);
+        rows.splice(at < 0 ? rows.length : at, 0, cur);
+      }
+    }
     if (quiet && JSON.stringify(rows) === JSON.stringify(S.rows) && more === S.more) return;
     const box = $("#rows"), top = box.scrollTop;
     S.rows = rows; S.more = more;
@@ -518,7 +659,7 @@ async function loadMore() {
   if (!S.more || S.loadingMore || S.query) return;
   S.loadingMore = true;
   try {
-    const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length });
+    const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length, ...filterArgs() });
     const have = new Set(S.rows.map((x) => x.id));
     S.rows.push(...r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id)));
     S.more = r.more;
@@ -588,14 +729,16 @@ function showMulti() {
   const ids = [...S.multi], rows = ids.map(rowOf).filter(Boolean);
   const anyUnread = rows.some((r) => r.unread), allFlagged = rows.length && rows.every((r) => r.flagged);
   const inTrash = rows.length && rows.every((r) => r.folder === "trash");
+  const inJunk = rows.length && rows.every((r) => r.folder === "junk");
   const b = (ic, label, run) => el("button", { class: "btn", onclick: run, html: icon(ic, "small") + esc(label) });
   const stack = el("div", { class: "multi-stack" });
   for (let k = Math.min(3, ids.length) - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
   $("#pane").replaceChildren(el("div", { class: "multi" }, stack,
     el("h2", {}, t("n_selected", ids.length)),
     el("div", { class: "multi-acts" },
-      inTrash ? b("inbox", t("restore"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
+      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
       inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
+      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids)),
       b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
       b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
   renderToolbar();
@@ -635,6 +778,7 @@ function toggleFlag() {
 async function openFolder(key) {
   if (!(await leaveCompose())) return;
   S.folder = key; S.query = ""; $("#search").value = ""; syncSearchUI();
+  S.filter = {};
   S.sel = null; S.rows = []; S.more = false; S.loading = true;
   renderNav(); renderRows(); showEmpty();
   await loadList();
@@ -686,6 +830,26 @@ function step(d) {
   selectRow(S.rows[k].id);
 }
 
+// "Move to…": the inbox, the server's other folders, and junk
+function moveMenu(anchor, ids) {
+  if (!anchor || !ids.length) return;
+  const from = new Set(ids.map((i) => rowOf(i)?.folder));
+  const here = (key) => from.size === 1 && from.has(key);
+  const items = [];
+  for (const f of S.boot.folders) {
+    if (!(f.key === "inbox" || f.other) || here(f.key)) continue;
+    items.push({ icon: f.other ? "folder-open" : "inbox", label: f.other ? f.key : t("inbox"), run: () => moveMail(ids, f.key) });
+  }
+  if (S.boot.folders.some((f) => f.key === "junk") && !here("junk")) {
+    if (items.length) items.push("-");
+    items.push({ icon: "archive-x", label: t("junk"), run: () => moveMail(ids, "junk") });
+  }
+  if (items.length) items.push("-");
+  items.push({ icon: "folder-plus", label: t("new_folder"), run: () => newFolder((key) => moveMail(ids, key)) });
+  menu(anchor, items);
+}
+const moveKey = (ids) => moveMenu($('#tools .icon-btn[data-key="V"]:not(:disabled)'), ids);
+
 // Moves wait a few seconds so Undo is free; until then the rows are only hidden.
 const hidden = new Set();
 const pendingMoves = new Set();
@@ -712,7 +876,7 @@ function moveMail(ids, to) {
   };
   job.timer = setTimeout(job.commit, 5000);
   pendingMoves.add(job);
-  toast(t(to === "archive" ? "archived" : to === "trash" ? "trashed" : "restored"), {
+  toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
     ms: 5000,
     action: { label: t("undo"), run: async () => {
       if (job.done) return;
@@ -807,10 +971,12 @@ function renderToolbar() {
   if (S.multi.size > 1) {
     const ids = [...S.multi], rows = ids.map(rowOf).filter(Boolean);
     const inTrash = rows.every((x) => x.folder === "trash"), anyUnread = rows.some((x) => x.unread), allFlagged = rows.every((x) => x.flagged);
+    const inJunk = rows.every((x) => x.folder === "junk");
     tools.append(
-      inTrash ? iconBtn("inbox", t("restore"), () => moveMail(ids, "inbox"))
+      inTrash || inJunk ? iconBtn("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox"))
         : iconBtn("archive", t("archive_it"), () => moveMail(ids, "archive"), { key: "E" }),
       iconBtn("trash-2", t("trash_it"), () => moveMail(ids, "trash"), { key: "#", disabled: inTrash }),
+      iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), { key: "V" }),
       iconBtn(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), toggleUnread, { key: "U" }),
       iconBtn("star", allFlagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", cls: allFlagged ? "on" : "" }),
     );
@@ -819,12 +985,13 @@ function renderToolbar() {
   const has = !!S.thread;
   const id = S.focus || S.sel;
   const r = S.thread?.rows.find((x) => x.id === id);
-  const inTrash = r?.folder === "trash";
+  const inTrash = r?.folder === "trash", inJunk = r?.folder === "junk";
   tools.append(
-    inTrash
-      ? iconBtn("inbox", t("restore"), () => moveMail([id], "inbox"), { disabled: !has })
+    inTrash || inJunk
+      ? iconBtn("inbox", backLabel(r.folder), () => moveMail([id], "inbox"), { disabled: !has })
       : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
     iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
+    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on" : "" }),
   );
@@ -1703,7 +1870,7 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["appearance", "sun", "appearance"], ["region", "languages", "region"]];
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"]];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
     for (const [k, ic, lab] of tabs) nav.append(el("button", { class: "nav-item" + (k === tab ? " on" : ""), onclick: () => { grab(); tab = k; drawNav(); draw(); }, html: icon(ic) + `<span class="label">${esc(t(lab))}</span>` }));
@@ -1756,6 +1923,13 @@ async function openSettings() {
         el("label", {}, el("span", { class: "lab" }, t("default_font")), font),
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("default_size")), sizes), sample,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("undo_send")), seg), el("div", { class: "note" }, t("undo_note"))));
+    } else if (tab === "notify") {
+      const seg = el("div", { class: "seg" });
+      for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
+        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) askNotice(); draw(); } }, t(lab)));
+      }
+      body.append(el("h2", {}, t("notifications")), el("div", { class: "form" },
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg)));
     } else if (tab === "region") {
       const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
         setPref({ lang: val }); setLocale(PREFS); relabel(); relabelSheet();
@@ -1833,6 +2007,7 @@ function relabel() {
   $("#compose-btn").dataset.tip = t("compose");
   $("#search").placeholder = t("search");
   $("#banner-btn").textContent = t("settings");
+  syncFilterUI();
   renderNav();
   renderRows();
   if (S.compose) { composeState(); renderCompose(); }
@@ -1916,7 +2091,7 @@ function stepTextSize(d) {
 function shortcutsSheet() {
   const groups = [
     ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
-    ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
+    ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
   const grid = el("div", { class: "keys-grid" });
@@ -1943,6 +2118,7 @@ function onKey(e) {
     e.preventDefault(); stepTextSize(e.key === "0" ? 0 : e.key === "-" ? -1 : 1); return;
   }
   if (layerOpen()) { if (e.key === "Escape") { closeLayer(); } return; }
+  if (e.key === "Escape" && $("#app").classList.contains("side-open")) { e.preventDefault(); sideOpen(false); return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
@@ -1958,6 +2134,7 @@ function onKey(e) {
     if (k === "Escape") { e.preventDefault(); clearMulti(); }
     else if (k === "e") { e.preventDefault(); moveMail(ids, "archive"); }
     else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (!ids.map(rowOf).every((r) => r?.folder === "trash")) moveMail(ids, "trash"); }
+    else if (k === "v") { e.preventDefault(); moveKey(ids); }
     else if (k === "u") { e.preventDefault(); toggleUnread(); }
     else if (k === "s") { e.preventDefault(); toggleFlag(); }
     else if (k === "j" || k === "ArrowDown" || k === "k" || k === "ArrowUp") { e.preventDefault(); S.multi.clear(); step(k === "j" || k === "ArrowDown" ? 1 : -1); }
@@ -1975,6 +2152,7 @@ function onKey(e) {
   else if (k === "f") { e.preventDefault(); openCompose({ mode: "forward", id }); }
   else if (k === "e") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "archive") moveMail([id], "archive"); }
   else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "trash") moveMail([id], "trash"); }
+  else if (k === "v") { e.preventDefault(); moveKey([id]); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
   else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
@@ -2000,8 +2178,41 @@ $("#pane").addEventListener("scroll", (e) => $("#toolbar").classList.toggle("lin
 
 // ---------------------------------------------------------------- status
 
+// new mail while the window is not in front: the browser's own notice, and a click on it opens the mail
+const canNotice = () => "Notification" in window && Notification.permission === "granted" && PREFS.notify !== false;
+function askNotice() {
+  if (!("Notification" in window) || Notification.permission !== "default" || PREFS.notify === false) return;
+  try { Notification.requestPermission()?.catch?.(() => {}); } catch { /* not in this window */ }
+}
+const inFront = () => document.hasFocus() && !document.hidden;
+async function openNews(one) {
+  await openFolder("inbox");
+  if (one && rowOf(one.id)) selectRow(one.id);
+}
+function notice(live, one) {
+  try {
+    const names = [...new Set(live.map((x) => who(x.from)))];
+    const n = new Notification(one ? who(one.from) : t("n_new_mail", live.length),
+      { body: one ? one.subject || t("no_subject") : names.slice(0, 3).join(", "), tag: "ragdoll-news" });
+    n.onclick = () => { window.focus(); n.close(); openNews(one); };
+  } catch { /* the line at the bottom still shows */ }
+}
 async function refreshCounts() {
-  try { const st = await api("status"); applyStatus(st); } catch { /* next poll */ }
+  try { const st = await api("status", { focus: inFront(), web_notice: canNotice() }); applyStatus(st); } catch { /* next poll */ }
+}
+// new mail: one short line at the bottom, with a way to open it
+function showNews(news) {
+  const fresh = (news || []).filter((x) => x.n > S.newsN);
+  if (!fresh.length) return;
+  S.newsN = Math.max(...fresh.map((x) => x.n));
+  const now = Date.now() / 1000, live = fresh.filter((x) => now - x.at < 90);
+  if (PREFS.notify === false || !live.length) return;
+  const one = live.length === 1 ? live[0] : null;
+  toast(one ? `${who(one.from)}: ${one.subject || t("no_subject")}` : t("n_new_mail", live.length), {
+    id: "news", ms: 8000,
+    action: { label: t("open"), run: () => openNews(one) },
+  });
+  if (!inFront() && canNotice()) notice(live, one);
 }
 function applyStatus(st) {
   S.boot.folders = st.folders;
@@ -2017,6 +2228,7 @@ function applyStatus(st) {
   } else b.hidden = true;
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
+  showNews(st.news);
 }
 $("#banner-btn").addEventListener("click", openSettings);
 $("#update").addEventListener("click", () => {
@@ -2040,6 +2252,7 @@ else window.addEventListener("pywebviewready", nativeWindow);
 
 function start(boot) {
   S.boot = boot;
+  S.newsN = Math.max(0, ...(boot.news || []).map((x) => x.n));
   applyTheme(boot.theme);
   $("#app").hidden = false;
   $("#setup").hidden = true;
@@ -2047,7 +2260,10 @@ function start(boot) {
   $("#compose-btn").innerHTML = icon("square-pen");
   $("#compose-btn").dataset.tip = t("compose");
   $("#compose-btn").dataset.key = "C";
-  $("#compose-btn").onclick = () => openCompose({ mode: "new" });
+  $("#compose-btn").onclick = () => { sideOpen(false); openCompose({ mode: "new" }); };
+  $("#here-btn").onclick = () => sideOpen(true);
+  $("#side-scrim").onclick = () => sideOpen(false);
+  placeCompose();
   $("#account").onclick = accountMenu;
   $("#search-kbd").textContent = MAC ? "⌘K" : "Ctrl K";
   $("#search").placeholder = t("search");
@@ -2057,7 +2273,10 @@ function start(boot) {
   showEmpty();
   loadList();
   refreshCounts();
-  if (!start.timer) start.timer = setInterval(() => { if (!document.hidden) refreshCounts(); }, 5000);
+  // a hidden page still asks now and then, so its notice can show
+  let ticks = 0;
+  if (!start.timer) start.timer = setInterval(() => { if (!document.hidden || (canNotice() && ++ticks % 4 === 0)) refreshCounts(); }, 5000);
+  addEventListener("pointerdown", askNotice, { once: true });
 }
 
 (async function boot() {

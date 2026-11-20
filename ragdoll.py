@@ -10,11 +10,14 @@ is filled in two passes: headers and attachment names for every mail first
   sync [--bodies] [--workers N] [--all-folders]
                                             new mail, flags, deletions; --bodies keeps
                                             going until every body is indexed
-  search <words> [--folder F] [--from X] [--to X] [--since D] [--until D]
-         [--unread] [--att] [--limit N] [--json]
+  search [words] [--folder F] [--from X] [--to X] [--since D] [--until D]
+         [--unread] [--starred] [--att] [--limit N] [--json]
                                             all words must match subject, sender,
-                                            recipients, attachment names or body
-  list [--folder F] [--unread] [--since D] [--limit N] [--json]
+                                            recipients, attachment names or body;
+                                            with no words, the filters alone choose
+  list [--folder F] [the same filters] [--limit N] [--json]
+                                            one folder (the inbox when none is named)
+  folders [--json]                          the folders on the server and what is indexed
   thread <id> [--json]                      the whole conversation, inbox and sent
   read <id> [--new] [--json] [--html FILE] [--eml FILE]
   attach <id> [--out DIR] [--name PART] [--inline]
@@ -25,6 +28,11 @@ is filled in two passes: headers and attachment names for every mail first
   check <draft id> [--reply] [--blanks-ok] [--no-required-cc] [--json]
   send <draft id> --yes
   delete-draft <draft id> --yes
+  mark <id ...> [--read | --unread] [--star | --unstar]
+  archive <id ...>                          move to the archive folder
+  move <id ...> --to FOLDER                 a short name (inbox, archive, junk) or a
+                                            folder name from `folders`
+  trash <id ...> --yes                      move to the trash folder
   update [--check] [--rollback] [--json]    get the newest ragdoll from GitHub (see below)
 
 Ids look like inbox:9255, sent:1420, drafts:3 (folder short name and IMAP UID).
@@ -45,7 +53,7 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 ~/.local/share/hmail to their new names (and the paths in the config with them); the old
 HMAIL_* environment variables still work.
 """
-import argparse, base64, contextlib, datetime as dt, email, email.header, html as htmlmod, imaplib
+import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
 import json, mimetypes, os, re, smtplib, sqlite3, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
@@ -53,7 +61,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
 # turns those into "�B", and a reply then carried the broken name (16th Nov 2026). GB18030 is a
@@ -484,6 +492,52 @@ def fetch_raw(m, folder, uid):
     die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
 
 
+def cache_path(folder, uidv, uid):
+    key = hashlib.sha1(("%s|%s|%s" % (folder, uidv, uid)).encode()).hexdigest()
+    return os.path.join(CFG.home, "cache", key[:2], key + ".eml")
+
+
+def cache_get(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def cache_put(path, raw):
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".%d.tmp" % os.getpid()
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, path)
+
+
+def mail_raw(folder, uid, m=None):
+    """One whole mail. The copy the app or an earlier command kept is used when there is one
+    (a mail on the server never changes); a draft is always fetched, it may have been replaced."""
+    path = None
+    if folder != CFG.folders.get("drafts"):
+        with contextlib.suppress(sqlite3.Error):
+            c = db()
+            r = c.execute("select uidv from msgs where folder=? and uid=?", (folder, uid)).fetchone()
+            c.close()
+            if r:
+                path = cache_path(folder, r["uidv"], uid)
+                raw = cache_get(path)
+                if raw:
+                    return raw
+    if m is not None:
+        raw = fetch_raw(m, folder, uid)
+    else:
+        with session() as own:
+            raw = fetch_raw(own, folder, uid)
+    if path:
+        cache_put(path, raw)
+    return raw
+
+
 def all_folders(m):
     typ, data = m.list()
     out = []
@@ -753,6 +807,10 @@ create index if not exists msgs_folder_ts on msgs(folder, ts, uid);
 create virtual table if not exists fts using fts5(subject, frm, to_, atts, body, tokenize='trigram');
 create table if not exists state(folder text primary key, uidv integer);
 create table if not exists meta(k text primary key, v text);
+create table if not exists links(ref text, id integer);
+create index if not exists links_ref on links(ref);
+create index if not exists links_id on links(id);
+create trigger if not exists msgs_unlink after delete on msgs begin delete from links where id=old.id; end;
 """
 
 
@@ -761,6 +819,7 @@ def db():
     c = sqlite3.connect(os.path.join(CFG.home, "index.db"), timeout=600, check_same_thread=False)
     c.row_factory = sqlite3.Row
     c.execute("pragma journal_mode=wal")
+    c.execute("pragma synchronous=normal")      # safe with WAL, and each commit no longer waits for the disk
     c.executescript(SCHEMA)
     cols = {r[1] for r in c.execute("pragma table_info(msgs)")}
     if "has_body" not in cols:     # index made by the first version: every row had its body
@@ -1051,16 +1110,23 @@ def sync_bodies(c, folders, limit=None, workers=1, quiet=False):
     return done
 
 
-def quick_sync():
-    """Run before every read command: new mail only, never waits for a long sync."""
+def quick_sync(also=None):
+    """Run before every read command: new mail only, never waits for a long sync.
+    also: one more folder to bring up to date (the one the command asked for)."""
     c = db()
+    folders = list(CFG.sync_folders)
+    if also and also not in folders:
+        folders.append(also)
+    elif just_synced(c):        # the app or the command before this one looked a moment ago
+        bodies_later(c, folders)
+        return c
     with file_lock("headers", wait=False) as got:
         if not got:
             print("(another ragdoll is syncing; showing the index as it is)", file=sys.stderr)
             return c
         try:
             with session() as m:
-                for f in CFG.sync_folders:
+                for f in folders:
                     sync_headers(m, c, f)
         except (OSError, imaplib.IMAP4.abort) as e:
             # offline or the server is down: the index still answers
@@ -1069,13 +1135,50 @@ def quick_sync():
             return c
         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
         c.commit()
-    with file_lock("bodies", wait=False) as got:
-        if got:
-            try:
-                sync_bodies(c, CFG.sync_folders, limit=40, workers=1, quiet=True)
-            except (OSError, imaplib.IMAP4.abort):
-                c.rollback()
+    bodies_later(c, folders)
     return c
+
+
+FRESH = 20      # seconds: a read command within this time of the last look at the server does not look again
+
+
+def just_synced(c):
+    r = c.execute("select v from meta where k='last_sync'").fetchone()
+    try:
+        return bool(r) and 0 <= time.time() - int(r[0]) < FRESH
+    except ValueError:
+        return False
+
+
+def bodies_later(c, folders):
+    """The text of older mail is fetched by a process of its own: no command waits for it."""
+    if "unittest" in sys.modules or getattr(sys, "frozen", False):
+        return
+    if not c.execute("select 1 from msgs where has_body=0 and folder in (%s) limit 1"
+                     % ",".join("?" * len(folders)), folders).fetchone():
+        return
+    with file_lock("bodies", wait=False) as got:
+        if not got:
+            return              # the app or another command is already at it
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              close_fds=True, cwd=APP_DIR)
+    if sys.platform == "win32":
+        kw["creationflags"] = 0x08000000 | 0x00000200     # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    with contextlib.suppress(OSError):
+        subprocess.Popen([sys.executable, "-I", "-B", os.path.abspath(__file__), "bodies"], **kw)
+
+
+def cmd_bodies(a):
+    """Background: bring in the text of mail that has only its headers, then stop."""
+    c = db()
+    with file_lock("bodies", wait=False) as got:
+        if not got:
+            return
+        for _ in range(500):
+            if not sync_bodies(c, list(CFG.sync_folders), limit=150, workers=a.workers, quiet=True):
+                break
 
 
 # ------------------------------------------------------------------ output
@@ -1084,8 +1187,8 @@ def row_out(r, snippet=True):
     d = {"id": make_id(r["folder"], r["uid"]), "date": local_time(r["ts"]), "from": r["frm"],
          "to": r["to_"], "cc": r["cc"], "subject": r["subject"],
          "attachments": [x for x in (r["atts"] or "").split(" | ") if x],
-         "unread": not r["seen"], "answered": bool(r["answered"]), "forwarded": bool(r["forwarded"]),
-         "body_indexed": bool(r["has_body"])}
+         "unread": not r["seen"], "starred": bool(r["flagged"]), "answered": bool(r["answered"]),
+         "forwarded": bool(r["forwarded"]), "body_indexed": bool(r["has_body"])}
     if snippet:
         d["snippet"] = re.sub(r"\s+", " ", new_text(r["body"] or ""))[:200]
     return d
@@ -1096,18 +1199,26 @@ def marks(r):
     return ("↩" if r["answered"] else " ") + ("→" if r["forwarded"] else " ")
 
 
-def print_rows(rows, as_json, empty="(nothing found)"):
+def print_rows(rows, as_json, empty="(nothing found)", total=None):
+    """total: how many mails matched before --limit cut the list (said only when some are left out)."""
+    cut = total is not None and total > len(rows)
+    note = "(showing the newest %d of %d; --limit %d shows all)" % (len(rows), total or 0, total or 0)
     if as_json:
         print(json.dumps([row_out(r) for r in rows], ensure_ascii=False, indent=1))
+        if cut:
+            print(note, file=sys.stderr)       # the JSON stays a plain list
         return
     for r in rows:
         f = addrs(r["frm"])
         who = (f[0][0] or f[0][1]) if f else ""
-        print("%-14s %s %s%s %-20s %s%s" % (make_id(r["folder"], r["uid"]), local_time(r["ts"]),
-                                            "*" if not r["seen"] else " ", marks(r), who[:20], r["subject"],
+        print("%-14s %s %s%s%s %-20s %s%s" % (make_id(r["folder"], r["uid"]), local_time(r["ts"]),
+                                            "*" if not r["seen"] else " ", "★" if r["flagged"] else " ",
+                                            marks(r), who[:20], r["subject"],
                                           "  [%s]" % r["atts"] if r["atts"] else ""))
     if not rows:
         print(empty)
+    if cut:
+        print(note)
 
 
 MAX_TERM = 200     # a longer search word is cut: a 1 MB word kept the index busy for minutes
@@ -1123,6 +1234,9 @@ def add_filters(a, where, params):
     if getattr(a, "folder", None):
         where.append("m.folder=?")
         params.append(CFG.folder(a.folder))
+    elif CFG.folders.get("junk"):           # junk mail is found only when its folder is asked for
+        where.append("m.folder!=?")
+        params.append(CFG.folders["junk"])
     if getattr(a, "from_", None):
         where.append("m.frm like ? escape '\\'")
         params.append(like_arg(a.from_))
@@ -1137,11 +1251,14 @@ def add_filters(a, where, params):
         params.append(day_start(a.until, 1))
     if getattr(a, "unread", False):
         where.append("m.seen=0")
+    if getattr(a, "starred", False):
+        where.append("m.flagged=1")
     if getattr(a, "att", False):
         where.append("m.atts!=''")
 
 
-def search_rows(c, words, a):
+def search_where(words, a):
+    """(where clause, params) for the words and the filters in a."""
     where, params = [], []
     long_terms = []
     for t in (nfc(w)[:MAX_TERM] for w in words[:MAX_TERMS]):
@@ -1157,8 +1274,17 @@ def search_rows(c, words, a):
         where.insert(0, "m.id in (select rowid from fts where fts match ?)")
         params.insert(0, " AND ".join(long_terms))
     add_filters(a, where, params)
-    sql = "select m.* from msgs m %s order by m.ts desc limit ?" % (("where " + " and ".join(where)) if where else "")
-    return c.execute(sql, params + [a.limit]).fetchall()
+    return (("where " + " and ".join(where)) if where else ""), params
+
+
+def search_rows(c, words, a):
+    where, params = search_where(words, a)
+    return c.execute("select m.* from msgs m %s order by m.ts desc limit ?" % where, params + [a.limit]).fetchall()
+
+
+def search_total(c, words, a):
+    where, params = search_where(words, a)
+    return c.execute("select count(*) from msgs m %s" % where, params).fetchone()[0]
 
 
 # ------------------------------------------------------------------ read commands
@@ -1173,8 +1299,8 @@ def cmd_status(a):
          "folders": {r["folder"]: r["n"] for r in per}, "index": os.path.join(CFG.home, "index.db"),
          "version": __version__}
     st = update_state()
-    latest = st.get("latest") or {}
-    if latest.get("behind") and not latest.get("ahead"):
+    latest = update_waiting()
+    if latest:
         d["update_available"] = latest.get("version")
     if st.get("check_error"):
         d["update_check_error"] = st["check_error"]
@@ -1208,8 +1334,11 @@ def cmd_sync(a):
 
 
 def cmd_search(a):
-    c = db() if a.no_sync else quick_sync()
-    print_rows(search_rows(c, a.words, a), a.json)
+    if not a.words and not any((a.folder, a.from_, a.to, a.since, a.until, a.unread, a.starred, a.att)):
+        die("give a word or a filter (--from, --to, --since, --until, --folder, --unread, --starred, --att)")
+    c = db() if a.no_sync else quick_sync(CFG.folder(a.folder) if a.folder else None)
+    rows = search_rows(c, a.words, a)
+    print_rows(rows, a.json, total=search_total(c, a.words, a) if len(rows) >= a.limit else None)
     if not a.json:
         missing = c.execute("select count(*) from msgs where has_body=0").fetchone()[0]
         if missing:
@@ -1218,52 +1347,89 @@ def cmd_search(a):
 
 
 def cmd_list(a):
-    c = db() if a.no_sync else quick_sync()
     a.folder = a.folder or "inbox"
-    where, params = [], []
-    add_filters(a, where, params)
-    sql = "select m.* from msgs m where %s order by m.ts desc limit ?" % " and ".join(where)
-    print_rows(c.execute(sql, params + [a.limit]).fetchall(), a.json)
+    c = db() if a.no_sync else quick_sync(CFG.folder(a.folder))
+    rows = search_rows(c, [], a)
+    print_rows(rows, a.json, total=search_total(c, [], a) if len(rows) >= a.limit else None)
+
+
+def cmd_folders(a):
+    """The folders on the server, the short name ragdoll has for each, and what the index holds."""
+    with session() as m:
+        names = all_folders(m)
+    n = {r["folder"]: (r["n"], r["u"]) for r in db().execute(
+        "select folder, count(*) n, coalesce(sum(seen=0),0) u from msgs group by folder")}
+    out = [{"folder": f, "short": CFG.short(f) if CFG.short(f) != f else None,
+            "indexed": n.get(f, (0, 0))[0], "unread": n.get(f, (0, 0))[1],
+            "synced": f in CFG.sync_folders} for f in names]
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return
+    for d in out:
+        print("%-24s %-8s %6d indexed, %d unread%s" % (d["folder"], d["short"] or "", d["indexed"], d["unread"],
+                                                      "" if d["synced"] else "  (indexed only when asked for)"))
+
+
+def fill_links(c):
+    """links(ref, id): every Message-ID a mail names (its own, In-Reply-To, References) and its bare
+    subject, so a thread is found without reading the whole index. Filled for rows that lack it."""
+    top = c.execute("select coalesce(max(id),0) from links").fetchone()[0]
+    rows = c.execute("select id, msgid, irt, refs, subject from msgs where id>?", (top,)).fetchall()
+    if not rows:
+        return
+    out = []
+    for r in rows:
+        refs = {r["msgid"] or ""} | set(re.findall(r"<[^<>]+>", (r["refs"] or "") + " " + (r["irt"] or "")))
+        if r["irt"]:
+            refs.add(r["irt"])
+        refs.discard("")
+        bs = bare_subject(r["subject"])
+        if bs:
+            refs.add("s:" + bs)
+        refs.add("")            # every mail has a row, so the newest id in links is the newest one done
+        out += [(x, r["id"]) for x in refs]
+    c.executemany("insert into links(ref, id) values(?,?)", out)
+    c.commit()
 
 
 def thread_rows(c, row):
+    fill_links(c)
     ids = {row["msgid"]} | set(re.findall(r"<[^<>]+>", (row["refs"] or "") + " " + (row["irt"] or "")))
     ids.discard("")
     ids.discard(None)
-    seen = {}
+    seen = set()
     new = set(ids)
     for _ in range(6):
-        if not new:      # with no ids, "msgid in ('') or irt in ('')" matched every mail that is not a reply
+        if not new:
             break
-        found = []
-        new = sorted(new)
-        for k in range(0, len(new), 200):
-            q = new[k:k + 200]
-            marks = ",".join("?" * len(q))
-            found += c.execute("select * from msgs where msgid in (%s) or irt in (%s)" % (marks, marks),
-                               q * 2).fetchall()
-            found += c.execute("select * from msgs where " + " or ".join(["refs like ? escape '\\'"] * len(q)),
-                               [like_arg(i, None) for i in q]).fetchall()
+        q, found = sorted(new), set()
+        for k in range(0, len(q), 500):
+            part = q[k:k + 500]
+            found |= {r[0] for r in c.execute("select id from links where ref in (%s)" % ",".join("?" * len(part)), part)}
+        fresh = sorted(found - seen)
+        seen |= found
         new = set()
-        for r in found:
-            if r["id"] not in seen:
-                seen[r["id"]] = r
-                for x in [r["msgid"]] + re.findall(r"<[^<>]+>", (r["refs"] or "") + " " + (r["irt"] or "")):
+        for k in range(0, len(fresh), 500):
+            part = fresh[k:k + 500]
+            for r in c.execute("select msgid, irt, refs from msgs where id in (%s)" % ",".join("?" * len(part)), part):
+                for x in [r["msgid"], r["irt"]] + re.findall(r"<[^<>]+>", (r["refs"] or "") + " " + (r["irt"] or "")):
                     if x and x not in ids:
                         ids.add(x)
                         new.add(x)
     # same bare subject within 180 days catches clients that drop References
     bs = bare_subject(row["subject"])
     if bs:
-        hits = [r["id"] for r in c.execute("select id, subject from msgs where ts between ? and ?",
-                                           (row["ts"] - 180 * 86400, row["ts"] + 180 * 86400))
-                if r["id"] not in seen and bare_subject(r["subject"]) == bs]
-        for k in range(0, len(hits), 500):
-            part = hits[k:k + 500]
-            for r in c.execute("select * from msgs where id in (%s)" % ",".join("?" * len(part)), part):
-                seen[r["id"]] = r
-    seen[row["id"]] = row
-    return sorted(seen.values(), key=lambda r: r["ts"])
+        seen |= {r[0] for r in c.execute(
+            "select l.id from links l join msgs m on m.id=l.id where l.ref=? and m.ts between ? and ?",
+            ("s:" + bs, row["ts"] - 180 * 86400, row["ts"] + 180 * 86400))}
+    seen.discard(row["id"])
+    out = {row["id"]: row}
+    seen = sorted(seen)
+    for k in range(0, len(seen), 500):
+        part = seen[k:k + 500]
+        for r in c.execute("select * from msgs where id in (%s)" % ",".join("?" * len(part)), part):
+            out[r["id"]] = r
+    return sorted(out.values(), key=lambda r: (r["ts"] or 0, r["id"]))
 
 
 def cmd_thread(a):
@@ -1288,8 +1454,7 @@ def cmd_thread(a):
 
 def cmd_read(a):
     folder, uid = parse_id(a.id)
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
+    raw = mail_raw(folder, uid)
     msg = to_msg(raw)
     plain, html = bodies(msg)
     text = plain.strip() or html_to_text(html)
@@ -1352,8 +1517,7 @@ def with_meta(html):
 
 def cmd_attach(a):
     folder, uid = parse_id(a.id)
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
+    raw = mail_raw(folder, uid)
     out = os.path.expanduser(a.out or ".")
     os.makedirs(out, exist_ok=True)
     n, used = 0, set()
@@ -1593,7 +1757,7 @@ def cmd_draft(a):
         src = a.reply or a.forward
         if src:
             folder, uid = parse_id(src)
-            orig = to_msg(fetch_raw(m, folder, uid))
+            orig = to_msg(mail_raw(folder, uid, m))
             mode = "reply" if a.reply else "forward"
         remove = [ad for _, ad in parse_people(a.remove)]
         drop = set(remove)          # an address named in --to/--cc is meant, the owner's own included
@@ -1881,10 +2045,10 @@ def move_uids(m, folder, uids, dest):
     return moved
 
 
-def cmd_trash(a):
-    """Move mails to the trash folder (recoverable from there)."""
+def ids_by_folder(a):
+    """(ids, {server folder: [uids]}) from the ids on the command line and --from-file."""
     ids = list(a.ids)
-    if a.from_file:
+    if getattr(a, "from_file", None):
         with open(a.from_file, encoding="utf-8") as f:
             ids += [x.strip() for x in f if x.strip()]
     if not ids:
@@ -1892,7 +2056,99 @@ def cmd_trash(a):
     by_folder = {}
     for i in ids:
         f, u = parse_id(i)
-        by_folder.setdefault(f, []).append(u)
+        if u not in by_folder.setdefault(f, []):
+            by_folder[f].append(u)
+    return ids, by_folder
+
+
+def forget_rows(c, by_folder):
+    """Take moved mails out of the index; the next sync finds them in their new folder."""
+    for f, uids in by_folder.items():
+        for u in uids:
+            r = c.execute("select id from msgs where folder=? and uid=?", (f, u)).fetchone()
+            if r:
+                c.execute("delete from msgs where id=?", (r["id"],))
+                c.execute("delete from fts where rowid=?", (r["id"],))
+    c.commit()
+
+
+def cmd_mark(a):
+    """Read / unread and star / unstar, on the server and in the index."""
+    todo = [(col, flag, on) for col, flag, on, want in (
+        ("seen", "\\Seen", 1, a.read), ("seen", "\\Seen", 0, a.unread),
+        ("flagged", "\\Flagged", 1, a.star), ("flagged", "\\Flagged", 0, a.unstar)) if want]
+    if not todo:
+        die("say what to mark: --read, --unread, --star or --unstar")
+    ids, by_folder = ids_by_folder(a)
+    c = db()
+    missing = [make_id(f, u) for f, uids in by_folder.items() for u in uids
+               if not c.execute("select 1 from msgs where folder=? and uid=?", (f, u)).fetchone()]
+    if missing:
+        die("no such mail in the index: %s (moved or deleted? run search again)" % ", ".join(missing[:10]))
+    with session() as m:
+        for f, uids in by_folder.items():
+            select(m, f, readonly=False)
+            for i in range(0, len(uids), 200):
+                batch = ",".join(map(str, uids[i:i + 200]))
+                for col, flag, on in todo:
+                    typ, data = m.uid("STORE", batch, "+FLAGS.SILENT" if on else "-FLAGS.SILENT", "(%s)" % flag)
+                    if typ != "OK":
+                        die("the server refused: %s" % data)
+    n = sum(len(u) for u in by_folder.values())
+    for f, uids in by_folder.items():
+        for col, flag, on in todo:
+            c.executemany("update msgs set %s=? where folder=? and uid=?" % col, [(on, f, u) for u in uids])
+    c.commit()
+    words = {("seen", 1): "read", ("seen", 0): "unread", ("flagged", 1): "starred", ("flagged", 0): "not starred"}
+    print("marked %d mail%s %s" % (n, "" if n == 1 else "s", " and ".join(words[(col, on)] for col, _, on in todo)))
+
+
+def move_dest(m, name):
+    """The server folder for a short name or a folder name. Only the archive folder is made when missing."""
+    key = (name or "").strip()
+    if not key:
+        die("say where to: --to FOLDER (see `ragdoll folders`)")
+    names = all_folders(m)
+    dest = CFG.folders.get(key.lower())
+    if not dest and key.lower() == "archive":
+        dest = next((n for n in names if n.lower() in ("archive", "archives", "已归档", "归档")), "Archive")
+    if not dest:
+        dest = next((n for n in names if n == key), None) or next((n for n in names if n.lower() == key.lower()), None)
+    if not dest:
+        die("no folder %r on the server. There are: %s" % (name, ", ".join(names)))
+    if dest not in names:
+        if key.lower() != "archive":
+            die("the %s folder %r in the config is not on the server. There are: %s" % (key, dest, ", ".join(names)))
+        typ, data = m.create(q(dest))
+        if typ != "OK":
+            die("could not make the folder %s: %s" % (dest, data))
+    return dest
+
+
+def cmd_move(a):
+    """Move mails to another folder of the same mailbox. Nothing is deleted; move back to undo."""
+    to = "archive" if a.cmd == "archive" else a.to
+    if (to or "").strip().lower() == "trash" or to == CFG.folders.get("trash"):
+        die("to the trash: ragdoll trash <ids> --yes (only after the owner approved the list)")
+    ids, by_folder = ids_by_folder(a)
+    with session() as m:
+        dest = move_dest(m, to)
+        if dest == CFG.folders.get("trash"):
+            die("to the trash: ragdoll trash <ids> --yes (only after the owner approved the list)")
+        by_folder.pop(dest, None)
+        total = 0
+        for f, uids in by_folder.items():
+            total += move_uids(m, f, sorted(uids), dest)
+    forget_rows(db(), by_folder)
+    print("moved %d mail%s to %s" % (total, "" if total == 1 else "s", dest))
+    if total and dest not in CFG.sync_folders:
+        print("(see them with: ragdoll list --folder %s)" % (CFG.short(dest) if " " not in CFG.short(dest)
+                                                             else '"%s"' % dest))
+
+
+def cmd_trash(a):
+    """Move mails to the trash folder (recoverable from there)."""
+    ids, by_folder = ids_by_folder(a)
     if not a.yes:
         print("would move %d mails to %s: %s" % (len(ids), CFG.folders["trash"],
                                                  {CFG.short(f): len(u) for f, u in by_folder.items()}))
@@ -1904,14 +2160,7 @@ def cmd_trash(a):
             if f == CFG.folders["trash"]:
                 continue
             total += move_uids(m, f, sorted(set(uids)), CFG.folders["trash"])
-    c = db()
-    for f, uids in by_folder.items():
-        for u in uids:
-            r = c.execute("select id from msgs where folder=? and uid=?", (f, u)).fetchone()
-            if r:
-                c.execute("delete from msgs where id=?", (r["id"],))
-                c.execute("delete from fts where rowid=?", (r["id"],))
-    c.commit()
+    forget_rows(db(), by_folder)
     print("moved %d mails to %s" % (total, CFG.folders["trash"]))
 
 
@@ -2212,16 +2461,23 @@ def maybe_check_later():
                           "--background-check"], **kw)
 
 
+def update_waiting():
+    """What the last check found, when a newer ragdoll is waiting for this clone as it is now; else None.
+    A check made before the clone moved (another branch, an update) says nothing about it."""
+    st = update_state()
+    latest = st.get("latest") or {}
+    if not latest.get("behind") or latest.get("ahead") or latest.get("sha") == st.get("skip"):
+        return None
+    code, head, _ = git(APP_DIR, "rev-parse", "HEAD", timeout=10)
+    return latest if code == 0 and head == latest.get("head") else None
+
+
 def update_notice():
     """One line on stderr when a newer ragdoll is waiting (stdout stays clean for --json)."""
     if not update_enabled():
         return
-    st = update_state()
-    latest = st.get("latest") or {}
-    if not latest.get("behind") or latest.get("ahead") or latest.get("sha") == st.get("skip"):
-        return
-    code, head, _ = git(APP_DIR, "rev-parse", "HEAD", timeout=10)
-    if code == 0 and head == latest.get("head"):
+    latest = update_waiting()
+    if latest:
         print("ragdoll %s is out (%d change(s); this is %s). Run: ragdoll update"
               % (latest.get("version"), latest["behind"], __version__), file=sys.stderr)
 
@@ -2253,6 +2509,9 @@ def parser():
     ap.add_argument("--version", action="version", version="ragdoll " + __version__)
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("status").set_defaults(fn=cmd_status)
+    p = sp.add_parser("bodies", help=argparse.SUPPRESS)
+    p.add_argument("--workers", type=int, default=3)
+    p.set_defaults(fn=cmd_bodies)
     p = sp.add_parser("sync")
     p.add_argument("--bodies", action="store_true")
     p.add_argument("--workers", type=int, default=4)
@@ -2261,12 +2520,13 @@ def parser():
     for name, fn in (("search", cmd_search), ("list", cmd_list)):
         p = sp.add_parser(name)
         if name == "search":
-            p.add_argument("words", nargs="+")
-            p.add_argument("--from", dest="from_")
-            p.add_argument("--to")
-            p.add_argument("--until")
-            p.add_argument("--att", action="store_true")
-        p.add_argument("--folder")
+            p.add_argument("words", nargs="*")
+        p.add_argument("--from", dest="from_", help="part of the sender's name or address")
+        p.add_argument("--to", help="part of a To or Cc name or address")
+        p.add_argument("--until", help="up to and including this day")
+        p.add_argument("--att", action="store_true", help="only mail with attachments")
+        p.add_argument("--starred", action="store_true")
+        p.add_argument("--folder", help="a short name (inbox, sent, drafts, ...) or a folder name from `folders`")
         p.add_argument("--since")
         p.add_argument("--unread", action="store_true")
         p.add_argument("--limit", type=int, default=20)
@@ -2323,6 +2583,28 @@ def parser():
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_send)
+    p = sp.add_parser("folders", help="the folders on the server")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_folders)
+    p = sp.add_parser("mark", help="read / unread, star / unstar")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--from-file", help="one id per line")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--read", action="store_true")
+    g.add_argument("--unread", action="store_true")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--star", action="store_true")
+    g.add_argument("--unstar", action="store_true")
+    p.set_defaults(fn=cmd_mark)
+    p = sp.add_parser("archive", help="move mails to the archive folder")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--from-file", help="one id per line")
+    p.set_defaults(fn=cmd_move)
+    p = sp.add_parser("move", help="move mails to another folder")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--to", help="a short name (inbox, archive, junk) or a folder name from `folders`")
+    p.add_argument("--from-file", help="one id per line")
+    p.set_defaults(fn=cmd_move)
     p = sp.add_parser("trash")
     p.add_argument("ids", nargs="*")
     p.add_argument("--from-file", help="one id per line")
@@ -2357,6 +2639,9 @@ def main(argv=None):
     a = parser().parse_args(argv)
     if a.cmd == "update":
         return a.fn(a)
+    if a.cmd == "bodies":
+        with running(a.cmd):
+            return a.fn(a)
     maybe_check_later()
     try:
         with running(a.cmd):
