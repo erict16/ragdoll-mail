@@ -4,7 +4,9 @@ import re
 import sys
 
 VERSION = re.search(r'^__version__ = "([^"]+)"', open("ragdoll.py", encoding="utf-8").read(), re.M).group(1)
-ICON = "assets/icon.png"        # PyInstaller turns it into .icns / .ico (needs Pillow)
+# PyInstaller turns it into .icns / .ico (needs Pillow). macOS gets its own icon on Apple's
+# 1024 grid (824 px tile, room for the shadow); Windows keeps the full-size one.
+ICON = "assets/icon-mac.png" if sys.platform == "darwin" else "assets/icon.png"
 
 a = Analysis(["ragdoll_app.py"], datas=[("app", "app")], hiddenimports=["ragdoll"],
              excludes=["tkinter", "unittest", "pydoc"])

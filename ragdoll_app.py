@@ -2305,7 +2305,8 @@ def run_window(url, home):
     elif sys.platform == "win32":
         w.events.shown += lambda: window_theme(dark, "#191919" if dark else "#FFFFFF",
                                                "#E8E8E6" if dark else "#191919")
-    icon = os.path.join(STATIC, "logo.png")
+    # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, so give it the Mac one.
+    icon = os.path.join(STATIC, "logo-mac.png" if sys.platform == "darwin" else "logo.png")
     webview.start(private_mode=False, storage_path=os.path.join(home, "webview"),
                   icon=icon if os.path.exists(icon) else None)
 

@@ -1088,12 +1088,8 @@ function msgNode(r, expanded) {
   const toLine = el("div", { class: "msg-to" }, (t("to") + " ") + to.map(who).join(", "));
   const snip = el("div", { class: "msg-snip" }, r.snippet);
   whoBox.append(expanded ? toLine : snip);
+  // reply / reply all / forward live in the toolbar only; it acts on the message clicked last
   head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts) }, expanded ? longTime(r.ts) : shortTime(r.ts)));
-  const acts = el("div", { class: "msg-acts" },
-    iconBtn("reply", t("reply"), (e) => { e.stopPropagation(); openCompose({ mode: "reply", id: r.id }); }),
-    iconBtn("reply-all", t("replyall"), (e) => { e.stopPropagation(); openCompose({ mode: "replyall", id: r.id }); }),
-    iconBtn("forward", t("forward"), (e) => { e.stopPropagation(); openCompose({ mode: "forward", id: r.id }); }));
-  head.append(acts);
   node.append(head);
   head.addEventListener("click", (e) => {
     if (e.target.closest("button")) return;
@@ -1132,6 +1128,12 @@ async function loadBody(node, r) {
 
 function renderBody(body, m) {
   body.replaceChildren();
+  // attachments sit right under the mail's header, above the text
+  if (m.atts.length) {
+    const atts = el("div", { class: "atts" });
+    for (const a of m.atts) atts.append(attNode(a, m.id));
+    body.append(atts);
+  }
   const remote = m.remote && S.showImages.has(m.id);
   if (m.remote && !remote) {
     body.append(el("div", { class: "imgs-bar" }, el("span", { html: icon("image", "small") }), el("span", {}, t("images_hidden")), el("span", { class: "grow" }),
@@ -1139,11 +1141,6 @@ function renderBody(body, m) {
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
-  if (m.atts.length) {
-    const atts = el("div", { class: "atts" });
-    for (const a of m.atts) atts.append(attNode(a, m.id));
-    body.append(atts);
-  }
 }
 
 function attNode(a, id) {
