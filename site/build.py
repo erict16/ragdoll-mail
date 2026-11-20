@@ -108,7 +108,7 @@ EN = {
          "license, so anyone can check what it does."),
     ],
     "e_h2": "Try it on your own mailbox.", "e_sub": "Free. No account. No ads.",
-    "foot": ["Source code", "Command line", "Report a problem", "Tencent Exmail setup"],
+    "foot": ["Source code", "Command line", "Report a problem", "Tencent Exmail setup", "Compare mail apps"],
 }
 
 ZH = dict(EN, **{
@@ -170,7 +170,7 @@ ZH = dict(EN, **{
         ("真的免费吗？", "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
     "e_h2": "用你自己的邮箱试试。", "e_sub": "免费，不用注册，没有广告。",
-    "foot": ["源代码", "命令行", "反馈问题", "腾讯企业邮箱设置"],
+    "foot": ["源代码", "命令行", "反馈问题", "腾讯企业邮箱设置", "邮件软件对比"],
 })
 
 
@@ -342,6 +342,7 @@ def page(L):
   <a href="{REPO}/blob/main/docs/command-line.md">{e(L['foot'][1])}</a>
   <a href="{REPO}/issues">{e(L['foot'][2])}</a>
   <a href="exmail/">{e(L['foot'][3])}</a>
+  <a href="compare/">{e(L['foot'][4])}</a>
   <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
 </div></footer>
 <script src="{up}main.js" defer></script>
@@ -356,6 +357,7 @@ def page(L):
 
 GUIDE_EN = {
     "lang": "en", "path": "exmail/", "other": "../zh/exmail/", "other_name": "简体中文", "hreflang": "zh-Hans",
+    "en_path": "exmail/", "zh_path": "zh/exmail/",
     "home": "../", "og": "og.png",
     "title": "Tencent Exmail on Mac and Windows: IMAP settings and a search that works",
     "desc": "Use Tencent Exmail (腾讯企业邮箱) in a mail app on Mac or Windows: IMAP imap.exmail.qq.com:993, "
@@ -409,6 +411,7 @@ GUIDE_EN = {
 
 GUIDE_ZH = {
     "lang": "zh-Hans", "path": "zh/exmail/", "other": "../../exmail/", "other_name": "English", "hreflang": "en",
+    "en_path": "exmail/", "zh_path": "zh/exmail/",
     "home": "../", "og": "og-zh.png",
     "title": "腾讯企业邮箱 Mac / Windows 客户端设置：IMAP 服务器、专用密码、搜索",
     "desc": "在 Mac 和 Windows 上用腾讯企业邮箱：收信 imap.exmail.qq.com:993，发信 smtp.exmail.qq.com:465，"
@@ -454,15 +457,126 @@ GUIDE_ZH = {
 }
 
 
+# ---------------------------------------------------------------- the comparison
+# What people search when they look for another mail app ("Foxmail alternative", "Exmail client for Mac"):
+# the same table as the README, gaps included.
+
+YES = "Yes"
+COMPARE_EN = {
+    "lang": "en", "path": "compare/", "other": "../zh/compare/", "other_name": "简体中文", "hreflang": "zh-Hans",
+    "en_path": "compare/", "zh_path": "zh/compare/", "home": "../", "og": "og.png",
+    "title": "Ragdoll Mail vs Foxmail, Outlook, Apple Mail, Thunderbird and Spark",
+    "desc": "A free, open-source mail app for Mac and Windows compared with Foxmail, Outlook, Apple Mail, Thunderbird "
+            "and Spark: price, privacy, search, Tencent Exmail and QQ Mail support, and what it does not do yet.",
+    "kick": "Compare",
+    "h1": "How Ragdoll Mail compares",
+    "lead": "Ragdoll Mail does one thing: your own mailbox, with a search that finds the mail. Here it is next to "
+            "the apps you may know, the good parts and the gaps.",
+    "cmp_h": "Side by side",
+    "cmp_cols": ["", "Ragdoll Mail", "Apple Mail", "Outlook (new)", "Thunderbird", "Foxmail", "Spark"],
+    "cmp": [
+        ("Price", "Free", "Free", "Free with ads, or paid", "Free", "Free", "Free plan, paid plan"),
+        ("Mac and Windows", "Both", "Mac only", "Both", "Both", "Both", "Both"),
+        ("Mail goes straight between you and your mail server", YES, YES, "A copy is kept in Microsoft's cloud", YES, YES,
+         "Goes through Spark's servers"),
+        ("Open code that anyone can check", YES, "No", "No", YES, "No", "No"),
+        ("Your own AI assistant can use the mailbox", YES, "No", "No", "No", "No", "No"),
+        ("Phone app", "No", YES, YES, "Android", "No", YES),
+        ("Several mailboxes in one window", "Not yet", YES, YES, YES, YES, YES),
+    ],
+    "cmp_note": "Compared from each product's public pages, November 2026. Something wrong or out of date? "
+                "Open an issue on GitHub and we will fix it.",
+    "why_blocks": [
+        ("Where Ragdoll Mail is strong", [
+            "Search. It keeps a full-text index on your computer, so a word, a name or an order number finds the right "
+            "mails in under a tenth of a second, in Chinese and English, also offline. Mailboxes like Tencent Exmail "
+            "give back the whole folder when a mail app asks them to search.",
+            "Privacy. The app talks only to your own mail server. Your password is in the system's password store.",
+            "Fewer mistakes. Undo send, send later, and a check for a missing attachment, an empty subject or a "
+            "[Name] left in the text.",
+            "Chinese mail. Names and file names from older Chinese mail systems show as they should."]),
+        ("Where the others are better", [
+            "Ragdoll Mail has no phone app and no calendar, and it shows one mailbox at a time. If you need those, "
+            "use one of the others, or use both: they read the same mailbox."]),
+    ],
+    "q_h": "Questions",
+    "q": [
+        ("Is there a good Foxmail alternative for Mac?",
+         "Ragdoll Mail is one: it runs on Mac (Apple silicon) and Windows, signs in to the same mailboxes as Foxmail "
+         "(Tencent Exmail, QQ Mail, 163 and any IMAP mailbox), and its search answers at once."),
+        ("Which mail app works best with Tencent Exmail?",
+         "Any IMAP app can read Exmail, but Exmail's own search gives back the whole folder. Ragdoll Mail searches "
+         "its own index instead, so only the mails with your words come back."),
+        ("Can I keep my current mail app?",
+         "Yes. Ragdoll Mail reads the same mailbox. Your phone and your other mail apps keep working as before."),
+        ("What does it cost?", "Nothing. It is free and open source (MIT). No account, no ads."),
+    ],
+    "cta_h": "Try it on your own mailbox",
+    "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
+    "nav_home": "Ragdoll Mail", "foot": ["Source code", "Command line", "Report a problem"],
+}
+
+SHI = "有"
+COMPARE_ZH = {
+    "lang": "zh-Hans", "path": "zh/compare/", "other": "../../compare/", "other_name": "English", "hreflang": "en",
+    "en_path": "compare/", "zh_path": "zh/compare/", "home": "../", "og": "og-zh.png",
+    "title": "Foxmail 替代之选：腾讯企业邮箱、QQ 邮箱的 Mac / Windows 客户端对比",
+    "desc": "免费开源的邮件客户端 Ragdoll Mail，和 Foxmail、Outlook、苹果邮件、Thunderbird、Spark 对比："
+            "价格、隐私、搜索、腾讯企业邮箱和 QQ 邮箱支持，以及它还做不到的地方。",
+    "kick": "对比",
+    "h1": "Ragdoll Mail 和其他邮件软件比",
+    "lead": "Ragdoll Mail 只做一件事：用你自己的邮箱收发邮件，而且一搜就到。下面把它和常见的邮件软件放在一起，"
+            "优点和不足都写清楚。",
+    "cmp_h": "逐项对比",
+    "cmp_cols": ["", "Ragdoll Mail", "苹果“邮件”", "新版 Outlook", "Thunderbird", "Foxmail", "Spark"],
+    "cmp": [
+        ("价格", "免费", "免费", "免费版有广告，或付费", "免费", "免费", "有免费版和付费版"),
+        ("Mac 和 Windows", "都有", "只有 Mac", "都有", "都有", "都有", "都有"),
+        ("邮件只在你和邮箱服务器之间走", "是", "是", "会在微软云端存一份", "是", "是", "要经过 Spark 的服务器"),
+        ("代码公开，谁都能查", "是", "否", "否", "是", "否", "否"),
+        ("你自己的 AI 助手可以用这个邮箱", "是", "否", "否", "否", "否", "否"),
+        ("手机版", "没有", SHI, SHI, "安卓", "没有", SHI),
+        ("一个窗口里看多个邮箱", "还没有", "可以", "可以", "可以", "可以", "可以"),
+    ],
+    "cmp_note": "根据各产品公开的页面整理，2026 年 11 月。有写错或过时的地方？在 GitHub 上告诉我们，马上改。",
+    "why_blocks": [
+        ("Ragdoll Mail 强在哪", [
+            "搜索。它在你电脑上建全文索引，搜一个词、一个人名或订单号，0.1 秒内就找到对的邮件，中文英文都行，断网也能搜。"
+            "腾讯企业邮箱这类邮箱，邮件软件让它按内容搜时，它会把整个文件夹都返回。",
+            "隐私。软件只连你自己的邮件服务器，密码存在系统自带的钥匙串里。",
+            "少出错。发出后可以撤回，可以定时发送；写了“附件”却没附件、主题空着、[姓名] 没改，都会提醒。",
+            "中文邮件。老系统发来的中文名字和附件名，都能正常显示，不会乱码。"]),
+        ("别人强在哪", [
+            "Ragdoll Mail 没有手机版，没有日历，一次只能看一个邮箱。需要这些的话，用别的软件，或者两个一起用：它们读的是同一个邮箱。"]),
+    ],
+    "q_h": "常见问题",
+    "q": [
+        ("Mac 上有好用的 Foxmail 替代吗？",
+         "Ragdoll Mail 就是一个：支持 Mac（M 系列芯片）和 Windows，能登录 Foxmail 能登录的邮箱"
+         "（腾讯企业邮箱、QQ 邮箱、163 和任何 IMAP 邮箱），而且搜索秒出结果。"),
+        ("腾讯企业邮箱用哪个客户端好？",
+         "任何支持 IMAP 的软件都能收企业邮箱，但企业邮箱自带的搜索会把整个文件夹都返回。"
+         "Ragdoll Mail 搜的是自己的本地索引，只返回真正含这些词的邮件。"),
+        ("能和现在用的邮件软件一起用吗？", "能。Ragdoll Mail 读的是同一个邮箱，手机和其他邮件软件照常用。"),
+        ("收费吗？", "免费，开源（MIT 协议）。不用注册账号，没有广告。"),
+    ],
+    "cta_h": "用你自己的邮箱试试",
+    "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
+    "nav_home": "Ragdoll Mail", "foot": ["源代码", "命令行", "反馈问题"],
+}
+
+
 def guide(G):
     e = html.escape
     up = "../" * G["path"].count("/")
     url = SITE + G["path"]
-    other_url = SITE + ("zh/exmail/" if G["lang"] == "en" else "exmail/")
+    other_url = SITE + (G["zh_path"] if G["lang"] == "en" else G["en_path"])
     ld = [
         {"@context": "https://schema.org", "@type": "HowTo", "name": G["h1"], "description": G["desc"],
          "inLanguage": G["lang"], "url": url,
-         "step": [{"@type": "HowToStep", "position": i + 1, "name": h, "text": t} for i, (h, t) in enumerate(G["steps"])]},
+         "step": [{"@type": "HowToStep", "position": i + 1, "name": h, "text": t} for i, (h, t) in enumerate(G["steps"])]}
+    ] if G.get("steps") else []
+    ld += [
         {"@context": "https://schema.org", "@type": "FAQPage", "inLanguage": G["lang"],
          "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in G["q"]]},
         {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [
@@ -472,8 +586,37 @@ def guide(G):
     dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
         cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
         icon("download"), e(G[os_][0]), e(G[os_][1])))
-    steps = "".join('<li><h3>%s</h3><p>%s</p></li>' % (e(h), e(t)) for h, t in G["steps"])
-    rows = "".join("<tr><th>%s</th><td><code>%s</code></td><td>%s</td><td>%s</td></tr>" % tuple(map(e, r)) for r in G["srv"])
+    body = ""
+    if G.get("cmp"):
+        head = "".join("<th>%s</th>" % e(c) for c in G["cmp_cols"])
+        trs = "".join("<tr><th>%s</th>%s</tr>" % (e(r[0]), "".join("<td>%s</td>" % e(c) for c in r[1:])) for r in G["cmp"])
+        body += f"""
+  <h2>{e(G['cmp_h'])}</h2>
+  <div class="table cmp"><table><thead><tr>{head}</tr></thead><tbody>{trs}</tbody></table></div>
+  <p class="note">{e(G['cmp_note'])}</p>
+"""
+    if G.get("steps"):
+        steps = "".join('<li><h3>%s</h3><p>%s</p></li>' % (e(h), e(t)) for h, t in G["steps"])
+        body += f"""
+  <h2>{e(G['steps_h'])}</h2>
+  <ol class="steps">{steps}</ol>
+"""
+    if G.get("srv"):
+        rows = "".join("<tr><th>%s</th><td><code>%s</code></td><td>%s</td><td>%s</td></tr>" % tuple(map(e, r)) for r in G["srv"])
+        body += f"""
+  <h2>{e(G['srv_h'])}</h2>
+  <p class="sub">{e(G['srv_sub'])}</p>
+  <div class="table"><table>
+    <thead><tr>{''.join('<th>%s</th>' % e(c) for c in G['srv_cols'])}</tr></thead>
+    <tbody>{rows}</tbody>
+  </table></div>
+  <p class="note">{e(G['srv_user'])}</p>
+"""
+    for h, paras in G.get("why_blocks") or [(G["why_h"], G["why"])]:
+        body += f"""
+  <h2>{e(h)}</h2>
+  {''.join('<p class="sub">%s</p>' % e(x) for x in paras)}
+"""
     return f"""<!doctype html>
 <html lang="{G['lang']}">
 <head>
@@ -484,7 +627,7 @@ def guide(G):
 <link rel="canonical" href="{url}">
 <link rel="alternate" hreflang="{G['lang']}" href="{url}">
 <link rel="alternate" hreflang="{G['hreflang']}" href="{other_url}">
-<link rel="alternate" hreflang="x-default" href="{SITE}exmail/">
+<link rel="alternate" hreflang="x-default" href="{SITE}{G['en_path']}">
 <link rel="icon" href="{up}img/icon-256.png">
 <link rel="apple-touch-icon" href="{up}img/icon-256.png">
 <meta name="theme-color" content="#fbf9f6" media="(prefers-color-scheme: light)">
@@ -516,21 +659,7 @@ def guide(G):
   <h1>{e(G['h1'])}</h1>
   <p class="lead">{e(G['lead'])}</p>
   <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
-
-  <h2>{e(G['steps_h'])}</h2>
-  <ol class="steps">{steps}</ol>
-
-  <h2>{e(G['srv_h'])}</h2>
-  <p class="sub">{e(G['srv_sub'])}</p>
-  <div class="table"><table>
-    <thead><tr>{''.join('<th>%s</th>' % e(c) for c in G['srv_cols'])}</tr></thead>
-    <tbody>{rows}</tbody>
-  </table></div>
-  <p class="note">{e(G['srv_user'])}</p>
-
-  <h2>{e(G['why_h'])}</h2>
-  {''.join('<p class="sub">%s</p>' % e(x) for x in G['why'])}
-
+{body}
   <h2>{e(G['q_h'])}</h2>
   <div class="faq">
     {''.join(f'<details><summary>{e(q)}{icon("chevron")}</summary><p>{e(a)}</p></details>' for q, a in G['q'])}
@@ -556,7 +685,7 @@ def guide(G):
 """
 
 
-PAGES = [("", "zh/"), ("exmail/", "zh/exmail/")]
+PAGES = [("", "zh/"), ("exmail/", "zh/exmail/"), ("compare/", "zh/compare/")]
 
 
 def sitemap():
@@ -572,7 +701,7 @@ def sitemap():
 
 
 if __name__ == "__main__":
-    jobs = [(L["path"], page(L)) for L in (EN, ZH)] + [(G["path"], guide(G)) for G in (GUIDE_EN, GUIDE_ZH)]
+    jobs = [(L["path"], page(L)) for L in (EN, ZH)] + [(G["path"], guide(G)) for G in (GUIDE_EN, GUIDE_ZH, COMPARE_EN, COMPARE_ZH)]
     for path, text in jobs:
         out = os.path.join(HERE, path, "index.html")
         os.makedirs(os.path.dirname(out), exist_ok=True)

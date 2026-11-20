@@ -238,6 +238,12 @@ footer .grow { flex: 1; }
 .table thead th { border-top: 0; font-size: 13px; font-weight: 600; color: var(--text-3); }
 .table tbody th { font-weight: 500; }
 .table code { font: 14px var(--mono); }
+/* the comparison: cells wrap, the first column holds the question, ours stands out */
+.cmp { width: min(1160px, calc(100vw - 32px)); position: relative; left: 50%; transform: translateX(-50%); }
+.cmp table { font-size: 14px; }
+.cmp th, .cmp td { white-space: normal; padding: 12px 14px; min-width: 92px; vertical-align: top; }
+.cmp tbody th { min-width: 170px; }
+.cmp td:nth-child(2), .cmp thead th:nth-child(2) { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .note { color: var(--text-3); font-size: 14.5px; margin: 12px 0 0; }
 .doc .faq { margin-top: 20px; }
 .doc .end { margin-top: 40px; }
