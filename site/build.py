@@ -25,6 +25,11 @@ ICONS = {
     "send": '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
     "key": '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
     "paperclip": '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+    "mail": '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+    "inbox": '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+    "calendar-clock": '<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
+    "refresh-cw": '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    "clock": '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
     "volume-2": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
     "volume-x": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
 }
@@ -85,26 +90,48 @@ EN = {
          "password stays in the system keychain and is never printed."),
     ],
     "a_guide": "Read the command-line guide",
-    "term": [("you", "Reply to Jane and attach the signed quote."),
-             ("$", "ragdoll search jane quote --json"),
-             ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
-             ("$", "ragdoll check drafts:14 --reply"),
-             ("ok", "CHECK OK"),
-             ("$", "ragdoll open drafts:14"),
-             ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
-    "draft": {"box": "Drafts", "to": "To", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
-              "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery address by Friday.",
-              "file": "Quote.pdf", "send": "Send",
-              "alt": "The draft the agent wrote, open in Ragdoll Mail and waiting for you to press Send"},
+    "scenes": [
+        {"tab": "Reply with a file",
+         "term": [("you", "Reply to Jane and attach the signed quote."),
+                  ("$", "ragdoll search jane quote --json"),
+                  ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
+                  ("$", "ragdoll check drafts:14 --reply"),
+                  ("ok", "CHECK OK"),
+                  ("$", "ragdoll open drafts:14"),
+                  ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
+         "card": ("draft", {"icon": "file-text", "box": "Drafts", "to": "To", "name": "Jane Doe",
+                            "subj": "Re: Quote for PO-1234",
+                            "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery "
+                                    "address by Friday.",
+                            "file": "Quote.pdf", "send": "Send"})},
+        {"tab": "What needs me?",
+         "term": [("you", "What is still waiting for me this week?"),
+                  ("$", "ragdoll list --unread --since 2026-11-16 --json"),
+                  ("$", "ragdoll read inbox:318 --new --json"),
+                  ("agent", "Three mails need you. Li Ming wants the drawings confirmed by Friday.")],
+         "card": ("list", {"icon": "inbox", "box": "Inbox", "rows": [
+             ("Li Ming", "Beijing ABC project: drawings to confirm", "10:55", True),
+             ("Northwind Billing", "Invoice INV-2026-0418 is ready", "Thu", True),
+             ("Sara Kim", "Slides for Friday", "Wed", False)]})},
+        {"tab": "Send it Monday",
+         "term": [("you", "Send it on Monday at nine instead."),
+                  ("agent", "Schedule drafts:14 for Monday 23 November at 09:00?"),
+                  ("you", "Yes."),
+                  ("$", 'ragdoll schedule drafts:14 --at "2026-11-23 09:00" --yes'),
+                  ("agent", "Done. Ragdoll Mail sends it on Monday at 09:00.")],
+         "card": ("sched", {"icon": "calendar-clock", "box": "Scheduled", "to": "To", "name": "Jane Doe",
+                            "subj": "Re: Quote for PO-1234", "when": "Mon 23 Nov · 09:00"})},
+    ],
+    "agents": ["Claude Code", "Codex", "Cursor", "Gemini CLI", "Any agent that runs commands"],
+    "nums": [(6, "", " ms", "one search through 5,044 mails"),
+             (0, "$", "", "no subscription, no account"),
+             (30, "", " s", "to take a sent mail back"),
+             (0, "", "", "mails that pass through a server of ours")],
 
     "s_kick": "Why it's fast", "s_h2": "Search never leaves your computer.",
     "s_sub": "Ragdoll Mail keeps a full-text index of your mail in SQLite on your own disk. Tools that rely on the "
              "server have to connect, sign in and wait for the server each time you search.",
-    "lanes": [
-        ("Ragdoll Mail", ["Your search", "SQLite index on your disk", "Results"], "6 ms"),
-        ("Server search", ["Your search", "Internet", "Sign in", "Mail server searches", "Internet", "Results"],
-         "about 1 s"),
-    ],
+    "race": {"segs": ["Sign in", "Search"], "unit": " s", "rerun": "Run again"},
     "bars_h": "One search from the command line, on a real inbox of 5,044 mails", "faster": "%d× faster",
     "bars": [("Ragdoll Mail, local SQLite", 0.0063, "0.006 s", "989 mails that contain the word"),
              ("Search on the mail server (IMAP)", 1.03, "1.03 s", "5,044 mails: the whole folder")],
@@ -141,13 +168,19 @@ EN = {
          "nine."),
         ("languages", "Chinese mail that reads right", "Names and file names from older Chinese mail systems show "
          "up as they should, not as broken characters."),
-        ("keyboard", "A key for everything", "C writes a mail, R replies, E archives. Press ? to see them all."),
+        ("keyboard", "A key for everything", "C writes a mail, R replies, E archives. Try them here."),
         ("check", "Nothing changes in your mailbox", "It uses the same folders as your webmail and your phone, so "
          "they keep working as before."),
     ],
     "route": ["Your computer", "Your mail server", "No other server in between"],
     "sending": "Sending…", "undo": "Undo", "warn": "You wrote “attached”, but nothing is attached.",
-    "w_kick": "Works with", "w_h2": "The mailbox you already have.",
+    "w_kick": "Works with",
+    "keys": [("C", "New mail"), ("R", "Reply"), ("E", "Archive"), ("?", "All keys")],
+    "sd": {"q": "invoice", "ph": "Search mail", "none": "No mail matches.", "mails": [
+        ("Northwind Billing", "Invoice INV-2026-0418 is ready"), ("Jane Doe", "Quote for PO-1234"),
+        ("Tom Becker", "Packing list and invoice for the first batch"),
+        ("Li Ming", "Beijing ABC project: drawings to confirm"), ("Acme Accounts", "Paid: invoice INV-2026-0397"),
+        ("Sara Kim", "Slides for Friday"), ("Priya Natarajan", "Meeting notes, and one question")]},
     "w": ["Gmail", "iCloud", "Fastmail", "Tencent Exmail", "QQ Mail", "163 Mail", "Any IMAP mailbox"],
     "q_kick": "Questions", "q_h2": "Good to know.",
     "q": [
@@ -213,25 +246,47 @@ ZH = dict(EN, **{
          "密码存在系统钥匙串里，任何时候都不会显示出来。"),
     ],
     "a_guide": "看命令行说明（英文）",
-    "term": [("you", "回复 Jane，附上签好的报价单。"),
-             ("$", "ragdoll search jane quote --json"),
-             ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
-             ("$", "ragdoll check drafts:14 --reply"),
-             ("ok", "CHECK OK"),
-             ("$", "ragdoll open drafts:14"),
-             ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
-    "draft": {"box": "草稿箱", "to": "收件人", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
-              "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
-              "file": "Quote.pdf", "send": "发送",
-              "alt": "AI 写好的草稿已经在 Ragdoll Mail 里打开，等你点发送"},
+    "scenes": [
+        {"tab": "带附件回复",
+         "term": [("you", "回复 Jane，附上签好的报价单。"),
+                  ("$", "ragdoll search jane quote --json"),
+                  ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
+                  ("$", "ragdoll check drafts:14 --reply"),
+                  ("ok", "CHECK OK"),
+                  ("$", "ragdoll open drafts:14"),
+                  ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
+         "card": ("draft", {"icon": "file-text", "box": "草稿箱", "to": "收件人", "name": "Jane Doe",
+                            "subj": "Re: Quote for PO-1234",
+                            "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
+                            "file": "Quote.pdf", "send": "发送"})},
+        {"tab": "哪些在等我？",
+         "term": [("you", "这周还有哪些邮件在等我回？"),
+                  ("$", "ragdoll list --unread --since 2026-11-16 --json"),
+                  ("$", "ragdoll read inbox:318 --new --json"),
+                  ("agent", "有三封要你处理。李明想在周五前确认图纸。")],
+         "card": ("list", {"icon": "inbox", "box": "收件箱", "rows": [
+             ("李明", "北京 ABC 项目：图纸请确认", "10:55", True),
+             ("Northwind 财务", "发票 INV-2026-0418 已开好", "周四", True),
+             ("Sara Kim", "周五的幻灯片", "周三", False)]})},
+        {"tab": "周一再发",
+         "term": [("you", "改成周一早上九点发。"),
+                  ("agent", "把 drafts:14 定在 11 月 23 日（周一）09:00 发送，可以吗？"),
+                  ("you", "可以。"),
+                  ("$", 'ragdoll schedule drafts:14 --at "2026-11-23 09:00" --yes'),
+                  ("agent", "好了，Ragdoll Mail 会在周一 09:00 发出。")],
+         "card": ("sched", {"icon": "calendar-clock", "box": "定时发送", "to": "收件人", "name": "Jane Doe",
+                            "subj": "Re: Quote for PO-1234", "when": "11月23日 周一 · 09:00"})},
+    ],
+    "agents": ["Claude Code", "Codex", "Cursor", "Gemini CLI", "任何能跑命令的 AI"],
+    "nums": [(6, "", " 毫秒", "在 5,044 封邮件里搜一次"),
+             (0, "", " 元", "不用订阅，不用注册"),
+             (30, "", " 秒", "发出去还能撤回"),
+             (0, "", " 封", "邮件经过我们的服务器")],
 
     "s_kick": "为什么快", "s_h2": "搜索全在你自己的电脑上完成。",
     "s_sub": "Ragdoll Mail 用 SQLite 在你的硬盘上给邮件建了一份全文索引。靠服务器搜索的工具就不一样了，每搜一次，"
              "都要先连上服务器、登录，再等服务器慢慢找。",
-    "lanes": [
-        ("Ragdoll Mail", ["你的搜索", "你硬盘上的 SQLite 索引", "结果"], "6 毫秒"),
-        ("服务器搜索", ["你的搜索", "互联网", "登录", "邮件服务器搜索", "互联网", "结果"], "约 1 秒"),
-    ],
+    "race": {"segs": ["登录", "搜索"], "unit": " 秒", "rerun": "再跑一次"},
     "bars_h": "在命令行里搜一次，真实收件箱，共 5,044 封邮件", "faster": "快 %d 倍",
     "bars": [("Ragdoll Mail，本地 SQLite", 0.0063, "0.006 秒", "989 封，都含这个词"),
              ("在邮件服务器上搜（IMAP）", 1.03, "1.03 秒", "5,044 封，也就是整个文件夹")],
@@ -260,12 +315,17 @@ ZH = dict(EN, **{
         ("undo", "不容易发错", "点了发送，30 秒内还能撤回。写了“附件”却没加附件，也会先拦你一下。"),
         ("pen", "想怎么写就怎么写", "字体、列表、链接、签名都有。可以马上发，也可以定到今晚，或者周一早上九点。"),
         ("languages", "中文邮件不乱码", "老系统发来的中文名字和附件名，都能正常显示。"),
-        ("keyboard", "每个操作都有快捷键", "C 写邮件，R 回复，E 归档。按 ? 看全部。"),
+        ("keyboard", "每个操作都有快捷键", "C 写邮件，R 回复，E 归档。在这里按按看。"),
         ("check", "不会改动你的邮箱", "文件夹和网页版、手机上的一模一样，原来的用法都不受影响。"),
     ],
     "route": ["你的电脑", "你的邮件服务器", "中间没有别的服务器"],
     "sending": "正在发送…", "undo": "撤回", "warn": "你写了“附件”，但还没有加附件。",
-    "w_kick": "支持的邮箱", "w_h2": "用你现在的邮箱就行。",
+    "w_kick": "支持",
+    "keys": [("C", "写邮件"), ("R", "回复"), ("E", "归档"), ("?", "全部快捷键")],
+    "sd": {"q": "发票", "ph": "搜索邮件", "none": "没有找到。", "mails": [
+        ("Northwind 财务", "发票 INV-2026-0418 已开好"), ("Jane Doe", "PO-1234 报价"),
+        ("Tom Becker", "第一批的装箱单和发票"), ("李明", "北京 ABC 项目：图纸请确认"),
+        ("Acme 财务", "已付款：发票 INV-2026-0397"), ("Sara Kim", "周五的幻灯片"), ("王芳", "会议纪要，还有一个问题")]},
     "w": ["腾讯企业邮箱", "QQ 邮箱", "163 邮箱", "Gmail", "iCloud", "Fastmail", "任何 IMAP 邮箱"],
     "q_kick": "常见问题", "q_h2": "你可能想问。",
     "q": [
@@ -309,42 +369,75 @@ def page(L):
         return ('<div class="tile %s reveal"><div class="ic">%s</div><h3>%s</h3><p>%s</p>%s</div>'
                 % (cls, icon(ic), e(h), e(p), extra))
 
-    term = []
-    for who, text in L["term"]:
+    def tline(who, text):
         if who == "$":
-            line = '<span class="p">$</span> ' + e(text)
-        elif who == "ok":
-            line = '  <span class="p">' + e(text) + "</span>"
-        else:
-            line = '<span class="y">%s</span> <span class="c">›</span> %s' % ("you  " if who == "you" else "agent", e(text))
-        term.append('<span class="ln%s" style="--i:%d">%s</span>' % ("" if who in ("$", "ok") else " say", len(term), line))
-    d = L["draft"]
-    draft = (f'<div class="handoff" style="--i:{len(term)}"><i></i></div>'
-             f'<div class="draft" style="--i:{len(term)}" role="img" aria-label="{e(d["alt"])}">'
-             f'<div class="draft-top"><span>{icon("file-text")}{e(d["box"])}</span>'
-             f'<span><img src="{up}img/icon.webp" alt="" width="18" height="18" loading="lazy">Ragdoll Mail</span></div>'
-             f'<div class="draft-to"><span>{e(d["to"])}</span><b>{e(d["name"])}</b></div>'
-             f'<div class="draft-subj">{e(d["subj"])}</div><p>{e(d["body"])}</p>'
-             f'<div class="draft-foot"><span class="att">{icon("paperclip")}{e(d["file"])}</span>'
-             f'<span class="btn primary">{icon("send")}{e(d["send"])}</span></div></div>')
+            return '<span class="ln"><span class="p">$</span> <span class="tx" data-t="%s">%s</span></span>' % (e(text), e(text))
+        if who == "ok":
+            return '<span class="ln">  <span class="p">%s</span></span>' % e(text)
+        if who == "you":
+            return ('<span class="ln say"><span class="y">you  </span> <span class="c">›</span> '
+                    '<span class="tx" data-t="%s">%s</span></span>' % (e(text), e(text)))
+        return '<span class="ln say"><span class="y">agent</span> <span class="c">›</span> %s</span>' % e(text)
+
+    logo = '<span><img src="%simg/icon.webp" alt="" width="18" height="18" loading="lazy">Ragdoll Mail</span>' % up
+
+    def card(kind, d):
+        top = '<div class="card-top"><span>%s%s</span>%s</div>' % (icon(d["icon"]), e(d["box"]), logo)
+        if kind == "list":
+            return top + '<ul class="mlist">%s</ul>' % "".join(
+                '<li><i></i><b>%s</b><span>%s</span>%s<time>%s</time></li>' % (e(fr), e(su), icon("paperclip") if at else "", e(tm))
+                for fr, su, tm, at in d["rows"])
+        head = ('<div class="draft-to"><span>%s</span><b>%s</b></div><div class="draft-subj">%s</div>'
+                % (e(d["to"]), e(d["name"]), e(d["subj"])))
+        if kind == "sched":
+            return top + head + '<div class="when">%s<b>%s</b></div>' % (icon("clock"), e(d["when"]))
+        return (top + head + '<p>%s</p><div class="draft-foot"><span class="att">%s%s</span>'
+                '<span class="btn primary">%s%s</span></div>' % (e(d["body"]), icon("paperclip"), e(d["file"]), icon("send"), e(d["send"])))
+
+    sc = L["scenes"]
+    tabs = "".join('<button type="button" role="tab" aria-selected="%s" data-k="%d">%s</button>'
+                   % ("true" if k == 0 else "false", k, e(x["tab"])) for k, x in enumerate(sc))
+    terms = "".join('<div class="term scene%s" data-k="%d">%s</div>'
+                    % (" on" if k == 0 else "", k, "".join(tline(w, t) for w, t in x["term"])) for k, x in enumerate(sc))
+    cards = "".join('<div class="card scene%s" data-k="%d">%s</div>' % (" on" if k == 0 else "", k, card(*x["card"]))
+                    for k, x in enumerate(sc))
     dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
         cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
         icon("download"), e(L[os_][0]), e(L[os_][1])))
     pts = "".join('<div class="pt"><div class="ic">%s</div><div><h3>%s</h3><p>%s</p></div></div>' % (icon(i), e(h), e(p))
                   for i, h, p in L["a_pts"])
-    lanes = "".join(
-        '<div class="lane%s"><div class="lane-name">%s</div><div class="flow">%s</div><div class="lane-t">%s</div></div>'
-        % (" ours" if k == 0 else "", e(name),
-           '<i class="arr"></i>'.join('<span class="step%s">%s</span>' % (" net" if j in (1, 4) and k else "", e(s))
-                                      for j, s in enumerate(steps)), e(t))
-        for k, (name, steps, t) in enumerate(L["lanes"]))
-    top = max(v for _, v, _, _ in L["bars"])
-    faster = L["faster"] % int(round(top / min(v for _, v, _, _ in L["bars"]), -1))
-    bars = "".join(
-        '<div class="bar-row%s"><div class="bar-label">%s</div><div class="bar-track"><i style="--w:%.2f%%"></i></div>'
-        '<div class="bar-val"><b>%s</b><span>%s</span></div></div>'
-        % (" ours" if k == 0 else "", e(name), max(1.2, v / top * 100), e(val), e(note))
-        for k, (name, v, val, note) in enumerate(L["bars"]))
+    (o_name, o_v, o_val, o_note), (s_name, s_v, s_val, s_note) = L["bars"]
+    faster = L["faster"] % int(round(s_v / o_v, -1))
+    rc, split = L["race"], 0.9  # sign in, then search: the measured 0.9 s + 0.13 s
+    slots = "".join('<span class="slot%s" style="--w:%.2f%%"><i class="seg"></i><em>%s</em></span>' % (" wait" if j == 0 else "", w, e(lbl))
+                    for j, (lbl, w) in enumerate(zip(rc["segs"], (split / s_v * 100, (s_v - split) / s_v * 100))))
+    race = ('<div class="race reveal" data-ours="%s" data-srv="%s" data-split="%s" data-unit="%s">'
+            '<div class="race-head"><div class="stat"><b>%s</b><span>%s</span></div>'
+            '<button type="button" class="btn rerun">%s%s</button></div>'
+            '<div class="race-row ours"><div class="race-name">%s</div><div class="race-track">'
+            '<span class="slot" style="--w:%.2f%%"><i class="seg"></i></span></div>'
+            '<div class="race-val"><b data-f="%s">%s</b><span>%s</span></div></div>'
+            '<div class="race-row"><div class="race-name">%s</div><div class="race-track">%s</div>'
+            '<div class="race-val"><b data-f="%s">%s</b><span>%s</span></div></div>'
+            '<p class="speed-note">%s</p></div>'
+            % (o_v, s_v, split, e(rc["unit"]), e(faster), e(L["bars_h"]), icon("refresh-cw"), e(rc["rerun"]),
+               e(o_name), max(0.8, o_v / s_v * 100), e(o_val), e(o_val), e(o_note),
+               e(s_name), slots, e(s_val), e(s_val), e(s_note), e(L["bars_note"])))
+    nums = "".join('<div class="num"><b data-n="%d" data-pre="%s" data-suf="%s">%s%d%s</b><span>%s</span></div>'
+                   % (n, e(pre), e(suf), e(pre), n, e(suf), e(lbl)) for n, pre, suf, lbl in L["nums"])
+
+    def mq(icon_name, items, cls=""):
+        one = "".join('<span class="chip">%s%s</span>' % (icon(icon_name), e(x)) for x in items) * 2
+        return '<div class="mq%s"><div class="mq-track"><div class="mq-set">%s</div><div class="mq-set" aria-hidden="true">%s</div></div></div>' % (cls, one, one)
+
+    sd = L["sd"]
+    msearch = ('<div class="msearch"><label class="msearch-box">%s<input type="search" placeholder="%s" aria-label="%s" '
+               'autocomplete="off" spellcheck="false" data-q="%s"></label><ul class="mlist">%s</ul><p class="none" hidden>%s</p></div>'
+               % (icon("search"), e(sd["ph"]), e(sd["ph"]), e(sd["q"]),
+                  "".join('<li data-s="%s"><b>%s</b><span>%s</span></li>' % (e((fr + " " + su).lower()), e(fr), e(su))
+                          for fr, su in sd["mails"]), e(sd["none"])))
+    keys = '<div class="keys">%s</div>' % "".join('<div class="key" data-key="%s"><kbd>%s</kbd><span>%s</span></div>'
+                                                 % (e(k.lower()), e(k), e(lb)) for k, lb in L["keys"])
     cmp_head = "".join("<th%s>%s</th>" % (' class="us"' if i == 1 else "", e(c)) for i, c in enumerate(L["c_cols"]))
     def cell(i, c):
         if i == 0:
@@ -397,19 +490,29 @@ def page(L):
 </div></header>
 
 <main>
-<div class="hero"><div class="wrap">
+<div class="hero">
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+  <div class="wrap">
   <div class="pill">{'<b></b>'.join(e(x) for x in L['pill'])}</div>
   <h1>{L['h1']}</h1>
   <p class="lead">{e(L['lead'])}</p>
   <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
   <p class="first-open">{L['first']}</p>
-</div>
-  <div class="shot">
+  </div>
+  <div class="shot"><div class="glow" aria-hidden="true"></div><div class="tilt">
     <video class="demo" data-src="{up}media/demo-{L['demo']}.mp4" poster="{up}media/demo-{L['demo']}.webp" width="1920" height="1200"
       muted loop playsinline preload="none" aria-label="{e(L['shot_alt'])}"></video>
     <button class="sound" type="button" aria-pressed="false" data-on="{e(L['sound'][0])}" data-off="{e(L['sound'][1])}" aria-label="{e(L['sound'][0])}">{icon('volume-x')}{icon('volume-2')}</button>
-  </div>
+  </div></div>
 </div>
+
+<section id="works" class="works">
+  <div class="wrap center"><div class="kicker">{e(L['w_kick'])}</div></div>
+  {mq('terminal', L['agents'])}
+  {mq('mail', L['w'], ' rev')}
+</section>
+
+<div class="wrap"><div class="nums reveal">{nums}</div></div>
 
 <section id="ai"><div class="wrap">
   <div class="reveal">
@@ -418,7 +521,12 @@ def page(L):
     <p class="sub">{L['a_sub']} <a class="more" href="{REPO}/blob/main/docs/command-line.md">{e(L['a_guide'])} →</a></p>
   </div>
   <div class="grid agent">
-    <div class="t-wide reveal play"><div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term" role="img" aria-label="{e(L['a_kick'])}">{''.join(term)}</div></div>{draft}</div>
+    <div class="agent-demo t-wide reveal">
+      <div class="tabs" role="tablist">{tabs}</div>
+      <div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term-stack">{terms}</div></div>
+      <div class="handoff"><i></i></div>
+      <div class="cards">{cards}</div>
+    </div>
     <div class="pts t-narrow reveal">{pts}</div>
   </div>
 </div></section>
@@ -429,11 +537,7 @@ def page(L):
     <h2>{e(L['s_h2'])}</h2>
     <p class="sub">{e(L['s_sub'])}</p>
   </div>
-  <div class="speed reveal">
-    <div class="lanes">{lanes}</div>
-    <div class="bars"><div class="stat"><b>{e(faster)}</b><span>{e(L['bars_h'])}</span></div>{bars}</div>
-    <p class="speed-note">{e(L['bars_note'])}</p>
-  </div>
+  {race}
 </div></section>
 
 <section id="features"><div class="wrap">
@@ -442,12 +546,12 @@ def page(L):
     <h2>{e(L['f_h2'])}</h2>
   </div>
   <div class="grid">
-    {tile(0, 't-wide', f'<div class="peek"><img src="{up}img/search-{L["demo"]}.webp" alt="" loading="lazy" width="1800" height="1161"></div>')}
+    {tile(0, 't-wide', msearch)}
     {tile(1, 't-narrow', f'<div class="path"><span>{e(L["route"][0])}</span><i></i><span>{e(L["route"][1])}</span></div><div class="path-x">{e(L["route"][2])}</div>')}
     {tile(2, 't-narrow', f'<div class="undo">{e(L["sending"])}<span class="bar"><i></i></span><a href="#features">{e(L["undo"])}</a></div><div class="warn">{e(L["warn"])}</div>')}
     {tile(3, 't-wide', f'<div class="peek peek-r"><img src="{up}img/compose-{L["demo"]}.webp" alt="" loading="lazy" width="1800" height="1161"></div>')}
     {tile(4, 't-third')}
-    {tile(5, 't-third')}
+    {tile(5, 't-third', keys)}
     {tile(6, 't-third')}
   </div>
 </div></section>
@@ -470,12 +574,6 @@ def page(L):
   </div>
 </div></section>
 
-<section id="works"><div class="wrap center reveal">
-  <div class="kicker">{e(L['w_kick'])}</div>
-  <h2>{e(L['w_h2'])}</h2>
-  <div class="chips">{''.join('<span class="chip">%s</span>' % e(x) for x in L['w'])}</div>
-</div></section>
-
 <section id="questions"><div class="wrap">
   <div class="center reveal">
     <div class="kicker">{e(L['q_kick'])}</div>
@@ -486,12 +584,13 @@ def page(L):
   </div>
 </div></section>
 
-<div class="end"><div class="wrap reveal">
-  <img src="{up}img/icon.webp" alt="" width="72" height="72" loading="lazy">
-  <h2 style="margin:0 auto">{e(L['e_h2'])}</h2>
-  <p class="sub" style="margin:14px auto 0">{e(L['e_sub'])}</p>
-  <div class="cta" style="animation:none">{dl('mac', 'primary')}{dl('win', '')}</div>
-</div></div>
+<div class="end"><div class="wrap"><div class="end-panel reveal">
+  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+  <img class="end-cat" src="{up}img/icon.webp" alt="" width="96" height="96" loading="lazy">
+  <h2>{e(L['e_h2'])}</h2>
+  <p class="sub">{e(L['e_sub'])}</p>
+  <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
+</div></div></div>
 </main>
 
 <footer><div class="wrap">
