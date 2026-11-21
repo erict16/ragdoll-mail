@@ -45,12 +45,11 @@ EN = {
     "desc": "A free, open-source mail app for Mac and Windows with a command line built in. Claude Code, Codex and "
             "other agents can search your mail and draft replies, and you approve every send. Local SQLite search, "
             "any IMAP mailbox.",
-    "nav": ["For AI agents", "Why it's fast", "Compare", "Questions"], "download": "Download",
+    "nav": ["How it works", "Speed", "Compare"], "download": "Download",
     "pill": ["Free", "Open source", "Mac and Windows"],
     "h1": "The mail app your AI agent <em>can actually use</em>.",
-    "lead": "Ragdoll Mail is a desktop mail app with a command line built in. Claude Code, Codex or any agent that "
-            "runs commands can search your mailbox and write replies for you. Every draft shows up in the app, and "
-            "nothing goes out until you press Send.",
+    "lead": "A desktop mail app with a command line built in. Claude Code, Codex or any agent can search your mail "
+            "and write the reply. Nothing goes out until you press Send.",
     "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
     "first": "Not signed by Apple or Microsoft yet. The first time, choose Open Anyway (Mac: System Settings → "
              "Privacy &amp; Security) or Run anyway (Windows: More info).",
@@ -59,149 +58,59 @@ EN = {
                 "opens in the app, the send is undone and set for tomorrow morning, and search finds mail as you type",
     "sound": ["Sound on", "Sound off"],
 
-    "y_kick": "Why I built it",
-    "y_h2": "I wanted AI to help with my email. Nothing out there fit.",
-    "y_p": [
-        "I deal with a lot of work email, and I wanted Claude Code to help me answer it. The good AI mail apps are "
-        "subscriptions, usually $25 to $30 a month, and most of them only work with Gmail or Outlook. My work "
-        "mailbox is on Tencent Exmail, so they were out before I could even try them.",
-        "Command-line mail tools such as Himalaya are free, but they hand every search to the mail server. Each "
-        "search means a trip over the network, and it gets slower as the mailbox grows. Some servers barely search "
-        "at all. Mine ignored the words completely and sent back the whole folder, all 5,044 mails, for anything I "
-        "typed.",
-        "So I built the tool I wanted: a normal mail app for me and a command line for my agent, both searching "
-        "the same index on my own computer.",
-    ],
-    "y_sign": "Eric Tan, who made Ragdoll Mail",
-
-    "a_kick": "For AI agents", "a_h2": "Your agent writes the draft, and you decide whether it goes out.",
-    "a_sub": "The <code>ragdoll</code> command is installed from the app in one click (Settings → Command line). "
-             "Every command has a <code>--json</code> option, and <code>ragdoll --help</code> lists them all, so "
-             "an agent can learn it on its own.",
-    "a_pts": [
-        ("file-text", "Real drafts in your real mailbox", "ragdoll draft saves the reply in your Drafts folder, "
-         "with your signature and the earlier mails quoted. You can open it in the app, on your phone or in any "
-         "other mail app."),
-        ("shield-check", "Checked before it can go", "ragdoll check catches an empty subject, a mail that says "
-         "“attached” with nothing attached, a [Name] left in the text, and garbled characters."),
-        ("send", "Nothing is sent without you", "Sending needs an explicit yes, and a draft that has already gone out "
-         "cannot be sent again by mistake."),
-        ("key", "No API key, no OAuth app, no quota", "It talks plain IMAP and SMTP to your own mail server. The "
-         "password stays in the system keychain and is never printed."),
-    ],
+    "a_h2": ["Your agent writes.", "You press Send."],
+    "a_sub": "One click installs the <code>ragdoll</code> command (Settings → Command line). Every command speaks "
+             "<code>--json</code>, so an agent learns it from <code>ragdoll --help</code>.",
     "a_guide": "Read the command-line guide",
-    "scenes": [
-        {"tab": "Reply with a file",
-         "term": [("you", "Reply to Jane and attach the signed quote."),
-                  ("$", "ragdoll search jane quote --json"),
-                  ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
-                  ("$", "ragdoll check drafts:14 --reply"),
-                  ("ok", "CHECK OK"),
-                  ("$", "ragdoll open drafts:14"),
-                  ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
-         "card": ("draft", {"icon": "file-text", "box": "Drafts", "to": "To", "name": "Jane Doe",
-                            "subj": "Re: Quote for PO-1234",
-                            "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery "
-                                    "address by Friday.",
-                            "file": "Quote.pdf", "send": "Send"})},
-        {"tab": "What needs me?",
-         "term": [("you", "What is still waiting for me this week?"),
-                  ("$", "ragdoll list --unread --since 2026-11-16 --json"),
-                  ("$", "ragdoll read inbox:318 --new --json"),
-                  ("agent", "Three mails need you. Li Ming wants the drawings confirmed by Friday.")],
-         "card": ("list", {"icon": "inbox", "box": "Inbox", "rows": [
-             ("Li Ming", "Beijing ABC project: drawings to confirm", "10:55", True),
-             ("Northwind Billing", "Invoice INV-2026-0418 is ready", "Thu", True),
-             ("Sara Kim", "Slides for Friday", "Wed", False)]})},
-        {"tab": "Send it Monday",
-         "term": [("you", "Send it on Monday at nine instead."),
-                  ("agent", "Schedule drafts:14 for Monday 23 November at 09:00?"),
-                  ("you", "Yes."),
-                  ("$", 'ragdoll schedule drafts:14 --at "2026-11-23 09:00" --yes'),
-                  ("agent", "Done. Ragdoll Mail sends it on Monday at 09:00.")],
-         "card": ("sched", {"icon": "calendar-clock", "box": "Scheduled", "to": "To", "name": "Jane Doe",
-                            "subj": "Re: Quote for PO-1234", "when": "Mon 23 Nov · 09:00"})},
+    "term": [("you", "Reply to Jane and attach the signed quote."),
+             ("$", "ragdoll search jane quote --json"),
+             ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
+             ("$", "ragdoll check drafts:14 --reply"),
+             ("ok", "CHECK OK"),
+             ("$", "ragdoll open drafts:14"),
+             ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
+    "draft": {"box": "Drafts", "to": "To", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
+              "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery address by Friday.",
+              "file": "Quote.pdf", "send": "Send"},
+    "a_pts": [
+        ("file-text", "Real drafts", "Saved in your Drafts folder, with your signature and the thread quoted."),
+        ("shield-check", "Checked first", "An empty subject, a missing attachment or a [Name] left in stops it."),
+        ("key", "No API key", "Plain IMAP and SMTP to your own server. No OAuth app, no quota."),
     ],
-    "agents": ["Claude Code", "Codex", "Cursor", "Gemini CLI", "Any agent that runs commands"],
-    "nums": [(6, "", " ms", "one search through 5,044 mails"),
-             (0, "$", "", "no subscription, no account"),
-             (30, "", " s", "to take a sent mail back"),
-             (0, "", "", "mails that pass through a server of ours")],
 
-    "s_kick": "Why it's fast", "s_h2": "Search never leaves your computer.",
-    "s_sub": "Ragdoll Mail keeps a full-text index of your mail in SQLite on your own disk. Tools that rely on the "
-             "server have to connect, sign in and wait for the server each time you search.",
+    "s_h2": ["Search never leaves", "your computer."],
+    "faster": "faster than asking the mail server",
+    "bars": [("Ragdoll Mail, on your disk", 0.0063, "0.006 s", "989 mails that contain the word"),
+             ("The mail server (IMAP)", 1.03, "1.03 s", "5,044 mails: the whole folder")],
     "race": {"segs": ["Sign in", "Search"], "unit": " s", "rerun": "Run again"},
-    "bars_h": "One search from the command line, on a real inbox of 5,044 mails", "faster": "%d× faster",
-    "bars": [("Ragdoll Mail, local SQLite", 0.0063, "0.006 s", "989 mails that contain the word"),
-             ("Search on the mail server (IMAP)", 1.03, "1.03 s", "5,044 mails: the whole folder")],
-    "bars_note": "Measured on 21 November 2026 on a MacBook, with a Tencent Exmail inbox of 5,044 mails and the word "
-                 "“invoice”. The server search opened a new connection and sent IMAP SEARCH, which is what a "
-                 "command-line tool does on every run: 0.9 s to sign in, 0.13 s to search. Times change with the "
-                 "server and the network. A two-character Chinese word takes longer on the local side, about 0.08 s.",
+    "bars_note": "One search for “invoice” in a real Tencent Exmail inbox of 5,044 mails, 21 November 2026. "
+                 "The server needed 0.9 s to sign in and 0.13 s to search, and sent back the whole folder.",
 
-    "c_kick": "Compare", "c_h2": "How it compares with AI mail apps and command-line tools.",
-    "c_cols": ["", "Ragdoll Mail", "Superhuman", "Shortwave", "Himalaya", "Apple Mail, Outlook"],
-    "c_rows": [
-        ("Price", "Free", "From about $25 a month", "Free plan with AI limits, paid plans", "Free", "Free"),
-        ("Mailboxes", "Any IMAP mailbox", "Gmail and Outlook", "Mainly Gmail", "Any IMAP mailbox", "Most mailboxes"),
-        ("Desktop app", "Yes", "Yes", "Yes", "No, terminal only", "Yes"),
-        ("Command line your agent can use", "Yes", "No", "No", "Yes", "No"),
-        ("Where search runs", "Your computer", "Online, through Gmail or Outlook", "Online, on Shortwave's servers",
-         "On the mail server", "Depends on the app"),
-        ("Open source", "Yes", "No", "No", "Yes", "No"),
+    "facts": [
+        ("mail", "Any IMAP mailbox", "Gmail, iCloud, Fastmail, Tencent Exmail, QQ Mail, 163 Mail and the rest."),
+        ("lock", "Your mail stays with you", "It talks only to your own mail server. No cloud in between, no account "
+         "with us."),
+        ("check", "Free and open source", "No ads, no subscription. MIT license, so anyone can check what it does."),
     ],
-    "c_yes": ["Yes"], "c_no": ["No"],
-    "c_note": "From each product's public pages, November 2026. If something here is wrong or out of date, "
-              "open an issue on GitHub and I will fix it.",
-    "c_more": "More comparisons, including Foxmail, Thunderbird and Spark",
+    "c_more": "Compare with Superhuman, Shortwave, Foxmail and others",
+    "quote": "The good AI mail apps cost $25 to $30 a month and only took Gmail or Outlook. My work mail is on "
+             "Tencent Exmail. So I built the one I needed.",
+    "sign": "Eric Tan, who made Ragdoll Mail",
 
-    "f_kick": "Also a complete mail app", "f_h2": "Good enough to use every day, even without AI.",
-    "f": [
-        ("search", "Every word, every mail, at once", "Subjects, names, file names and the full text, in English, "
-         "Chinese, Japanese and Korean. It still works with no internet."),
-        ("lock", "Your mail stays with you", "The app talks only to your own mail server. There is no cloud in "
-         "between and no account with us."),
-        ("undo", "Hard to send a mistake", "You have 30 seconds to take a mail back. It also stops you when you wrote "
-         "“attached” and attached nothing."),
-        ("pen", "Write the way you like", "Fonts, lists, links and your signature. Send now, tonight, or Monday at "
-         "nine."),
-        ("languages", "Chinese mail that reads right", "Names and file names from older Chinese mail systems show "
-         "up as they should, not as broken characters."),
-        ("keyboard", "A key for everything", "C writes a mail, R replies, E archives. Try them here."),
-        ("check", "Nothing changes in your mailbox", "It uses the same folders as your webmail and your phone, so "
-         "they keep working as before."),
-    ],
-    "route": ["Your computer", "Your mail server", "No other server in between"],
-    "sending": "Sending…", "undo": "Undo", "warn": "You wrote “attached”, but nothing is attached.",
-    "w_kick": "Works with",
-    "keys": [("C", "New mail"), ("R", "Reply"), ("E", "Archive"), ("?", "All keys")],
-    "sd": {"q": "invoice", "ph": "Search mail", "none": "No mail matches.", "mails": [
-        ("Northwind Billing", "Invoice INV-2026-0418 is ready"), ("Jane Doe", "Quote for PO-1234"),
-        ("Tom Becker", "Packing list and invoice for the first batch"),
-        ("Li Ming", "Beijing ABC project: drawings to confirm"), ("Acme Accounts", "Paid: invoice INV-2026-0397"),
-        ("Sara Kim", "Slides for Friday"), ("Priya Natarajan", "Meeting notes, and one question")]},
-    "w": ["Gmail", "iCloud", "Fastmail", "Tencent Exmail", "QQ Mail", "163 Mail", "Any IMAP mailbox"],
-    "q_kick": "Questions", "q_h2": "Good to know.",
+    "q_h2": "Questions",
     "q": [
         ("Which AI agents work with it?",
          "Any agent that can run shell commands, such as Claude Code, Codex, Cursor or Gemini CLI. The agent calls "
          "the ragdoll command the same way you would in a terminal."),
-        ("Do I need an API key or a paid plan?",
-         "No. Ragdoll Mail signs in to your mailbox over IMAP and SMTP, like any mail app. There is no API key to "
-         "create, no OAuth app to register and no usage limit."),
         ("Can my agent send mail without asking me?",
          "Not by accident. The send command refuses to run without an explicit yes, and the setup we suggest tells "
          "agents to ask you first. Most people let the agent write the draft and press Send themselves."),
-        ("Why not just use the mail server's search?",
-         "Every server search is a round trip over the network, and it slows down as the mailbox grows. Some "
-         "servers hardly search at all. A local index answers in milliseconds and works offline."),
         ("Is my mail safe?", "Your mail is stored on your computer and on your own mail server, and nowhere else. "
          "The app sends nothing to us. We do not run a server."),
         ("Is it really free?", "Yes. There are no ads, no subscription and no account. The code is open source under "
          "the MIT license, so anyone can check what it does."),
     ],
-    "e_h2": "Give your agent a mailbox it can work with.", "e_sub": "Free and open source. No account, no ads.",
+    "e_h2": "Give your agent a mailbox.", "e_sub": "Free and open source. No account, no ads.",
     "foot": ["Source code", "Command line", "Report a problem", "Tencent Exmail setup", "Compare mail apps"],
 }
 
@@ -210,11 +119,10 @@ ZH = dict(EN, **{
     "title": "Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）",
     "desc": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，"
             "每一封都要你确认才会发出。本地 SQLite 搜索，支持任何 IMAP 邮箱。",
-    "nav": ["AI 助手", "为什么快", "对比", "常见问题"], "download": "下载",
+    "nav": ["怎么用", "速度", "对比"], "download": "下载",
     "pill": ["免费", "开源", "Mac 和 Windows"],
     "h1": "让 AI 助手<em>真正用得上</em>的邮件软件。",
-    "lead": "Ragdoll Mail 是一个桌面邮件软件，自带命令行。Claude Code、Codex，或者任何能跑命令的 AI，都可以帮你搜邮件、"
-            "写回复。草稿会直接出现在软件里，你不点发送，就什么都不会发出去。",
+    "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复。你不点发送，什么都不会发出去。",
     "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
     "first": "还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。",
     "demo": "zh", "demo_name": "30 秒看懂 Ragdoll Mail", "demo_len": "PT33S",
@@ -222,125 +130,53 @@ ZH = dict(EN, **{
                 "最后边打字边搜到邮件",
     "sound": ["打开声音", "关闭声音"],
 
-    "y_kick": "为什么做它",
-    "y_h2": "我想让 AI 帮我回邮件，可一直没找到合适的工具。",
-    "y_p": [
-        "我每天要处理很多工作邮件，一直想让 Claude Code 帮我回。可做得好的 AI 邮件软件基本都是按月收费，一个月 25 到 30 "
-        "美元，而且大多只支持 Gmail 和 Outlook。我的工作邮箱是腾讯企业邮箱，连试的机会都没有。",
-        "命令行邮件工具倒是有免费的，比如 Himalaya，但它每次搜索都交给邮件服务器去做。每搜一次都要走一趟网络，邮件越多越慢。"
-        "有的服务器甚至根本不好好搜：我的邮箱不管输入什么词，都把整个文件夹的 5,044 封邮件原样返回。",
-        "所以我干脆自己做了一个：我用的是一个普通的邮件软件，AI 用的是一套命令行，两边搜的是同一份索引，就放在我自己的电脑上。",
-    ],
-    "y_sign": "Eric Tan，Ragdoll Mail 作者",
-
-    "a_kick": "给 AI 助手", "a_h2": "AI 来写草稿，发不发由你决定。",
-    "a_sub": "<code>ragdoll</code> 命令在软件里一键安装（设置 → 命令行）。每条命令都有 <code>--json</code> 输出，"
-             "<code>ragdoll --help</code> 列出了全部用法，AI 自己看一遍就会用。",
-    "a_pts": [
-        ("file-text", "草稿就存在你的邮箱里", "ragdoll draft 会把回复存进你邮箱的草稿箱，签名和之前的往来邮件都带上。"
-         "在软件里、手机上或者别的邮件软件里都能打开。"),
-        ("shield-check", "发之前先检查一遍", "ragdoll check 会拦下这些问题：标题是空的，正文说了“附件”却没加附件，"
-         "还留着 [姓名] 这样的占位符，或者有乱码。"),
-        ("send", "你不点头，就不会发", "发送必须明确确认。一封草稿发出去以后，不会因为手滑再发第二次。"),
-        ("key", "不用 API Key，不用 OAuth，没有调用额度", "它直接用 IMAP 和 SMTP 连你自己的邮件服务器。"
-         "密码存在系统钥匙串里，任何时候都不会显示出来。"),
-    ],
+    "a_h2": ["AI 来写，", "你来点发送。"],
+    "a_sub": "<code>ragdoll</code> 命令在软件里一键安装（设置 → 命令行）。每条命令都能输出 <code>--json</code>，"
+             "AI 看一遍 <code>ragdoll --help</code> 就会用。",
     "a_guide": "看命令行说明（英文）",
-    "scenes": [
-        {"tab": "带附件回复",
-         "term": [("you", "回复 Jane，附上签好的报价单。"),
-                  ("$", "ragdoll search jane quote --json"),
-                  ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
-                  ("$", "ragdoll check drafts:14 --reply"),
-                  ("ok", "CHECK OK"),
-                  ("$", "ragdoll open drafts:14"),
-                  ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
-         "card": ("draft", {"icon": "file-text", "box": "草稿箱", "to": "收件人", "name": "Jane Doe",
-                            "subj": "Re: Quote for PO-1234",
-                            "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
-                            "file": "Quote.pdf", "send": "发送"})},
-        {"tab": "哪些在等我？",
-         "term": [("you", "这周还有哪些邮件在等我回？"),
-                  ("$", "ragdoll list --unread --since 2026-11-16 --json"),
-                  ("$", "ragdoll read inbox:318 --new --json"),
-                  ("agent", "有三封要你处理。李明想在周五前确认图纸。")],
-         "card": ("list", {"icon": "inbox", "box": "收件箱", "rows": [
-             ("李明", "北京 ABC 项目：图纸请确认", "10:55", True),
-             ("Northwind 财务", "发票 INV-2026-0418 已开好", "周四", True),
-             ("Sara Kim", "周五的幻灯片", "周三", False)]})},
-        {"tab": "周一再发",
-         "term": [("you", "改成周一早上九点发。"),
-                  ("agent", "把 drafts:14 定在 11 月 23 日（周一）09:00 发送，可以吗？"),
-                  ("you", "可以。"),
-                  ("$", 'ragdoll schedule drafts:14 --at "2026-11-23 09:00" --yes'),
-                  ("agent", "好了，Ragdoll Mail 会在周一 09:00 发出。")],
-         "card": ("sched", {"icon": "calendar-clock", "box": "定时发送", "to": "收件人", "name": "Jane Doe",
-                            "subj": "Re: Quote for PO-1234", "when": "11月23日 周一 · 09:00"})},
+    "term": [("you", "回复 Jane，附上签好的报价单。"),
+             ("$", "ragdoll search jane quote --json"),
+             ("$", "ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf"),
+             ("$", "ragdoll check drafts:14 --reply"),
+             ("ok", "CHECK OK"),
+             ("$", "ragdoll open drafts:14"),
+             ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
+    "draft": {"box": "草稿箱", "to": "收件人", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
+              "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
+              "file": "Quote.pdf", "send": "发送"},
+    "a_pts": [
+        ("file-text", "真正的草稿", "存进你邮箱的草稿箱，签名和之前的往来邮件都带上。"),
+        ("shield-check", "发之前先检查", "标题空着、说了附件却没加、留着 [姓名] 占位符，都会被拦下。"),
+        ("key", "不用 API Key", "直接用 IMAP 和 SMTP 连你自己的服务器。不用 OAuth，没有额度。"),
     ],
-    "agents": ["Claude Code", "Codex", "Cursor", "Gemini CLI", "任何能跑命令的 AI"],
-    "nums": [(6, "", " 毫秒", "在 5,044 封邮件里搜一次"),
-             (0, "", " 元", "不用订阅，不用注册"),
-             (30, "", " 秒", "发出去还能撤回"),
-             (0, "", " 封", "邮件经过我们的服务器")],
 
-    "s_kick": "为什么快", "s_h2": "搜索全在你自己的电脑上完成。",
-    "s_sub": "Ragdoll Mail 用 SQLite 在你的硬盘上给邮件建了一份全文索引。靠服务器搜索的工具就不一样了，每搜一次，"
-             "都要先连上服务器、登录，再等服务器慢慢找。",
+    "s_h2": ["搜索全在", "你自己的电脑上。"],
+    "faster": "比让邮件服务器去搜快这么多",
+    "bars": [("Ragdoll Mail，你的硬盘上", 0.0063, "0.006 秒", "989 封，都含这个词"),
+             ("邮件服务器（IMAP）", 1.03, "1.03 秒", "5,044 封，也就是整个文件夹")],
     "race": {"segs": ["登录", "搜索"], "unit": " 秒", "rerun": "再跑一次"},
-    "bars_h": "在命令行里搜一次，真实收件箱，共 5,044 封邮件", "faster": "快 %d 倍",
-    "bars": [("Ragdoll Mail，本地 SQLite", 0.0063, "0.006 秒", "989 封，都含这个词"),
-             ("在邮件服务器上搜（IMAP）", 1.03, "1.03 秒", "5,044 封，也就是整个文件夹")],
-    "bars_note": "2026 年 11 月 21 日在一台 MacBook 上实测，用的是一个有 5,044 封邮件的腾讯企业邮箱收件箱，搜的词是 "
-                 "“invoice”。服务器那一边每次都新建连接再发 IMAP SEARCH，命令行工具每次运行也是这样：登录 0.9 秒，"
-                 "搜索 0.13 秒。具体耗时会随服务器和网络变化。两个字的中文词在本地会慢一些，大约 0.08 秒。",
+    "bars_note": "2026 年 11 月 21 日实测：在一个有 5,044 封邮件的腾讯企业邮箱收件箱里搜“invoice”。"
+                 "服务器登录用了 0.9 秒，搜索 0.13 秒，返回的是整个文件夹。",
 
-    "c_kick": "对比", "c_h2": "和 AI 邮件软件、命令行工具比一比。",
-    "c_cols": ["", "Ragdoll Mail", "Superhuman", "Shortwave", "Himalaya", "Apple 邮件、Outlook"],
-    "c_rows": [
-        ("价格", "免费", "每月约 25 美元起", "免费版 AI 有限额，另有付费版", "免费", "免费"),
-        ("支持的邮箱", "任何 IMAP 邮箱", "Gmail 和 Outlook", "主要是 Gmail", "任何 IMAP 邮箱", "大多数邮箱"),
-        ("桌面软件", "有", "有", "有", "没有，只能在终端里用", "有"),
-        ("AI 能用的命令行", "有", "没有", "没有", "有", "没有"),
-        ("在哪里搜索", "你的电脑", "在线，经由 Gmail 或 Outlook", "在线，在 Shortwave 的服务器上", "邮件服务器", "看具体软件"),
-        ("开源", "是", "否", "否", "是", "否"),
+    "facts": [
+        ("mail", "任何 IMAP 邮箱", "腾讯企业邮箱、QQ 邮箱、163 邮箱、Gmail、iCloud、Fastmail 都行。"),
+        ("lock", "邮件只在你手里", "软件只和你自己的邮件服务器打交道，中间没有别家的云，也不用注册账号。"),
+        ("check", "免费，开源", "没有广告，不用订阅。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
-    "c_yes": ["有", "是"], "c_no": ["没有", "否"],
-    "c_note": "根据各产品公开页面整理，2026 年 11 月。哪里写错了或者过时了，欢迎到 GitHub 提 issue，我会改。",
-    "c_more": "更多对比，包括 Foxmail、Thunderbird 和 Spark",
+    "c_more": "和 Superhuman、Shortwave、Foxmail 等软件对比",
+    "quote": "好用的 AI 邮件软件一个月要 25 到 30 美元，还只支持 Gmail 和 Outlook。我的工作邮箱是腾讯企业邮箱。所以我自己做了一个。",
+    "sign": "Eric Tan，Ragdoll Mail 作者",
 
-    "f_kick": "也是一个完整的邮件软件", "f_h2": "就算不用 AI，日常收发也足够顺手。",
-    "f": [
-        ("search", "每个词、每封邮件，一下就找到", "标题、人名、附件名和正文都能搜，中文、英文、日文、韩文都行，断网也能搜。"),
-        ("lock", "邮件只在你手里", "软件只和你自己的邮件服务器打交道，中间没有别家的云，也不用注册我们的账号。"),
-        ("undo", "不容易发错", "点了发送，30 秒内还能撤回。写了“附件”却没加附件，也会先拦你一下。"),
-        ("pen", "想怎么写就怎么写", "字体、列表、链接、签名都有。可以马上发，也可以定到今晚，或者周一早上九点。"),
-        ("languages", "中文邮件不乱码", "老系统发来的中文名字和附件名，都能正常显示。"),
-        ("keyboard", "每个操作都有快捷键", "C 写邮件，R 回复，E 归档。在这里按按看。"),
-        ("check", "不会改动你的邮箱", "文件夹和网页版、手机上的一模一样，原来的用法都不受影响。"),
-    ],
-    "route": ["你的电脑", "你的邮件服务器", "中间没有别的服务器"],
-    "sending": "正在发送…", "undo": "撤回", "warn": "你写了“附件”，但还没有加附件。",
-    "w_kick": "支持",
-    "keys": [("C", "写邮件"), ("R", "回复"), ("E", "归档"), ("?", "全部快捷键")],
-    "sd": {"q": "发票", "ph": "搜索邮件", "none": "没有找到。", "mails": [
-        ("Northwind 财务", "发票 INV-2026-0418 已开好"), ("Jane Doe", "PO-1234 报价"),
-        ("Tom Becker", "第一批的装箱单和发票"), ("李明", "北京 ABC 项目：图纸请确认"),
-        ("Acme 财务", "已付款：发票 INV-2026-0397"), ("Sara Kim", "周五的幻灯片"), ("王芳", "会议纪要，还有一个问题")]},
-    "w": ["腾讯企业邮箱", "QQ 邮箱", "163 邮箱", "Gmail", "iCloud", "Fastmail", "任何 IMAP 邮箱"],
-    "q_kick": "常见问题", "q_h2": "你可能想问。",
+    "q_h2": "常见问题",
     "q": [
         ("哪些 AI 助手能用？", "能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，"
          "跟你自己在终端里敲是一样的。"),
-        ("要 API Key 或者付费套餐吗？", "不用。Ragdoll Mail 跟普通邮件软件一样，用 IMAP 和 SMTP 登录你的邮箱。"
-         "不用申请 API Key，不用注册 OAuth 应用，也没有调用次数限制。"),
         ("AI 会不会不问我就把邮件发出去？", "不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。"
          "大多数人的用法是：AI 写草稿，自己检查后点发送。"),
-        ("为什么不直接用邮件服务器的搜索？", "服务器搜索每次都要走一趟网络，邮件越多越慢，有的服务器还几乎不怎么搜。"
-         "本地索引几毫秒就有结果，断网也能用。"),
         ("我的邮件安全吗？", "邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。"),
         ("真的免费吗？", "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
-    "e_h2": "给你的 AI 一个真正能用的邮箱。", "e_sub": "免费开源，不用注册，没有广告。",
+    "e_h2": "给你的 AI 一个邮箱。", "e_sub": "免费开源，不用注册，没有广告。",
     "foot": ["源代码", "命令行", "反馈问题", "腾讯企业邮箱设置", "邮件软件对比"],
 })
 
@@ -362,90 +198,45 @@ def page(L):
         {"@context": "https://schema.org", "@type": "FAQPage",
          "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in L["q"]]},
     ]
-    f = L["f"]
-
-    def tile(k, cls, extra=""):
-        ic, h, p = f[k]
-        return ('<div class="tile %s reveal"><div class="ic">%s</div><h3>%s</h3><p>%s</p>%s</div>'
-                % (cls, icon(ic), e(h), e(p), extra))
 
     def tline(who, text):
         if who == "$":
             return '<span class="ln"><span class="p">$</span> <span class="tx" data-t="%s">%s</span></span>' % (e(text), e(text))
         if who == "ok":
-            return '<span class="ln">  <span class="p">%s</span></span>' % e(text)
+            return '<span class="ln">  <span class="ok">%s</span></span>' % e(text)
         if who == "you":
             return ('<span class="ln say"><span class="y">you  </span> <span class="c">›</span> '
                     '<span class="tx" data-t="%s">%s</span></span>' % (e(text), e(text)))
         return '<span class="ln say"><span class="y">agent</span> <span class="c">›</span> %s</span>' % e(text)
 
-    logo = '<span><img src="%simg/icon.webp" alt="" width="18" height="18" loading="lazy">Ragdoll Mail</span>' % up
+    d = L["draft"]
+    draft = ('<div class="draft"><div class="draft-top"><span>%s%s</span><span><img src="%simg/icon.webp" alt="" width="18" '
+             'height="18" loading="lazy">Ragdoll Mail</span></div>'
+             '<div class="draft-to"><span>%s</span><b>%s</b></div><div class="draft-subj">%s</div><p>%s</p>'
+             '<div class="draft-foot"><span class="att">%s%s</span><span class="btn primary">%s%s</span></div></div>'
+             % (icon("file-text"), e(d["box"]), up, e(d["to"]), e(d["name"]), e(d["subj"]), e(d["body"]),
+                icon("paperclip"), e(d["file"]), icon("send"), e(d["send"])))
+    pts = "".join('<li><span class="ic">%s</span><b>%s</b><span>%s</span></li>' % (icon(i), e(h), e(t)) for i, h, t in L["a_pts"])
 
-    def card(kind, d):
-        top = '<div class="card-top"><span>%s%s</span>%s</div>' % (icon(d["icon"]), e(d["box"]), logo)
-        if kind == "list":
-            return top + '<ul class="mlist">%s</ul>' % "".join(
-                '<li><i></i><b>%s</b><span>%s</span>%s<time>%s</time></li>' % (e(fr), e(su), icon("paperclip") if at else "", e(tm))
-                for fr, su, tm, at in d["rows"])
-        head = ('<div class="draft-to"><span>%s</span><b>%s</b></div><div class="draft-subj">%s</div>'
-                % (e(d["to"]), e(d["name"]), e(d["subj"])))
-        if kind == "sched":
-            return top + head + '<div class="when">%s<b>%s</b></div>' % (icon("clock"), e(d["when"]))
-        return (top + head + '<p>%s</p><div class="draft-foot"><span class="att">%s%s</span>'
-                '<span class="btn primary">%s%s</span></div>' % (e(d["body"]), icon("paperclip"), e(d["file"]), icon("send"), e(d["send"])))
-
-    sc = L["scenes"]
-    tabs = "".join('<button type="button" role="tab" aria-selected="%s" data-k="%d">%s</button>'
-                   % ("true" if k == 0 else "false", k, e(x["tab"])) for k, x in enumerate(sc))
-    terms = "".join('<div class="term scene%s" data-k="%d">%s</div>'
-                    % (" on" if k == 0 else "", k, "".join(tline(w, t) for w, t in x["term"])) for k, x in enumerate(sc))
-    cards = "".join('<div class="card scene%s" data-k="%d">%s</div>' % (" on" if k == 0 else "", k, card(*x["card"]))
-                    for k, x in enumerate(sc))
-    dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
-        cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
-        icon("download"), e(L[os_][0]), e(L[os_][1])))
-    pts = "".join('<div class="pt"><div class="ic">%s</div><div><h3>%s</h3><p>%s</p></div></div>' % (icon(i), e(h), e(p))
-                  for i, h, p in L["a_pts"])
     (o_name, o_v, o_val, o_note), (s_name, s_v, s_val, s_note) = L["bars"]
-    faster = L["faster"] % int(round(s_v / o_v, -1))
-    rc, split = L["race"], 0.9  # sign in, then search: the measured 0.9 s + 0.13 s
-    slots = "".join('<span class="slot%s" style="--w:%.2f%%"><i class="seg"></i><em>%s</em></span>' % (" wait" if j == 0 else "", w, e(lbl))
-                    for j, (lbl, w) in enumerate(zip(rc["segs"], (split / s_v * 100, (s_v - split) / s_v * 100))))
-    race = ('<div class="race reveal" data-ours="%s" data-srv="%s" data-split="%s" data-unit="%s">'
-            '<div class="race-head"><div class="stat"><b>%s</b><span>%s</span></div>'
-            '<button type="button" class="btn rerun">%s%s</button></div>'
+    times = int(round(s_v / o_v, -1))
+    rc, split = L["race"], 0.9  # the server signs in, then searches: the measured 0.9 s + 0.13 s
+    slots = "".join('<span class="slot%s" style="--w:%.2f%%"><i class="seg"></i><em>%s</em></span>' % (" wait" if j == 0 else "", w, e(lb))
+                    for j, (lb, w) in enumerate(zip(rc["segs"], (split / s_v * 100, (s_v - split) / s_v * 100))))
+    race = ('<div class="race" data-ours="%s" data-srv="%s" data-split="%s" data-unit="%s">'
             '<div class="race-row ours"><div class="race-name">%s</div><div class="race-track">'
             '<span class="slot" style="--w:%.2f%%"><i class="seg"></i></span></div>'
             '<div class="race-val"><b data-f="%s">%s</b><span>%s</span></div></div>'
             '<div class="race-row"><div class="race-name">%s</div><div class="race-track">%s</div>'
             '<div class="race-val"><b data-f="%s">%s</b><span>%s</span></div></div>'
-            '<p class="speed-note">%s</p></div>'
-            % (o_v, s_v, split, e(rc["unit"]), e(faster), e(L["bars_h"]), icon("refresh-cw"), e(rc["rerun"]),
-               e(o_name), max(0.8, o_v / s_v * 100), e(o_val), e(o_val), e(o_note),
-               e(s_name), slots, e(s_val), e(s_val), e(s_note), e(L["bars_note"])))
-    nums = "".join('<div class="num"><b data-n="%d" data-pre="%s" data-suf="%s">%s%d%s</b><span>%s</span></div>'
-                   % (n, e(pre), e(suf), e(pre), n, e(suf), e(lbl)) for n, pre, suf, lbl in L["nums"])
-
-    def mq(icon_name, items, cls=""):
-        one = "".join('<span class="chip">%s%s</span>' % (icon(icon_name), e(x)) for x in items) * 2
-        return '<div class="mq%s"><div class="mq-track"><div class="mq-set">%s</div><div class="mq-set" aria-hidden="true">%s</div></div></div>' % (cls, one, one)
-
-    sd = L["sd"]
-    msearch = ('<div class="msearch"><label class="msearch-box">%s<input type="search" placeholder="%s" aria-label="%s" '
-               'autocomplete="off" spellcheck="false" data-q="%s"></label><ul class="mlist">%s</ul><p class="none" hidden>%s</p></div>'
-               % (icon("search"), e(sd["ph"]), e(sd["ph"]), e(sd["q"]),
-                  "".join('<li data-s="%s"><b>%s</b><span>%s</span></li>' % (e((fr + " " + su).lower()), e(fr), e(su))
-                          for fr, su in sd["mails"]), e(sd["none"])))
-    keys = '<div class="keys">%s</div>' % "".join('<div class="key" data-key="%s"><kbd>%s</kbd><span>%s</span></div>'
-                                                 % (e(k.lower()), e(k), e(lb)) for k, lb in L["keys"])
-    cmp_head = "".join("<th%s>%s</th>" % (' class="us"' if i == 1 else "", e(c)) for i, c in enumerate(L["c_cols"]))
-    def cell(i, c):
-        if i == 0:
-            return "<th>%s</th>" % e(c)
-        cls = (["us"] if i == 1 else []) + (["yes"] if c in L["c_yes"] else ["no"] if c in L["c_no"] else [])
-        return "<td%s>%s%s</td>" % (' class="%s"' % " ".join(cls) if cls else "", icon("check") if "yes" in cls else "", e(c))
-
-    cmp_rows = "".join("<tr>%s</tr>" % "".join(cell(i, c) for i, c in enumerate(r)) for r in L["c_rows"])
+            '<div class="race-foot"><p>%s</p><button type="button" class="rerun">%s%s</button></div></div>'
+            % (o_v, s_v, split, e(rc["unit"]), e(o_name), max(0.8, o_v / s_v * 100), e(o_val), e(o_val), e(o_note),
+               e(s_name), slots, e(s_val), e(s_val), e(s_note), e(L["bars_note"]), icon("refresh-cw"), e(rc["rerun"])))
+    facts = "".join('<div class="fact reveal"><span class="ic">%s</span><h3>%s</h3><p>%s</p></div>' % (icon(i), e(h), e(t))
+                    for i, h, t in L["facts"])
+    dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
+        cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
+        icon("download"), e(L[os_][0]), e(L[os_][1])))
     return f"""<!doctype html>
 <html lang="{L['lang']}">
 <head>
@@ -459,8 +250,8 @@ def page(L):
 <link rel="alternate" hreflang="x-default" href="{SITE}">
 <link rel="icon" href="{up}img/icon-256.png">
 <link rel="apple-touch-icon" href="{up}img/icon-256.png">
-<meta name="theme-color" content="#fbf9f6" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111312" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{e(L['title'])}">
 <meta property="og:description" content="{e(L['desc'])}">
@@ -475,14 +266,13 @@ def page(L):
 <link rel="preload" as="image" href="{up}media/demo-{L['demo']}.webp" fetchpriority="high">
 <script type="application/ld+json">{json.dumps(ld, ensure_ascii=False)}</script>
 </head>
-<body>
+<body class="home">
 <header class="top"><div class="wrap">
   <a class="brand" href="{up or './'}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
   <nav>
-    <a class="hide-s" href="#ai">{e(L['nav'][0])}</a>
+    <a class="hide-s" href="#agent">{e(L['nav'][0])}</a>
     <a class="hide-s" href="#speed">{e(L['nav'][1])}</a>
-    <a class="hide-s" href="#compare">{e(L['nav'][2])}</a>
-    <a class="hide-s" href="#questions">{e(L['nav'][3])}</a>
+    <a class="hide-s" href="compare/">{e(L['nav'][2])}</a>
     <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
     <a href="{REPO}">GitHub</a>
   </nav>
@@ -490,107 +280,63 @@ def page(L):
 </div></header>
 
 <main>
-<div class="hero">
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+<section class="hero">
   <div class="wrap">
-  <div class="pill">{'<b></b>'.join(e(x) for x in L['pill'])}</div>
-  <h1>{L['h1']}</h1>
-  <p class="lead">{e(L['lead'])}</p>
-  <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
-  <p class="first-open">{L['first']}</p>
+    <div class="pill">{'<b></b>'.join(e(x) for x in L['pill'])}</div>
+    <h1>{L['h1']}</h1>
+    <p class="lead">{e(L['lead'])}</p>
+    <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
+    <p class="first-open">{L['first']}</p>
   </div>
   <div class="shot"><div class="glow" aria-hidden="true"></div><div class="tilt">
     <video class="demo" data-src="{up}media/demo-{L['demo']}.mp4" poster="{up}media/demo-{L['demo']}.webp" width="1920" height="1200"
       muted loop playsinline preload="none" aria-label="{e(L['shot_alt'])}"></video>
     <button class="sound" type="button" aria-pressed="false" data-on="{e(L['sound'][0])}" data-off="{e(L['sound'][1])}" aria-label="{e(L['sound'][0])}">{icon('volume-x')}{icon('volume-2')}</button>
   </div></div>
-</div>
-
-<section id="works" class="works">
-  <div class="wrap center"><div class="kicker">{e(L['w_kick'])}</div></div>
-  {mq('terminal', L['agents'])}
-  {mq('mail', L['w'], ' rev')}
 </section>
 
-<div class="wrap"><div class="nums reveal">{nums}</div></div>
-
-<section id="ai"><div class="wrap">
-  <div class="reveal">
-    <div class="kicker">{e(L['a_kick'])}</div>
-    <h2>{e(L['a_h2'])}</h2>
-    <p class="sub">{L['a_sub']} <a class="more" href="{REPO}/blob/main/docs/command-line.md">{e(L['a_guide'])} →</a></p>
-  </div>
-  <div class="grid agent">
-    <div class="agent-demo t-wide reveal">
-      <div class="tabs" role="tablist">{tabs}</div>
-      <div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term-stack">{terms}</div></div>
-      <div class="handoff"><i></i></div>
-      <div class="cards">{cards}</div>
+<div class="stage">
+  <section id="agent"><div class="wrap">
+    <h2 class="big reveal">{e(L['a_h2'][0])}<br><em>{e(L['a_h2'][1])}</em></h2>
+    <p class="sub reveal">{L['a_sub']} <a class="more" href="{REPO}/blob/main/docs/command-line.md">{e(L['a_guide'])} →</a></p>
+    <div class="duo reveal">
+      <div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term">{''.join(tline(w, t) for w, t in L['term'])}</div></div>
+      <div class="link" aria-hidden="true"><i></i></div>
+      {draft}
     </div>
-    <div class="pts t-narrow reveal">{pts}</div>
-  </div>
+    <ul class="pts reveal">{pts}</ul>
+  </div></section>
+
+  <section id="speed"><div class="wrap">
+    <h2 class="big reveal">{e(L['s_h2'][0])}<br><em>{e(L['s_h2'][1])}</em></h2>
+    <div class="mega reveal"><b data-n="{times}">{times}×</b><span>{e(L['faster'])}</span></div>
+    {race}
+  </div></section>
+</div>
+
+<section class="facts-wrap"><div class="wrap">
+  <div class="facts">{facts}</div>
+  <p class="cmp-link reveal"><a class="more" href="compare/">{e(L['c_more'])} →</a></p>
 </div></section>
 
-<section id="speed" class="band"><div class="wrap">
-  <div class="reveal">
-    <div class="kicker">{e(L['s_kick'])}</div>
-    <h2>{e(L['s_h2'])}</h2>
-    <p class="sub">{e(L['s_sub'])}</p>
-  </div>
-  {race}
-</div></section>
-
-<section id="features"><div class="wrap">
-  <div class="reveal">
-    <div class="kicker">{e(L['f_kick'])}</div>
-    <h2>{e(L['f_h2'])}</h2>
-  </div>
-  <div class="grid">
-    {tile(0, 't-wide', msearch)}
-    {tile(1, 't-narrow', f'<div class="path"><span>{e(L["route"][0])}</span><i></i><span>{e(L["route"][1])}</span></div><div class="path-x">{e(L["route"][2])}</div>')}
-    {tile(2, 't-narrow', f'<div class="undo">{e(L["sending"])}<span class="bar"><i></i></span><a href="#features">{e(L["undo"])}</a></div><div class="warn">{e(L["warn"])}</div>')}
-    {tile(3, 't-wide', f'<div class="peek peek-r"><img src="{up}img/compose-{L["demo"]}.webp" alt="" loading="lazy" width="1800" height="1161"></div>')}
-    {tile(4, 't-third')}
-    {tile(5, 't-third', keys)}
-    {tile(6, 't-third')}
-  </div>
-</div></section>
-
-<section id="compare"><div class="wrap">
-  <div class="reveal">
-    <div class="kicker">{e(L['c_kick'])}</div>
-    <h2>{e(L['c_h2'])}</h2>
-  </div>
-  <div class="table hc reveal"><table><thead><tr>{cmp_head}</tr></thead><tbody>{cmp_rows}</tbody></table></div>
-  <p class="speed-note">{e(L['c_note'])} <a class="more" href="compare/">{e(L['c_more'])} →</a></p>
-</div></section>
-
-<section id="why" class="band"><div class="wrap">
-  <div class="story reveal">
-    <div class="kicker">{e(L['y_kick'])}</div>
-    <h2>{e(L['y_h2'])}</h2>
-    {''.join('<p>%s</p>' % e(p) for p in L['y_p'])}
-    <p class="sign">{e(L['y_sign'])}</p>
-  </div>
+<section class="quote"><div class="wrap reveal">
+  <img src="{up}img/icon.webp" alt="" width="56" height="56" loading="lazy">
+  <blockquote>{e(L['quote'])}</blockquote>
+  <p class="sign">{e(L['sign'])}</p>
 </div></section>
 
 <section id="questions"><div class="wrap">
-  <div class="center reveal">
-    <div class="kicker">{e(L['q_kick'])}</div>
-    <h2>{e(L['q_h2'])}</h2>
-  </div>
+  <h2 class="center reveal">{e(L['q_h2'])}</h2>
   <div class="faq">
     {''.join(f'<details><summary>{e(q)}{icon("chevron")}</summary><p>{e(a)}</p></details>' for q, a in L['q'])}
   </div>
 </div></section>
 
-<div class="end"><div class="wrap"><div class="end-panel reveal">
-  <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-  <img class="end-cat" src="{up}img/icon.webp" alt="" width="96" height="96" loading="lazy">
+<section class="finale"><div class="wrap reveal">
   <h2>{e(L['e_h2'])}</h2>
   <p class="sub">{e(L['e_sub'])}</p>
   <div class="cta">{dl('mac', 'primary')}{dl('win', '')}</div>
-</div></div></div>
+</div></section>
 </main>
 
 <footer><div class="wrap">
