@@ -43,7 +43,7 @@ for l in en zh; do
   # the background music (music.py, made with the code-composer skill), quiet and faded to the cut's length
   D=$($PY -c "import subprocess as s;print(s.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0','out/demo-$l.mp4']).decode().strip())")
   F=$($PY -c "print(round($D-2.5,2))")
-  $FF -v error -y -i "out/demo-$l.mp4" -i "$HERE/music.m4a" -filter_complex "[1:a]atrim=0:$D,afade=t=in:d=0.4,afade=t=out:st=$F:d=2.5,loudnorm=I=-26:TP=-3:LRA=7[a]" \
+  $FF -v error -y -i "out/demo-$l.mp4" -i "$HERE/music.m4a" -filter_complex "[1:a]atrim=0:$D,afade=t=in:d=0.4,afade=t=out:st=$F:d=2.5,loudnorm=I=-20:TP=-2:LRA=9[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 128k -ar 48000 -movflags +faststart -shortest "out/demo-$l-a.mp4"
   mv "out/demo-$l-a.mp4" "out/demo-$l.mp4"
   cp "out/demo-$l.mp4" "out/demo-$l.webp" "$REPO/site/media/"
