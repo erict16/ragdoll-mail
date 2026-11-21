@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point the Homebrew cask and the winget manifests at a release.
+"""Point the Homebrew cask, the Homebrew formula and the winget manifests at a release.
 
     python3 packaging/bump.py            # the version in pyproject.toml
     python3 packaging/bump.py 0.10.0
@@ -54,6 +54,12 @@ def main():
         (r'^  version ".*"', '  version "%s"' % version),
         (r'^  sha256 ".*"', '  sha256 "%s"' % h[FILES["mac"]]),
     ])
+    # the formula builds from the tag's source archive (GitHub makes it; its hash is stable)
+    src = get("https://github.com/%s/archive/refs/tags/v%s.tar.gz" % (REPO, version))
+    rewrite(os.path.join(HERE, "homebrew", "Formula", "ragdoll.rb"), [
+        (r'/tags/v[^/]+\.tar\.gz"', '/tags/v%s.tar.gz"' % version),
+        (r'^  sha256 ".*"', '  sha256 "%s"' % hashlib.sha256(src).hexdigest()),
+    ])
     wg = os.path.join(HERE, "winget")
     for f in sorted(os.listdir(wg)):
         if f.endswith(".yaml"):
@@ -62,7 +68,7 @@ def main():
                 pairs += [(r"/download/v[^/]+/", "/download/v%s/" % version),
                           (r"^    InstallerSha256: .*", "    InstallerSha256: " + h[FILES["win"]].upper())]
             rewrite(os.path.join(wg, f), pairs)
-    print("cask and winget now point at v%s" % version)
+    print("cask, formula and winget now point at v%s" % version)
 
 
 if __name__ == "__main__":

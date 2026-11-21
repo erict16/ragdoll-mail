@@ -156,7 +156,7 @@ agent  $ ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
 agent  › The draft is in your Drafts folder. Shall I send it?
 ```
 
-To get the command: **Settings → Command line → Install** in the app. Every command and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
+To get the command: **Settings → Command line → Install** in the app. To get only the command, without the app, on a Mac: `brew tap erict16/tap`, `brew trust erict16/tap`, `brew install ragdoll`. It needs no Apple signature, so macOS shows no warning. Every command and how it compares with the Gmail API: **[the command-line guide](docs/command-line.md)**.
 
 ## Help and feedback
 

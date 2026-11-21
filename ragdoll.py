@@ -2595,6 +2595,8 @@ def cmd_delete_draft(a):
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # installed with pip or pipx (no git clone to pull): the package manager updates it
 PIP_INSTALL = not os.path.isdir(os.path.join(APP_DIR, ".git")) and "-packages" in APP_DIR
+# installed with Homebrew (brew install erict16/tap/ragdoll): Homebrew updates it
+BREW_INSTALL = not os.path.isdir(os.path.join(APP_DIR, ".git")) and "/Cellar/" in APP_DIR.replace(os.sep, "/")
 UPDATE_REF = "refs/ragdoll/update"
 UPDATE_EVERY = 6 * 3600
 
@@ -2605,7 +2607,8 @@ def update_remote():
 
 def update_enabled():
     # the built app updates as a whole, from the release page (the app shows when there is one)
-    return not FROZEN and not PIP_INSTALL and not env("NO_UPDATE_CHECK") and CFG.d.get("update_check", True)
+    return (not FROZEN and not PIP_INSTALL and not BREW_INSTALL and not env("NO_UPDATE_CHECK")
+            and CFG.d.get("update_check", True))
 
 
 def update_log(text):
@@ -2903,6 +2906,8 @@ def cmd_update(a):
         die("this ragdoll comes with the Ragdoll Mail app: get the newest app from " + RELEASES_PAGE)
     if PIP_INSTALL:
         die("this ragdoll was installed with pip: run  pipx upgrade ragdoll-mail  (or  pip install -U ragdoll-mail)")
+    if BREW_INSTALL:
+        die("this ragdoll was installed with Homebrew: run  brew upgrade ragdoll")
     r = do_rollback(APP_DIR) if a.rollback else do_update(APP_DIR, check_only=a.check)
     if a.json:
         print(json.dumps(r, ensure_ascii=False, indent=1))

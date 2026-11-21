@@ -55,6 +55,16 @@ have said yes to that draft.
 
 **With the app:** sign in to Ragdoll Mail, open **Settings → Command line** and press **Install**. That is all: the command uses the app's own mailbox, password and index. Open a new terminal window and try `ragdoll status`.
 
+**With Homebrew** (Mac, no app needed):
+
+```sh
+brew tap erict16/tap
+brew trust erict16/tap
+brew install ragdoll
+```
+
+This installs only the command, on Homebrew's Python. It needs no Apple signature, so macOS shows no warning. Update with `brew upgrade ragdoll`. Then do steps 2, 3 and 5 below.
+
 **From the code** (no app needed):
 
 1. Python 3.10+ (SQLite 3.34+ for the trigram index; the python.org builds have it).

@@ -8,7 +8,7 @@ After each release (the build workflow adds `SHA256SUMS.txt` to it):
 python3 packaging/bump.py
 ```
 
-This points the cask and the winget files at the version in `pyproject.toml`.
+This points the cask, the formula and the winget files at the version in `pyproject.toml`.
 
 ## Homebrew (Mac)
 
@@ -22,7 +22,14 @@ brew trust erict16/tap
 brew install --cask ragdoll-mail
 ```
 
-This also gives them the `ragdoll` command. The main Homebrew list (homebrew/cask) needs an app
+This also gives them the `ragdoll` command.
+
+The tap also has a formula, `homebrew/Formula/ragdoll.rb`, for the command alone: `brew install ragdoll`
+after the same tap and trust lines. It installs `ragdoll.py` on Homebrew's Python, so there is no app and
+no Apple signature is needed. After each release, copy it into the tap's `Formula/` folder as well.
+A Homebrew install updates with `brew upgrade ragdoll`, not `ragdoll update`.
+
+The main Homebrew list (homebrew/cask) needs an app
 that Apple has notarized and a better-known repo, so the tap comes first.
 
 ## winget (Windows)
@@ -38,7 +45,8 @@ The name `ragdoll-mail` is free on PyPI. One time:
 
 1. On pypi.org, add a trusted publisher: repo `erict16/ragdoll-mail`, workflow `build.yml`,
    environment `pypi`.
-2. In the GitHub repo settings, add the variable `PYPI` with the value `on`.
+2. In the GitHub repo settings, add the variable `PYPI` with the value `on`
+   (the `pypi` environment already exists).
 
-From the next tag on, the build workflow also publishes to PyPI. People then install with
+From the next tag on, the build workflow also publishes to PyPI, with `packaging/pypi.md` as the project page. People then install with
 `pipx install ragdoll-mail`. A pip install updates with pipx or pip, not `ragdoll update`.

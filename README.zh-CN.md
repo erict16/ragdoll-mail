@@ -156,7 +156,7 @@ Ragdoll Mail 还带一个命令 `ragdoll`。Claude Code、Codex 这样的 AI 助
 助手  › 草稿已经放进草稿箱了，要发吗？
 ```
 
-装命令：在 App 里点 **设置 → 命令行 → 安装**。有哪些命令、和 Gmail API 比怎么样：看 **[命令行说明](docs/command-line.md)**（英文）。
+装命令：在 App 里点 **设置 → 命令行 → 安装**。只要命令行、不装 App 的话，Mac 上依次运行 `brew tap erict16/tap`、`brew trust erict16/tap`、`brew install ragdoll`。它不需要苹果签名，装好后 macOS 不会弹警告。有哪些命令、和 Gmail API 比怎么样：看 **[命令行说明](docs/command-line.md)**（英文）。
 
 ## 反馈
 
