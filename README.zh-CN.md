@@ -100,7 +100,7 @@ Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的�
 </tr>
 <tr>
 <td><img src="docs/compose-zh.png" alt="在 Ragdoll Mail 里写邮件：字体、列表和签名"></td>
-<td><img src="docs/hero-dark.png" alt="Ragdoll Mail 深色模式"></td>
+<td><img src="docs/hero-dark-zh.png" alt="Ragdoll Mail 深色模式"></td>
 </tr>
 </table>
 

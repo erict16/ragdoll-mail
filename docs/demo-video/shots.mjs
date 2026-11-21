@@ -9,7 +9,7 @@ const T = lang === "zh"
       body: "<div>张经理你好，</div><div><br></div><div>第一批的安排如下：</div><ul><li>4 号从工厂发货</li><li>7 号前到你们现场</li><li>8 号起我们的工程师在现场</li></ul><div><b>麻烦周五前确认收货地址。</b></div>" }
   : { q: "PO-1234", who: "Jane Doe",
       body: "<div>Hi Jane,</div><div><br></div><div>Here is the plan for the first batch:</div><ul><li>Ships from our factory on the 4th</li><li>Arrives at your site by the 7th</li><li>Our engineer is on site from the 8th</li></ul><div><b>Please confirm the delivery address</b> by Friday.</div>" };
-const D = await launch({ width: 1280, height: 800, dpr: 2, lang: lang === "zh" ? "zh-CN" : "en-US" });
+const D = await launch({ width: 1280, height: 800, dpr: 2, lang: lang === "zh" ? "zh-CN" : "en-US", theme: process.env.THEME || "light" });
 const port = process.env.PORT || 8795;
 const call = (n, a) => D.js(`fetch("/api/${n}", { method: "POST", headers: { "X-Token": "devtok", "Content-Type": "application/json" }, body: ${JSON.stringify(JSON.stringify(a || {}))} }).then(r => r.json())`);
 try {
