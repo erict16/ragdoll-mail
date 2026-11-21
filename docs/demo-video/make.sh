@@ -1,7 +1,7 @@
 #!/bin/sh
 # Make the landing page's demo videos again, after the app's look changes:
 #   sh docs/demo-video/make.sh
-# Records the demo mailbox in headless Chromium (English and Chinese app), cuts each take with
+# Records the demo mailbox in headless Chromium (English app on the English mailbox, Chinese on the Chinese), cuts each take with
 # captions, cursor and gentle zoom (compose.py, needs Pillow), and writes:
 #   site/media/demo-en.mp4, demo-zh.mp4  (H.264, 1920x1200) and their first frames as .webp posters
 #   docs/demo.gif                         (the English cut, for the README)
@@ -20,7 +20,7 @@ export PORT
 server() {   # a fresh demo mailbox for each take
   for p in $(lsof -ti tcp:"$PORT" -sTCP:LISTEN); do kill "$p"; done
   sleep 1
-  (cd "$REPO" && RAGDOLL_APP_TOKEN=devtok python3 ragdoll_app.py --demo --browser --no-open --port "$PORT" > "$WORK/server.log" 2>&1 &)
+  (cd "$REPO" && RAGDOLL_APP_TOKEN=devtok python3 ragdoll_app.py --demo --demo-lang "$1" --browser --no-open --port "$PORT" > "$WORK/server.log" 2>&1 &)
   for i in $(seq 1 40); do sleep 0.5; curl -s -o /dev/null "http://127.0.0.1:$PORT/" && return 0; done
   echo "the demo server did not start"; exit 1
 }
@@ -28,7 +28,7 @@ server() {   # a fresh demo mailbox for each take
 # SKIP_RECORD=1 cuts the takes already in $WORK again (after a change to compose.py)
 [ -n "$SKIP_RECORD" ] || for l in en zh; do
   rm -rf "take-$l"
-  server
+  server $l
   node "$HERE/record.mjs" $l "take-$l" 2.5
   node "$HERE/assets.mjs" $l "assets-$l"
 done
@@ -40,6 +40,12 @@ for l in en zh; do
     -profile:v high -level 5.1 -movflags +faststart -an -color_primaries bt709 -color_trc bt709 -colorspace bt709 "out/demo-$l.mp4"
   $FF -v error -y -i "out/demo-$l.mp4" -frames:v 1 "out/poster-$l.png"
   $PY -c "from PIL import Image; Image.open('out/poster-$l.png').convert('RGB').save('out/demo-$l.webp', 'WEBP', quality=86, method=6)"
+  # the background music (music.py, made with the code-composer skill), quiet and faded to the cut's length
+  D=$($PY -c "import subprocess as s;print(s.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0','out/demo-$l.mp4']).decode().strip())")
+  F=$($PY -c "print(round($D-2.5,2))")
+  $FF -v error -y -i "out/demo-$l.mp4" -i "$HERE/music.m4a" -filter_complex "[1:a]atrim=0:$D,afade=t=in:d=0.4,afade=t=out:st=$F:d=2.5,loudnorm=I=-26:TP=-3:LRA=7[a]" \
+    -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 128k -ar 48000 -movflags +faststart -shortest "out/demo-$l-a.mp4"
+  mv "out/demo-$l-a.mp4" "out/demo-$l.mp4"
   cp "out/demo-$l.mp4" "out/demo-$l.webp" "$REPO/site/media/"
 done
 # the GIF: 10 frames a second, 5 while the camera moves (those frames change everywhere and cost the most)

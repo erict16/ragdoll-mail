@@ -2,7 +2,7 @@
 
 <h1 align="center">Ragdoll Mail</h1>
 
-<p align="center"><b>免费的 Mac / Windows 邮箱客户端。<br>搜邮件一搜就到，邮箱自带的搜索不好用也没关系。</b></p>
+<p align="center"><b>AI 助手也能用的免费邮件软件。<br>Mac / Windows 桌面软件，自带命令行：Claude Code、Codex 这类 AI 可以帮你搜邮件、写回复，发不发由你点。</b></p>
 
 <p align="center">支持腾讯企业邮箱、QQ 邮箱、163 邮箱、Gmail、iCloud、Fastmail，以及其他支持 IMAP 的邮箱。</p>
 
@@ -19,13 +19,15 @@
   <a href="README.md"><b>English</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：边打字边搜到邮件，看带附件的邮件，写回复，撤销发送，再定时发送"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：AI 助手在终端里用 ragdoll 命令写好回复，草稿在软件里打开，撤销发送后改成明天发，最后边打字边搜到邮件"></p>
 
 ## Ragdoll Mail 是什么？
 
-Ragdoll Mail 是一个收发邮件的软件，和苹果自带的“邮件”、Outlook、Foxmail 是同一类东西。用你现在的邮箱登录就能用。邮箱里什么都不会变，手机上和别的邮件软件照常用。
+Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的“邮件”、Outlook 是同一类东西。不同的是，它自带一套叫 `ragdoll` 的命令行，Claude Code、Codex 这类 AI 助手可以直接用。AI 能帮你搜邮件、看完整的来回邮件、写回复；写好的回复存成草稿，在软件里打开给你看，你不点发送，就什么都不会发出去。
 
-做它是为了解决一个问题：很多邮箱的搜索又慢又不准，腾讯企业邮箱尤其明显。Ragdoll Mail 在你自己的电脑上给邮件做了一份目录，搜索时查的是这份目录。打几个字，要找的邮件就出来了。
+搜索在你自己的电脑上完成。Ragdoll Mail 用 SQLite 给你的邮箱建了一份全文索引，搜一次只要几毫秒，不用每次都去问邮件服务器，断网也能搜。像腾讯企业邮箱这样自带搜索不好用的邮箱（不管搜什么都返回整个文件夹），差别尤其明显。
+
+用你现在的邮箱登录就能用。邮箱里什么都不会变，手机上和别的邮件软件照常用。
 
 ## 它好在哪
 
@@ -93,11 +95,11 @@ Ragdoll Mail 是一个收发邮件的软件，和苹果自带的“邮件”、O
 
 <table>
 <tr>
-<td><img src="docs/hero-light.png" alt="Ragdoll Mail 收件箱和一封带附件的邮件"></td>
-<td><img src="docs/search-light.png" alt="在 Ragdoll Mail 里搜索邮件，边打字边出结果"></td>
+<td><img src="docs/hero-zh.png" alt="Ragdoll Mail 收件箱和一封带附件的邮件"></td>
+<td><img src="docs/search-zh.png" alt="在 Ragdoll Mail 里搜索邮件，边打字边出结果"></td>
 </tr>
 <tr>
-<td><img src="docs/compose-light.png" alt="在 Ragdoll Mail 里写邮件：字体、列表和签名"></td>
+<td><img src="docs/compose-zh.png" alt="在 Ragdoll Mail 里写邮件：字体、列表和签名"></td>
 <td><img src="docs/hero-dark.png" alt="Ragdoll Mail 深色模式"></td>
 </tr>
 </table>

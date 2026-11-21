@@ -9,12 +9,12 @@ const [lang = "en", out = "assets-" + lang] = process.argv.slice(2);
 mkdirSync(out, { recursive: true });
 const WT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");   // the repository
 const C = {
-  en: { caps: ["Find any mail as you type", "Chinese too. Even offline.", "The whole conversation, files included",
-               "Reply in seconds", "Sent too soon? Undo.", "Or send it later"],
-        name: "Ragdoll Mail", tag: "Free for Mac and Windows", sub: "Open source. No account. Your mail stays on your computer." },
-  zh: { caps: ["边打字，边出结果", "中文英文都能搜，断网也行", "来回邮件和附件，一眼看全",
-               "几秒就能回复", "发早了？点撤销", "也能定时发送"],
-        name: "Ragdoll Mail", tag: "免费，支持 Mac 和 Windows", sub: "开源，不用注册，邮件只在你的电脑上。" },
+  en: { caps: ["Ask your AI agent to answer a mail", "It drafts in your mailbox. You send.", "Sent too soon? Undo.",
+               "Or send it later", "Search every mail as you type", "Even words deep inside a mail"],
+        name: "Ragdoll Mail", tag: "The mail app your AI agent can use", sub: "Free and open source · Mac and Windows · Your mail stays on your computer" },
+  zh: { caps: ["让 AI 助手帮你回邮件", "AI 写好草稿，你来点发送", "发早了？点撤销",
+               "也能定时发送", "边打字，边出结果", "正文里的词也能搜到"],
+        name: "Ragdoll Mail", tag: "AI 助手也能用的邮件软件", sub: "免费开源 · Mac 和 Windows · 邮件只在你的电脑上" },
 }[lang];
 
 const FONT = `-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`;

@@ -17,6 +17,7 @@ import hashlib
 import html as htmlmod
 import imaplib
 import json
+import locale
 import collections
 import queue
 import mimetypes
@@ -489,7 +490,10 @@ def demo_pdf(title, size=0):
 
 
 ME = ("Alex Morgan", "you@example.com")
-DEMO_FLAGGED = ("Quote for PO-1234",)
+DEMO_FLAGGED = ("Quote for PO-1234", "PO-1234 报价")
+DEMO_INLINE = ("Re: Site visit photos", "回复：现场照片")     # mails with a photo in the text
+DEMO_LISTS = ("noreply@github.com", "news@acme-industrial.com", "offers@example.net", "noreply@gitee.com",
+              "news@acme-industrial.cn")                    # mailing lists: they carry List-Unsubscribe
 DEMO = [
     # (folder, minutes ago, from, to, cc, subject, body, attachments, seen, thread key, reply-to key)
     ("inbox", 14, ("Jane Doe", "jane.doe@acme-industrial.com"), [ME], [("Tom Becker", "tom.becker@acme-industrial.com")],
@@ -501,9 +505,10 @@ DEMO = [
      "attached. Lead time is 6 weeks from order.\n>\n> Best regards,\n> Alex",
      [("Quote_PO-1234_signed.pdf", "pdf"), ("Delivery_schedule.xlsx", "bin")], False, "po", "po1"),
     ("inbox", 52, ("Li Ming", "li.ming@example.cn"), [ME], [],
-     "北京ABC项目 — 图纸确认",
-     "Alex 你好，\n\n附件是北京ABC项目的最新图纸，请在周五前确认尺寸和接线方式。如有问题请随时联系我。\n\n谢谢！\n李明",
-     [("ABC项目_总装图_rev3.pdf", "pdf")], False, None, None),
+     "Beijing ABC project: drawings to confirm",
+     "Hi Alex,\n\nAttached are the latest drawings for the Beijing ABC project. Please confirm the dimensions and "
+     "the wiring by Friday, and call me if anything is unclear.\n\nThanks,\nLi Ming",
+     [("ABC_assembly_drawing_rev3.pdf", "pdf")], False, None, None),
     ("inbox", 130, ("GitHub", "noreply@github.com"), [ME], [],
      "[ragdoll-mail] Release v0.5.0 published",
      "A new release is out.\n\nragdoll-mail v0.5.0: the desktop app.\n\nView it on GitHub: "
@@ -536,9 +541,10 @@ DEMO = [
      "Certificate of origin",
      "Dear Alex,\n\nCould you send the certificate of origin for order 4471? Customs is asking for it.\n\n"
      "Kind regards,\nHannah Weber", [], True, None, None),
-    ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME], [],
-     "下周培训安排",
-     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 140, ("Emily Wang", "emily.wang@example.com"), [ME], [],
+     "Product training next Wednesday",
+     "Hi all,\n\nThe product training is next Wednesday at 2 pm in the meeting room on the third floor. "
+     "Please be on time.\n\nEmily", [("invite.ics", "ics")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -557,7 +563,8 @@ DEMO = [
      "Re: Certificate of origin", "Dear Hannah,\n\nThe certificate is attached.\n\nBest regards,\nAlex",
      [("CO_order_4471.pdf", "pdf")], True, None, None),
     ("drafts", 40, ME, [("Li Ming", "li.ming@example.cn")], [],
-     "Re: 北京ABC项目 — 图纸确认", "李明你好，\n\n图纸已收到，尺寸没有问题。接线方式我们明天确认后回复。\n\nAlex",
+     "Re: Beijing ABC project: drawings to confirm",
+     "Hi Li Ming,\n\nThanks for the drawings. The dimensions are fine. We will confirm the wiring tomorrow.\n\nAlex",
      [], True, None, None),
     ("archive", 60 * 24 * 12, ("Acme Industrial", "news@acme-industrial.com"), [ME], [],
      "Acme Industrial newsletter — October", "Our October news: new plant, new products, and a new website.",
@@ -583,21 +590,130 @@ DEMO = [
 ]
 DEMO_FOLDERS = [("Projects", ""), ("Projects/Acme", "")]
 
+# The same mailbox in Chinese, for a Chinese screen: no English mail in it, as a Chinese user's box would be
+ME_ZH = ("林晓", "you@example.com")
+ZW = ("张伟", "zhang.wei@acme-industrial.cn")
+ZL = ("赵磊", "zhao.lei@acme-industrial.cn")
+SJ = ("孙佳", "sun.jia@northwind.cn")
+WJ = ("吴静", "wu.jing@example.com")
+LM = ("李明", "li.ming@example.cn")
+DEMO_ZH = [
+    ("inbox", 14, ZW, [ME_ZH], [ZL],
+     "PO-1234 报价",
+     "林工你好，\n\n谢谢你们这么快回复。签好字的 PO-1234 报价单和更新后的交货计划都在附件里。\n\n"
+     "麻烦确认一下第一批的发货日期，我们现场想把安装排在 8 号那一周。\n\n祝好\n张伟\n采购经理，艾克美工业"
+     "\n\n周一，林晓 <you@example.com> 写道：\n> 张经理你好，\n>\n> 附件是 PO-1234 的报价，交期为下单后 6 周。"
+     "\n>\n> 祝好\n> 林晓",
+     [("PO-1234_报价单_已签字.pdf", "pdf"), ("交货计划.xlsx", "bin")], False, "po", "po1"),
+    ("inbox", 52, LM, [ME_ZH], [],
+     "北京ABC项目 — 图纸确认",
+     "林工你好，\n\n附件是北京ABC项目的最新图纸，请在周五前确认尺寸和接线方式。如有问题请随时联系我。\n\n谢谢！\n李明",
+     [("ABC项目_总装图_rev3.pdf", "pdf")], False, None, None),
+    ("inbox", 130, ("Gitee", "noreply@gitee.com"), [ME_ZH], [],
+     "[ragdoll-mail] 新版本 v0.5.0 已发布",
+     "新版本已发布。\n\nragdoll-mail v0.5.0：桌面版。\n\n在 Gitee 上查看：https://gitee.com/", [], True, None, None),
+    ("inbox", 60 * 5, SJ, [ME_ZH], [],
+     "周四一起吃午饭？",
+     "林晓，\n\n周四有空吗？公司附近新开了一家拉面店，一直想去试试。\n\n孙佳", [], False, "lunch", None),
+    ("inbox", 60 * 9, ("刘洋", "liu.yang@contoso.cn"), [ME_ZH], [],
+     "回复：现场照片",
+     "昨天现场的照片在下面。左边那台柜子的门密封条要换新的。\n\n刘洋", [], True, None, None),
+    ("inbox", 60 * 26, ("北风云", "billing@northwind.cn"), [ME_ZH], [],
+     "11 月账单 INV-0006 已出",
+     "你好，\n\n你 11 月的账单 INV-0006 在附件里，将于 30 号扣款。\n\n北风云", [("INV-0006.pdf", "pdf")],
+     True, None, None),
+    ("inbox", 60 * 30, ZL, [ME_ZH], [],
+     "11 月发货的装箱单",
+     "林工，\n\n装箱单在附件里。一共 3 箱，毛重 1,240 公斤。\n\n赵磊", [("装箱单_11月.pdf", "pdf")], True, None, None),
+    ("inbox", 60 * 50, ("周敏", "zhou.min@fabrikam.cn"), [ME_ZH], [ZW],
+     "会议纪要 — 第四季度计划",
+     "各位好，\n\n今天的纪要：\n\n1. 第四季度目标已确认。\n2. 新供应商 12 月开始接入。\n3. 下次评审在 2 号。\n\n周敏",
+     [], True, None, None),
+    ("inbox", 60 * 75, SJ, [ME_ZH], [],
+     "周五评审的幻灯片",
+     "周五评审用的幻灯片在附件里，周四中午前有意见请告诉我。", [("周五评审.pdf", "pdf")], True, None, None),
+    ("inbox", 60 * 100, WJ, [ME_ZH], [],
+     "原产地证",
+     "林工你好，\n\n订单 4471 的原产地证能发我一份吗？海关在要。\n\n谢谢\n吴静", [], True, None, None),
+    ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME_ZH], [],
+     "下周培训安排",
+     "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 200, ("陈刚", "chen.gang@example.com"), [ME_ZH], [],
+     "备件清单",
+     "林工，\n\n附件是明年需要的备件清单。\n\n陈刚", [("备件清单_2027.pdf", "pdf")], True, None, None),
+    ("inbox", 60 * 260, ZW, [ME_ZH], [],
+     "欢迎使用艾克美供应商平台",
+     "林工，\n\n你的供应商平台账号已经开好了，发票和证书都可以在上面上传。\n\n张伟", [], True, None, None),
+    ("sent", 60 * 28, ME_ZH, [ZW], [],
+     "PO-1234 报价",
+     "张经理你好，\n\n附件是 PO-1234 的报价，交期为下单后 6 周。\n\n祝好\n林晓", [("PO-1234_报价单.pdf", "pdf")],
+     True, "po", "po0"),
+    ("sent", 60 * 4, ME_ZH, [SJ], [],
+     "回复：周四一起吃午饭？", "好呀，12:30 可以。\n\n林晓", [], True, "lunch", None),
+    ("sent", 60 * 98, ME_ZH, [WJ], [],
+     "回复：原产地证", "吴静你好，\n\n原产地证在附件里。\n\n祝好\n林晓", [("原产地证_订单4471.pdf", "pdf")], True, None, None),
+    ("drafts", 40, ME_ZH, [LM], [],
+     "回复：北京ABC项目 — 图纸确认", "李明你好，\n\n图纸已收到，尺寸没有问题。接线方式我们明天确认后回复。\n\n林晓",
+     [], True, None, None),
+    ("archive", 60 * 24 * 12, ("艾克美工业", "news@acme-industrial.cn"), [ME_ZH], [],
+     "艾克美工业 10 月简讯", "10 月动态：新工厂、新产品，还有新网站。", [], True, None, None),
+    ("archive", 60 * 24 * 20, ZL, [ME_ZH], [],
+     "唛头", "林工，每个箱子上都请贴附件里的唛头。\n\n赵磊", [("唛头.pdf", "pdf")], True, None, None),
+    ("trash", 60 * 24 * 3, ("每日优惠", "offers@example.net"), [ME_ZH], [],
+     "本周末全场五折", "千万别错过！", [], True, None, None),
+    ("junk", 60 * 5, ("中奖中心", "winner@example.net"), [ME_ZH], [],
+     "恭喜你获得一张购物卡", "点击链接，今天就能领取。", [], False, None, None),
+    ("junk", 60 * 30, ("网站优化专家", "hello@example.org"), [ME_ZH], [],
+     "让你的网站排到第一页", "每月给你带来一万访客。", [], True, None, None),
+    ("项目", 60 * 24 * 6, ("马丽", "ma.li@example.com"), [ME_ZH], [],
+     "明年的项目清单", "林工，\n\n明年的项目清单在附件里。\n\n马丽", [("项目清单_2027.pdf", "pdf")], True, None, None),
+    ("项目/艾克美", 60 * 24 * 8, ZL, [ME_ZH], [],
+     "艾克美二厂：启动会纪要", "林工，启动会的纪要在下面。\n\n赵磊", [], True, None, None),
+    ("项目/艾克美", 60 * 24 * 9, ZL, [ME_ZH], [],
+     "艾克美二厂：现场布置图", "林工，这是现场布置图。\n\n赵磊", [("现场布置图.pdf", "pdf")], False, None, None),
+]
+DEMO_SETS = {
+    "en": {"me": ME, "mail": DEMO, "folders": DEMO_FOLDERS,
+           "signature": "Alex Morgan<br>Sales Engineer · Example Co.<br>+1 555 0100",
+           "event": ("Product training", "Meeting room, 3rd floor", "Emily Wang", "emily.wang@example.com")},
+    "zh": {"me": ME_ZH, "mail": DEMO_ZH, "folders": [("项目", ""), ("项目/艾克美", "")],
+           "signature": "林晓<br>销售工程师 · 示例科技<br>021 5555 0100",
+           "event": ("产品培训", "三楼会议室", "王芳", "wang.fang@example.cn")},
+}
 
 
-def demo_ics(name, ts):
+def demo_lang(want=None):
+    """The demo mailbox's language: the one asked for, else Chinese on a Chinese system, else English."""
+    if want in DEMO_SETS:
+        return want
+    names = [os.environ.get(k, "") for k in ("LC_ALL", "LC_MESSAGES", "LANG")]
+    if sys.platform == "darwin":
+        with contextlib.suppress(Exception):
+            names.append(subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True,
+                                        text=True, timeout=2).stdout)
+    elif os.name == "nt":
+        with contextlib.suppress(Exception):
+            import ctypes
+            names.append(locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), ""))
+    first = next((n for n in names if n.strip()), "")
+    return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
+
+
+def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
     """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
     d = dt.datetime.now() + dt.timedelta(days=1)
     d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
     u = d.astimezone(dt.timezone.utc)
     f = "%Y%m%dT%H%M%SZ"
+    title, place, who, addr = event
     return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
-            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:产品培训\r\n"
-            "LOCATION:三楼会议室\r\nORGANIZER;CN=王芳:mailto:wang.fang@example.cn\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f)))
+            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
+            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr))
 
 
-def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False):
+def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False,
+                 event=DEMO_SETS["en"]["event"]):
     msg = EmailMessage()
     msg["From"] = formataddr(frm)
     msg["To"] = ", ".join(formataddr(x) for x in to)
@@ -609,7 +725,7 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
     if irt:
         msg["In-Reply-To"] = irt
         msg["References"] = refs
-    if frm[1] in ("noreply@github.com", "news@acme-industrial.com", "offers@example.net"):
+    if frm[1] in DEMO_LISTS:
         msg["List-Unsubscribe"] = "<https://example.com/unsubscribe/demo>, <mailto:unsubscribe@example.com?subject=unsubscribe>"
         msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     msg.set_content(body)
@@ -623,7 +739,7 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
         if kind == "ics":
-            msg.add_attachment(demo_ics(name, ts), subtype="calendar", filename=name, params={"method": "REQUEST"})
+            msg.add_attachment(demo_ics(name, ts, event), subtype="calendar", filename=name, params={"method": "REQUEST"})
         elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
@@ -635,8 +751,9 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
 # ------------------------------------------------------------------ backend
 
 class Backend:
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, demo_lang="en"):
         self.demo = demo
+        self.demo_set = DEMO_SETS[demo_lang if demo_lang in DEMO_SETS else "en"]
         self.lock = threading.RLock()           # the action IMAP connection
         self.dblock = threading.RLock()         # the request db connection
         self.m = None
@@ -648,7 +765,7 @@ class Backend:
         self.contacts = (0, {})
         self.update = None
         self.server_folders = None
-        self.found = list(DEMO_FOLDERS) if demo else []     # [(folder on the server, its flags)]
+        self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
         self.extra_now = False
         self.news = []                          # new mail the page has yet to hear about
@@ -1285,13 +1402,28 @@ class Backend:
             if self.news_mark is None:
                 self.note_new(self.c)
             ts = int(time.time())
-            raw = demo_message("inbox", ts, ("Sofia Rossi", "sofia.rossi@example.it"), [ME], [],
-                               "Delivery date for order 4502",
-                               "Hi Alex,\n\nCan you confirm the delivery date for order 4502?\n\nSofia",
+            zh = self.demo_set["me"] == ME_ZH
+            frm, subj, body = ((("何敏", "he.min@example.cn"), "订单 4502 的交货日期",
+                                "林工你好，\n\n订单 4502 的交货日期能确认一下吗？\n\n何敏") if zh else
+                               (("Sofia Rossi", "sofia.rossi@example.it"), "Delivery date for order 4502",
+                                "Hi Alex,\n\nCan you confirm the delivery date for order 4502?\n\nSofia"))
+            raw = demo_message("inbox", ts, frm, [self.demo_set["me"]], [], subj, body,
                                [], make_msgid(domain="example.com"), None, None)
             self.demo_insert(R.CFG.folders["inbox"], raw, ts, 0, 0)
             self.note_new(self.c)
         return {}
+
+    def api_demo_ask(self, a):
+        """In the demo only: what an agent's `ragdoll draft --reply` and `ragdoll open` do, for the tour video:
+        a reply draft is saved and the app is asked to open it."""
+        if not self.demo:
+            fail("only in the demo")
+        c = self.api_compose({"mode": "reply", "id": a["id"]})
+        i, _ = self.save(dict(c, html=text_in(a, "html")))
+        self.asks_n += 1
+        self.asks.append({"n": self.asks_n, "kind": "open", "id": i, "subject": c["subject"], "at": int(time.time())})
+        self.bump()
+        return {"id": i}
 
     def api_search(self, a):
         text = text_in(a, "q").strip()[:500]
@@ -2443,18 +2575,19 @@ class Backend:
         self.demo_uids = {}
         atexit.register(shutil.rmtree, home, True)
         d = json.loads(json.dumps(R.DEFAULTS))
-        d.update({"user": ME[1], "name": ME[0], "data_dir": home, "imap": {"host": "demo", "port": 993},
+        ds = self.demo_set
+        me = ds["me"]
+        d.update({"user": me[1], "name": me[0], "data_dir": home, "imap": {"host": "demo", "port": 993},
                   "smtp": {"host": "demo", "port": 465}})
         sig = os.path.join(home, "signature.html")
         with open(sig, "w", encoding="utf-8") as f:
-            f.write('<div style="color:#6b6b6b;font-size:13px">Alex Morgan<br>Sales Engineer · Example Co.'
-                    '<br>+1 555 0100</div>')
+            f.write('<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"])
         d["signature"] = sig
         R.CFG = R.Cfg(d)
         self.c = R.db()
         now = int(time.time())
         mids = {}
-        for k, (fk, ago, frm, to, cc, subj, body, atts, seen, thread, key) in enumerate(DEMO):
+        for k, (fk, ago, frm, to, cc, subj, body, atts, seen, thread, key) in enumerate(ds["mail"]):
             ts = now - ago * 60
             mid = "<demo-%d@example.com>" % k
             irt = refs = None
@@ -2464,7 +2597,7 @@ class Backend:
             if thread:
                 mids[thread] = mid
             raw = demo_message(fk, ts, frm, to, cc, subj, body, atts, mid, irt, refs,
-                               inline=subj.startswith("Re: Site visit"))
+                               inline=subj in DEMO_INLINE, event=ds["event"])
             self.demo_insert(R.CFG.folders.get(fk, fk), raw, ts, int(seen), int(fk == "inbox" and thread == "lunch"),
                              int(subj in DEMO_FLAGGED))
         self.demo_order_threads()
@@ -3143,6 +3276,8 @@ def run_window(url, home):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="ragdoll app", description="ragdoll-mail desktop app")
     ap.add_argument("--demo", action="store_true", help="a made-up mailbox; no account needed")
+    ap.add_argument("--demo-lang", choices=sorted(DEMO_SETS), help="the demo mailbox in English or Chinese "
+                    "(default: the system's language)")
     ap.add_argument("--browser", action="store_true", help="open in the default browser, not a window")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
@@ -3152,7 +3287,7 @@ def main(argv=None):
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        backend = Backend(demo=a.demo)
+        backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
         return too_new(str(e), a.browser)
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)

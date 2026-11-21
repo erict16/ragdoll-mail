@@ -1,5 +1,5 @@
 """Offline tests of the desktop app's local server, in demo mode (no account, no network)."""
-import contextlib, http.client, io, json, os, queue, shutil, subprocess, sys, tempfile, threading, time, unittest
+import contextlib, http.client, io, json, os, queue, re, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll_app as A  # noqa: E402
@@ -1041,14 +1041,27 @@ class ListsAndInvites(unittest.TestCase):
 
     def test_demo_has_both(self):
         cfg = A.R.CFG                           # demo mode swaps the config; the CLI tests need it back
-        b = A.Backend(demo=True)
         try:
-            rows = b.api_list({"folder": "inbox"})["rows"]
-            gh = next(r for r in rows if r["subject"].startswith("[ragdoll-mail]"))
-            tr = next(r for r in rows if r["subject"] == "下周培训安排")
-            self.assertTrue(b.api_message({"id": gh["id"]})["unsub"]["one_click"])
-            self.assertEqual(b.api_unsubscribe({"id": gh["id"]}), {"done": True})
-            self.assertEqual(b.api_message({"id": tr["id"]})["invite"]["title"], "产品培训")
-            self.assertTrue(b.api_open_invite({"id": tr["id"]})["path"].endswith(".ics"))
+            for lang, title, sub in (("en", "Product training", "Product training next Wednesday"),
+                                     ("zh", "产品培训", "下周培训安排")):
+                b = A.Backend(demo=True, demo_lang=lang)
+                rows = b.api_list({"folder": "inbox"})["rows"]
+                gh = next(r for r in rows if r["subject"].startswith("[ragdoll-mail]"))
+                tr = next(r for r in rows if r["subject"] == sub)
+                self.assertTrue(b.api_message({"id": gh["id"]})["unsub"]["one_click"])
+                self.assertEqual(b.api_unsubscribe({"id": gh["id"]}), {"done": True})
+                self.assertEqual(b.api_message({"id": tr["id"]})["invite"]["title"], title)
+                self.assertTrue(b.api_open_invite({"id": tr["id"]})["path"].endswith(".ics"))
         finally:
             A.R.CFG = cfg
+
+    def test_demo_is_one_language(self):
+        """The English demo has no Chinese mail and the Chinese one no English mail, so a video shows one."""
+        han = re.compile(r"[\u4e00-\u9fff]")
+        for k, (_f, _a, frm, _to, _cc, subj, body, atts, *_r) in enumerate(A.DEMO):
+            self.assertFalse(han.search(frm[0] + subj + body + "".join(n for n, _ in atts)), subj)
+        for _f, _a, frm, _to, _cc, subj, body, *_r in A.DEMO_ZH:
+            self.assertTrue(han.search(subj) or subj.startswith("[ragdoll-mail]"), subj)
+            self.assertTrue(han.search(body), subj)
+        self.assertEqual(A.demo_lang("zh"), "zh")
+        self.assertIn(A.demo_lang(), ("en", "zh"))

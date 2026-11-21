@@ -1,15 +1,15 @@
 # Ragdoll Mail
 
-> Free, open-source mail app for Mac and Windows with fast local search. It works with Tencent Exmail (腾讯企业邮箱), QQ Mail, 163, Gmail, iCloud, Fastmail and any IMAP mailbox. Mail stays on the user's computer and their own mail server.
+> Free, open-source mail app for Mac and Windows with a command line built in, so AI agents (Claude Code, Codex and any agent that runs shell commands) can search the mailbox and write replies; the person approves every send. Search runs on a local SQLite full-text index. Works with any IMAP mailbox, including Gmail, iCloud, Fastmail, Tencent Exmail (腾讯企业邮箱), QQ Mail and 163.
 
-- Why it exists: on many mailboxes, Tencent Exmail most of all, the server's own search is slow or wrong. On a real Exmail mailbox of 6,442 mails, Exmail's search returned 4,988 mails for any word, even a made-up one. Ragdoll Mail keeps a local SQLite full-text index (trigram, so Chinese, Japanese and Korean work) and returns only the matching mails, in under 0.1 s, also offline.
+- For AI agents: the `ragdoll` command (install it from the app: Settings → Command line). `search`, `thread`, `read`, `draft --reply`, `check`, `open` and `send`, each with `--json`. Drafts are saved in the mailbox's real Drafts folder and open in the app. `send` needs an explicit yes, and a draft is never sent twice. No API key, no OAuth app, no usage quota: plain IMAP and SMTP to the user's own server.
+- Why it exists: AI mail apps are mostly paid and limited to Gmail or Outlook; free command-line mail tools such as Himalaya send each search to the mail server. Measured on a Tencent Exmail inbox of 5,044 mails: one command-line search on the server took about 1 s (0.9 s to sign in, 0.13 s to search) and returned the whole folder for any word; Ragdoll Mail's local index answered in 6 ms with the 989 matching mails.
 - Price: free, MIT license, no ads, no account, no server of ours.
 - Platforms: macOS (Apple silicon) and Windows 10/11. No phone app. One mailbox per window.
 - Safety: up to 30 s to undo a send; warns when the text says "attached" and nothing is attached, the subject is empty, or a placeholder such as [Name] is left. Send later.
 - Reading: whole conversations, attachments (drag them to the desktop on a Mac), meeting invitations shown as a card with Add to Calendar, and a one-click Unsubscribe for newsletters (List-Unsubscribe, RFC 8058).
 - Setup: type the address and password. For a company domain the app reads the domain's MX records and fills in the servers for Tencent Exmail, Google Workspace, Alibaba Mail, NetEase enterprise mail, iCloud, Fastmail, Zoho and Yandex.
 - Password: kept in macOS Keychain or Windows Credential Manager. Many mailboxes need an app password (Exmail: 客户端专用密码; QQ Mail and 163: 授权码).
-- For AI assistants: the `ragdoll` command (install it from the app: Settings → Command line). Claude Code, Codex and other assistants that run commands can search, read, write and check drafts, and open a draft in the app. Nothing is sent until the person presses Send.
 
 ## Links
 

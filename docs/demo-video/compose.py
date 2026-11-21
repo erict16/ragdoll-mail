@@ -36,31 +36,30 @@ COMPOSE = (948, 232, 1.72)
 TOAST = (640, 600, 1.6)
 MENU = (900, 238, 1.72)
 TOAST2 = (660, 600, 1.45)
+TERMV = (600, 290, 1.3)
 zh = lang == "zh"
 t0 = M["start"] + 0.05                      # the cut starts here
 cam = [  # (source time, view); between two keys the camera eases from one to the next
-    (t0, FULL), (M["type1"] - 1.0, FULL), (M["type1"] - 0.05, SEARCH),
-    (M["open"] - 0.1, SEARCH), (M["read"] + 0.35, READ),
-    (M["toreply"] - 0.1, READ), (M["toreply"] + 0.8, READ_LOW),
-    (M["compose"] - 0.75, READ_LOW), (M["compose"] + 0.05, COMPOSE),
+    (t0, FULL), (M["term"] - 0.05, FULL), (M["term"] + 0.6, TERMV),
+    (M["reveal"] - 0.05, TERMV), (M["reveal"] + 0.7, COMPOSE),
     (M["sent"] - 0.05, COMPOSE), (M["sent"] + 0.75, TOAST),
     (M["undo"] + 0.1, TOAST), (M["undo"] + 0.9, MENU),
     (M["scheduled"] + 0.1, MENU), (M["scheduled"] + 0.8, TOAST2),
-    (M["scheduled"] + 1.9, TOAST2), (M["scheduled"] + 2.7, FULL),
+    (M["scheduled"] + 1.3, TOAST2), (M["type1"] - 0.05, SEARCH),
+    (M["typed2"] + 0.3, SEARCH), (M["hit"] + 0.5, FULL),
 ]
-t_end_src = M["scheduled"] + 3.0                 # the app part ends; the end card follows
+t_end_src = M["hit"] + 1.7                  # the app part ends; the end card follows
 caps = [  # (caption index, from, to, top or bottom) in source time; at the top while the action is at the bottom
-    (0, t0, M["type2"] - 0.12, "b"),
-    (1, M["type2"] - 0.02, M["open"] - 0.25, "b"),
-    (2, M["read"] - 0.3, M["toreply"] + 0.55, "b"),
-    (3, M["compose"] - 0.35, M["sent"] - 0.1, "b"),
-    (4, M["sent"] + 0.05, M["undo"] + 0.75, "t"),
-    (5, M["back"] + 0.2, M["scheduled"] - 0.05, "b"),
+    (0, M["term"] + 0.2, M["termdone"] - 0.15, "b"),
+    (1, M["termdone"] - 0.05, M["sent"] - 0.1, "b"),
+    (2, M["sent"] + 0.05, M["undo"] + 0.75, "t"),
+    (3, M["back"] + 0.2, M["scheduled"] + 0.9, "b"),
+    (4, M["type1"] - 0.1, M["type2"] - 0.12, "b"),
+    (5, M["type2"] - 0.02, M["hit"] + 1.5, "b"),
 ]
 # speed: parts with nothing new on screen run a little faster (source seconds per output second)
-speed = [(t0, 1.0), (M["typed2"] + 0.4, 1.25), (M["open"] - 0.4, 1.0), (M["read"] + 0.6, 1.2), (M["toreply"] - 0.2, 1.0),
-         (M["compose"] + 0.2, 1.15), (M["typedReply"], 1.0), (M["back"], 1.15), (M["menu"] - 0.2, 1.0),
-         (M["scheduled"] + 1.3, 1.0)]
+speed = [(t0, 1.0), (M["reveal"] + 0.2, 1.15), (M["sent"] - 0.3, 1.0), (M["back"], 1.15), (M["menu"] - 0.2, 1.0),
+         (M["scheduled"] + 0.4, 1.3), (M["type1"] - 0.3, 1.0)]
 END_FADE, END_HOLD = 0.6, 3.1
 
 
@@ -143,7 +142,7 @@ CURSOR = Image.open(assets + "/cursor.png")
 _cb = CURSOR.getbbox()
 TIP = (40 + 160 * 2 / 20 * 0 + 16, 40 + 16)   # svg viewBox starts at -2: the tip is 2/20*160 = 16 px in
 CUR_H = 22  # the arrow's height in CSS pixels (as on a Mac at this size)
-CAPS = [Image.open(f"{assets}/cap{i}.png") for i in range(6)]
+CAPS = [Image.open(f"{assets}/cap{i}.png") for i in range(len(caps))]
 END = {k: Image.open(f"{assets}/{k}.png") for k in ("icon", "name", "tag", "sub")}
 
 

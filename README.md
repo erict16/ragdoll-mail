@@ -2,7 +2,7 @@
 
 <h1 align="center">Ragdoll Mail</h1>
 
-<p align="center"><b>A free mail app for Mac and Windows.<br>Search finds your mail at once, even when your mailbox's own search does not.</b></p>
+<p align="center"><b>The free mail app your AI agent can use.<br>A desktop app for Mac and Windows with a command line built in: Claude Code, Codex and other agents can search your mail and write replies, and you press Send.</b></p>
 
 <p align="center">Works with Tencent Exmail (腾讯企业邮箱), QQ Mail, 163, Gmail, iCloud, Fastmail and any other IMAP mailbox.</p>
 
@@ -19,13 +19,15 @@
   <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: search finds a mail as you type, a mail with attachments opens, a reply is written, the send is undone, and the reply is set to go later"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: an AI agent in a terminal writes a reply with the ragdoll command, the draft opens in the app, the send is undone and set for tomorrow, and search finds mail as you type"></p>
 
 ## What is Ragdoll Mail?
 
-Ragdoll Mail is an app for reading and writing email, like Apple Mail, Outlook or Foxmail. You sign in with the mailbox you already have. Nothing moves and nothing changes: your phone and your other mail apps keep working as before.
+Ragdoll Mail is a mail app for Mac and Windows, like Apple Mail or Outlook, with one difference: it comes with `ragdoll`, a command line that AI agents such as Claude Code and Codex can use. Your agent can search your mail, read whole conversations and write replies. Each reply is saved as a draft and opens in the app, and nothing is sent until you press Send.
 
-It was made for one problem. On many mailboxes, and on Tencent Exmail most of all, search is slow or shows the wrong mails. Ragdoll Mail keeps its own list of your mail on your computer and searches that list. You type a word, and the right mail is there.
+Search runs on your own computer. Ragdoll Mail keeps a full-text index of your mailbox in SQLite, so a search takes milliseconds instead of a trip to the mail server, and it still works offline. That matters on mailboxes such as Tencent Exmail, whose own search sends back the whole folder whatever you type.
+
+You sign in with the mailbox you already have. Nothing moves and nothing changes: your phone and your other mail apps keep working as before.
 
 ## Why you may like it
 

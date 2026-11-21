@@ -1613,10 +1613,14 @@ def search_where(words, a):
             continue
         if len(t) >= 3:
             long_terms.append('"%s"' % t.replace('"', '""'))
-        else:
+        elif re.search(r"[A-Za-z]", t):    # LIKE: case does not matter for these letters
             where.append("(" + " or ".join("m.%s like ? escape '\\'" % k
                                            for k in ("subject", "frm", "to_", "cc", "atts", "body")) + ")")
             params += [like_arg(t)] * 6
+        else:                               # a short Chinese word: a plain substring test, about half the time
+            where.append("(" + " or ".join("instr(m.%s, ?) > 0" % k
+                                           for k in ("subject", "frm", "to_", "cc", "atts", "body")) + ")")
+            params += [t] * 6
     if long_terms:
         where.insert(0, "m.id in (select rowid from fts where fts match ?)")
         params.insert(0, " AND ".join(long_terms))
