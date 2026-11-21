@@ -24,6 +24,7 @@ ICONS = {
     "shield-check": '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
     "send": '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
     "key": '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+    "paperclip": '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
     "volume-2": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
     "volume-x": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
 }
@@ -91,6 +92,10 @@ EN = {
              ("ok", "CHECK OK"),
              ("$", "ragdoll open drafts:14"),
              ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
+    "draft": {"box": "Drafts", "to": "To", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
+              "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery address by Friday.",
+              "file": "Quote.pdf", "send": "Send",
+              "alt": "The draft the agent wrote, open in Ragdoll Mail and waiting for you to press Send"},
 
     "s_kick": "Why it's fast", "s_h2": "Search never leaves your computer.",
     "s_sub": "Ragdoll Mail keeps a full-text index of your mail in SQLite on your own disk. Tools that rely on the "
@@ -100,7 +105,7 @@ EN = {
         ("Server search", ["Your search", "Internet", "Sign in", "Mail server searches", "Internet", "Results"],
          "about 1 s"),
     ],
-    "bars_h": "One search from the command line, on a real inbox of 5,044 mails",
+    "bars_h": "One search from the command line, on a real inbox of 5,044 mails", "faster": "%d× faster",
     "bars": [("Ragdoll Mail, local SQLite", 0.0063, "0.006 s", "989 mails that contain the word"),
              ("Search on the mail server (IMAP)", 1.03, "1.03 s", "5,044 mails: the whole folder")],
     "bars_note": "Measured on 21 November 2026 on a MacBook, with a Tencent Exmail inbox of 5,044 mails and the word "
@@ -119,6 +124,7 @@ EN = {
          "On the mail server", "Depends on the app"),
         ("Open source", "Yes", "No", "No", "Yes", "No"),
     ],
+    "c_yes": ["Yes"], "c_no": ["No"],
     "c_note": "From each product's public pages, November 2026. If something here is wrong or out of date, "
               "open an issue on GitHub and I will fix it.",
     "c_more": "More comparisons, including Foxmail, Thunderbird and Spark",
@@ -214,6 +220,10 @@ ZH = dict(EN, **{
              ("ok", "CHECK OK"),
              ("$", "ragdoll open drafts:14"),
              ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
+    "draft": {"box": "草稿箱", "to": "收件人", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
+              "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
+              "file": "Quote.pdf", "send": "发送",
+              "alt": "AI 写好的草稿已经在 Ragdoll Mail 里打开，等你点发送"},
 
     "s_kick": "为什么快", "s_h2": "搜索全在你自己的电脑上完成。",
     "s_sub": "Ragdoll Mail 用 SQLite 在你的硬盘上给邮件建了一份全文索引。靠服务器搜索的工具就不一样了，每搜一次，"
@@ -222,7 +232,7 @@ ZH = dict(EN, **{
         ("Ragdoll Mail", ["你的搜索", "你硬盘上的 SQLite 索引", "结果"], "6 毫秒"),
         ("服务器搜索", ["你的搜索", "互联网", "登录", "邮件服务器搜索", "互联网", "结果"], "约 1 秒"),
     ],
-    "bars_h": "在命令行里搜一次，真实收件箱，共 5,044 封邮件",
+    "bars_h": "在命令行里搜一次，真实收件箱，共 5,044 封邮件", "faster": "快 %d 倍",
     "bars": [("Ragdoll Mail，本地 SQLite", 0.0063, "0.006 秒", "989 封，都含这个词"),
              ("在邮件服务器上搜（IMAP）", 1.03, "1.03 秒", "5,044 封，也就是整个文件夹")],
     "bars_note": "2026 年 11 月 21 日在一台 MacBook 上实测，用的是一个有 5,044 封邮件的腾讯企业邮箱收件箱，搜的词是 "
@@ -239,6 +249,7 @@ ZH = dict(EN, **{
         ("在哪里搜索", "你的电脑", "在线，经由 Gmail 或 Outlook", "在线，在 Shortwave 的服务器上", "邮件服务器", "看具体软件"),
         ("开源", "是", "否", "否", "是", "否"),
     ],
+    "c_yes": ["有", "是"], "c_no": ["没有", "否"],
     "c_note": "根据各产品公开页面整理，2026 年 11 月。哪里写错了或者过时了，欢迎到 GitHub 提 issue，我会改。",
     "c_more": "更多对比，包括 Foxmail、Thunderbird 和 Spark",
 
@@ -301,11 +312,21 @@ def page(L):
     term = []
     for who, text in L["term"]:
         if who == "$":
-            term.append('<span class="p">$</span> ' + e(text))
+            line = '<span class="p">$</span> ' + e(text)
         elif who == "ok":
-            term.append('  <span class="p">' + e(text) + "</span>")
+            line = '  <span class="p">' + e(text) + "</span>"
         else:
-            term.append('<span class="y">%s</span> <span class="c">›</span> %s' % ("you  " if who == "you" else "agent", e(text)))
+            line = '<span class="y">%s</span> <span class="c">›</span> %s' % ("you  " if who == "you" else "agent", e(text))
+        term.append('<span class="ln%s" style="--i:%d">%s</span>' % ("" if who in ("$", "ok") else " say", len(term), line))
+    d = L["draft"]
+    draft = (f'<div class="handoff" style="--i:{len(term)}"><i></i></div>'
+             f'<div class="draft" style="--i:{len(term)}" role="img" aria-label="{e(d["alt"])}">'
+             f'<div class="draft-top"><span>{icon("file-text")}{e(d["box"])}</span>'
+             f'<span><img src="{up}img/icon.webp" alt="" width="18" height="18" loading="lazy">Ragdoll Mail</span></div>'
+             f'<div class="draft-to"><span>{e(d["to"])}</span><b>{e(d["name"])}</b></div>'
+             f'<div class="draft-subj">{e(d["subj"])}</div><p>{e(d["body"])}</p>'
+             f'<div class="draft-foot"><span class="att">{icon("paperclip")}{e(d["file"])}</span>'
+             f'<span class="btn primary">{icon("send")}{e(d["send"])}</span></div></div>')
     dl = lambda os_, cls: ('<a class="btn %s" data-os="%s" href="%s">%s%s <small>%s</small></a>' % (  # noqa: E731
         cls, os_, DL + ("ragdoll-mail-mac.dmg" if os_ == "mac" else "ragdoll-mail-windows.zip"),
         icon("download"), e(L[os_][0]), e(L[os_][1])))
@@ -318,14 +339,20 @@ def page(L):
                                       for j, s in enumerate(steps)), e(t))
         for k, (name, steps, t) in enumerate(L["lanes"]))
     top = max(v for _, v, _, _ in L["bars"])
+    faster = L["faster"] % int(round(top / min(v for _, v, _, _ in L["bars"]), -1))
     bars = "".join(
         '<div class="bar-row%s"><div class="bar-label">%s</div><div class="bar-track"><i style="--w:%.2f%%"></i></div>'
         '<div class="bar-val"><b>%s</b><span>%s</span></div></div>'
         % (" ours" if k == 0 else "", e(name), max(1.2, v / top * 100), e(val), e(note))
         for k, (name, v, val, note) in enumerate(L["bars"]))
     cmp_head = "".join("<th%s>%s</th>" % (' class="us"' if i == 1 else "", e(c)) for i, c in enumerate(L["c_cols"]))
-    cmp_rows = "".join("<tr>%s</tr>" % "".join(("<th>%s</th>" if i == 0 else ('<td class="us">%s</td>' if i == 1 else "<td>%s</td>")) % e(c)
-                                               for i, c in enumerate(r)) for r in L["c_rows"])
+    def cell(i, c):
+        if i == 0:
+            return "<th>%s</th>" % e(c)
+        cls = (["us"] if i == 1 else []) + (["yes"] if c in L["c_yes"] else ["no"] if c in L["c_no"] else [])
+        return "<td%s>%s%s</td>" % (' class="%s"' % " ".join(cls) if cls else "", icon("check") if "yes" in cls else "", e(c))
+
+    cmp_rows = "".join("<tr>%s</tr>" % "".join(cell(i, c) for i, c in enumerate(r)) for r in L["c_rows"])
     return f"""<!doctype html>
 <html lang="{L['lang']}">
 <head>
@@ -350,6 +377,7 @@ def page(L):
 <meta property="og:image:height" content="630">
 <meta property="og:locale" content="{L['lang'].replace('-Hans', '_CN').replace('en', 'en_US')}">
 <meta name="twitter:card" content="summary_large_image">
+<script>document.documentElement.classList.add("js")</script>
 <link rel="stylesheet" href="{up}style.css">
 <link rel="preload" as="image" href="{up}media/demo-{L['demo']}.webp" fetchpriority="high">
 <script type="application/ld+json">{json.dumps(ld, ensure_ascii=False)}</script>
@@ -370,7 +398,6 @@ def page(L):
 
 <main>
 <div class="hero"><div class="wrap">
-  <img class="icon" src="{up}img/icon.webp" alt="Ragdoll Mail" width="96" height="96">
   <div class="pill">{'<b></b>'.join(e(x) for x in L['pill'])}</div>
   <h1>{L['h1']}</h1>
   <p class="lead">{e(L['lead'])}</p>
@@ -384,28 +411,19 @@ def page(L):
   </div>
 </div>
 
-<section id="why"><div class="wrap">
-  <div class="story reveal">
-    <div class="kicker">{e(L['y_kick'])}</div>
-    <h2>{e(L['y_h2'])}</h2>
-    {''.join('<p>%s</p>' % e(p) for p in L['y_p'])}
-    <p class="sign">{e(L['y_sign'])}</p>
-  </div>
-</div></section>
-
 <section id="ai"><div class="wrap">
   <div class="reveal">
     <div class="kicker">{e(L['a_kick'])}</div>
     <h2>{e(L['a_h2'])}</h2>
-    <p class="sub">{L['a_sub']} <a href="{REPO}/blob/main/docs/command-line.md" style="color:var(--accent-ink)">{e(L['a_guide'])} →</a></p>
+    <p class="sub">{L['a_sub']} <a class="more" href="{REPO}/blob/main/docs/command-line.md">{e(L['a_guide'])} →</a></p>
   </div>
-  <div class="grid" style="align-items:start">
-    <div class="t-wide reveal"><div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term" role="img" aria-label="{e(L['a_kick'])}">{chr(10).join(term)}</div></div></div>
+  <div class="grid agent">
+    <div class="t-wide reveal play"><div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term" role="img" aria-label="{e(L['a_kick'])}">{''.join(term)}</div></div>{draft}</div>
     <div class="pts t-narrow reveal">{pts}</div>
   </div>
 </div></section>
 
-<section id="speed"><div class="wrap">
+<section id="speed" class="band"><div class="wrap">
   <div class="reveal">
     <div class="kicker">{e(L['s_kick'])}</div>
     <h2>{e(L['s_h2'])}</h2>
@@ -413,18 +431,9 @@ def page(L):
   </div>
   <div class="speed reveal">
     <div class="lanes">{lanes}</div>
-    <div class="bars"><h3>{e(L['bars_h'])}</h3>{bars}</div>
+    <div class="bars"><div class="stat"><b>{e(faster)}</b><span>{e(L['bars_h'])}</span></div>{bars}</div>
     <p class="speed-note">{e(L['bars_note'])}</p>
   </div>
-</div></section>
-
-<section id="compare"><div class="wrap">
-  <div class="reveal">
-    <div class="kicker">{e(L['c_kick'])}</div>
-    <h2>{e(L['c_h2'])}</h2>
-  </div>
-  <div class="table hc reveal"><table><thead><tr>{cmp_head}</tr></thead><tbody>{cmp_rows}</tbody></table></div>
-  <p class="speed-note">{e(L['c_note'])} <a href="compare/" style="color:var(--accent-ink)">{e(L['c_more'])} →</a></p>
 </div></section>
 
 <section id="features"><div class="wrap">
@@ -440,6 +449,24 @@ def page(L):
     {tile(4, 't-third')}
     {tile(5, 't-third')}
     {tile(6, 't-third')}
+  </div>
+</div></section>
+
+<section id="compare"><div class="wrap">
+  <div class="reveal">
+    <div class="kicker">{e(L['c_kick'])}</div>
+    <h2>{e(L['c_h2'])}</h2>
+  </div>
+  <div class="table hc reveal"><table><thead><tr>{cmp_head}</tr></thead><tbody>{cmp_rows}</tbody></table></div>
+  <p class="speed-note">{e(L['c_note'])} <a class="more" href="compare/">{e(L['c_more'])} →</a></p>
+</div></section>
+
+<section id="why" class="band"><div class="wrap">
+  <div class="story reveal">
+    <div class="kicker">{e(L['y_kick'])}</div>
+    <h2>{e(L['y_h2'])}</h2>
+    {''.join('<p>%s</p>' % e(p) for p in L['y_p'])}
+    <p class="sign">{e(L['y_sign'])}</p>
   </div>
 </div></section>
 
