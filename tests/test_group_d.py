@@ -319,5 +319,93 @@ class Downloads(OwnBackend):
         self.assertIsNone(b.dm)
 
 
+class BodyServer(Works):
+    """Answers a body FETCH for each UID asked, except the ones in `gone`."""
+    def __init__(self, gone=()):
+        super().__init__()
+        self.gone = set(gone)
+
+    def uid(self, *args):
+        self.calls.append(("uid",) + args)
+        if args[0] == "FETCH" and "BODY.PEEK[]" in args[2]:
+            out = []
+            for k, u in enumerate(args[1].split(",")):
+                if int(u) in self.gone:
+                    continue
+                lit = b"Subject: s\r\nContent-Type: text/plain\r\n\r\nbody of %s" % u.encode()
+                out += [(b"%d (UID %s BODY[]<0> {%d}" % (k + 1, u.encode(), len(lit)), lit), b")"]
+            return "OK", out
+        return "OK", [b""]
+
+
+class Bodies(OwnBackend):
+    """#57: the first download of mail text: newest first, many per command, no sync work in between."""
+
+    def setUp(self):
+        super().setUp()
+        b = self.b
+        b.demo = False
+        b.BODY_PAUSE = 0
+        b.exec("update msgs set has_body=0, body='' where folder='INBOX'")
+        self.uids = [r["uid"] for r in b.q("select uid from msgs where folder='INBOX' order by ts desc")]
+        self.server = BodyServer()
+        self.patch(A.R, "imap", lambda: self.server)
+        self.patch(A.R.CFG, "sync_folders", ["INBOX"])
+
+    def fetches(self):
+        return [c for c in self.server.calls if c[:2] == ("uid", "FETCH")]
+
+    def test_all_text_in_few_commands_newest_first(self):
+        b = self.b
+        b.body_folders = lambda: ["INBOX"]
+        self.patch(A.R, "BODY_BATCH", 4)
+        with b.dblock:
+            b.fetch_bodies_now(b.c)
+        self.assertEqual(b.q("select count(*) n from msgs where folder='INBOX' and has_body=0")[0]["n"], 0)
+        asked = [int(u) for c in self.fetches() for u in c[2].split(",")]
+        self.assertEqual(asked, self.uids)                          # newest first, each once
+        self.assertEqual(len(self.fetches()), -(-len(self.uids) // 4))
+        self.assertEqual(len([c for c in self.server.calls if c[0] == "select"]), 1)
+        self.assertIn("body of", b.q("select body from msgs where folder='INBOX' and uid=?", (self.uids[0],))[0]["body"])
+
+    def test_mail_the_server_does_not_give_is_not_asked_for_ever(self):
+        b = self.b
+        b.body_folders = lambda: ["INBOX"]
+        self.server.gone = {self.uids[0]}
+        with b.dblock:
+            b.fetch_bodies_now(b.c)
+        self.assertEqual(len(self.fetches()), 1)
+        self.assertEqual([r["uid"] for r in b.q("select uid from msgs where folder='INBOX' and has_body=0")],
+                         [self.uids[0]])
+
+    def test_makes_way_for_the_user(self):
+        b = self.b
+        b.body_folders = lambda: ["INBOX"]
+        b.BODY_QUIET = 0.3
+        b.call("mark_all_read", {"folder": "nowhere"})                # anything the user does
+        t = time.time()
+        with b.dblock:
+            b.fetch_bodies_now(b.c)
+        self.assertGreater(time.time() - t, 0.25)
+        b.active_at = 0
+        b.call("status", {})                                        # a poll is not the user
+        self.assertEqual(b.active_at, 0)
+
+    def test_sync_pass_hands_bodies_to_the_worker(self):
+        b, kicked = self.b, []
+        b.start_bodies = lambda: kicked.append(1)
+        self.patch(A.R, "sync_headers", lambda *a, **kw: 0)
+        b.note_new = lambda *a: None
+        real = b.note_folders
+
+        def note_folders(m, c):
+            real(m, c)
+            b.stopping.set()
+        b.note_folders = note_folders
+        b.wake.set()
+        b.sync_loop()
+        self.assertEqual(kicked, [1])
+
+
 if __name__ == "__main__":
     unittest.main()

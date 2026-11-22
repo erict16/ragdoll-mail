@@ -798,6 +798,12 @@ class Backend:
         self.sync_used = self.pre_used = 0      # when those connections last answered
         self.clock = None                       # (time.time(), time.monotonic()) at the watchdog's last look
         self.woke_at = None                     # when the computer last woke from sleep
+        self.body_m = None                      # the body download's own connection (#57)
+        self.body_used = 0
+        self.body_thread = None
+        self.body_wake = threading.Event()
+        self.bodies = None                      # {"done": n, "left": n} while mail text is downloading
+        self.active_at = 0                      # when the user last did something that is not a poll
         self.watch_thread = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
@@ -857,6 +863,8 @@ class Backend:
             return 404, {"ok": False, "error": "unknown call %s" % name}
         if args is not None and not isinstance(args, dict):
             return 400, {"ok": False, "error": "bad request"}
+        if name not in self.PASSIVE:
+            self.active_at = time.time()        # the body download makes way (#57)
         try:
             return 200, {"ok": True, "data": fn(args or {})}
         except ApiError as e:
@@ -868,6 +876,10 @@ class Backend:
         except Exception as e:      # noqa: BLE001 - a bug must not take the page down with it
             traceback.print_exc(file=sys.stderr)
             return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
+
+    # calls the page makes by itself, not because the user did something
+    PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme",
+                         "settings", "senders", "contacts"))
 
     def q(self, sql, params=()):
         with self.dblock:
@@ -1223,7 +1235,7 @@ class Backend:
         Cut them all, so nobody waits out a timeout on one, and look for new mail now (#56)."""
         self.woke_at = time.time()
         print("woke from sleep: connecting again", file=sys.stderr)
-        for m in (self.m, self.dm, self.sync_m, self.pre_m):
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
             cut(m)
         self.wake.set()
 
@@ -1281,11 +1293,7 @@ class Backend:
                         c.commit()
                 self.sync["error"] = None
                 self.sync["last"] = int(time.time())
-                with R.file_lock("bodies", wait=False) as got:
-                    if got:
-                        R.sync_bodies(c, self.sync_folders() + self.extra_folders(), limit=50, workers=2, quiet=True)   # short passes: new mail and a folder just made are not kept waiting
-                        if c.execute("select 1 from msgs where has_body=0 limit 1").fetchone():
-                            threading.Timer(3, self.wake.set).start()     # keep going until all are in
+                self.start_bodies()
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
                 self.sync["error"] = friendly(e)
                 m, self.sync_m = self.sync_m, None
@@ -1299,6 +1307,108 @@ class Backend:
         R.quit_imap(m, quick=True)
         if c is not None:
             c.close()
+
+    # ---- the text of mail that has only its headers: one worker, its own connection (#57)
+
+    BODY_ROUND = 400        # rows taken per round, newest first
+    BODY_PAUSE = 0.2        # seconds between two FETCH commands: the server serves a whole company
+    BODY_QUIET = 2          # seconds after the user's last action before the download goes on
+    BODY_IDLE = 300         # seconds with nothing to download before its connection is let go
+
+    def body_folders(self):
+        return self.sync_folders() + self.extra_folders()
+
+    def start_bodies(self):
+        if self.demo:
+            return
+        if self.body_thread is None or not self.body_thread.is_alive():
+            self.body_thread = threading.Thread(target=self.bodies_loop, daemon=True)
+            self.body_thread.start()
+        self.body_wake.set()
+
+    def bodies_loop(self):
+        c = None
+        while not self.stopping.is_set():
+            if not self.body_wake.wait(self.BODY_IDLE):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                continue
+            self.body_wake.clear()
+            if self.stopping.is_set() or not configured():
+                continue
+            try:
+                c = c or R.db()
+                with R.file_lock("bodies", wait=False) as got:
+                    if got:                     # else the ragdoll command is at it
+                        self.fetch_bodies_now(c)
+            except BaseException as e:          # noqa: B036 - R.imap() dies with SystemExit; the next pass tries again
+                print("mail text download stopped: %s" % friendly(e), file=sys.stderr)
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+            finally:
+                self.bodies = None
+        m, self.body_m = self.body_m, None
+        R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
+
+    def quiet_wait(self):
+        """Wait while somebody opens a mail or has just done something: they go first."""
+        while not self.stopping.is_set() and (self.fg > 0 or time.time() - self.active_at < self.BODY_QUIET):
+            self.stopping.wait(0.2)
+
+    def body_fetch(self, folder, uids):
+        for attempt in (0, 1):
+            try:
+                if self.body_m is not None and not still_there(self.body_m, self.body_used, 90):
+                    m, self.body_m = self.body_m, None
+                    R.quit_imap(m, quick=True)
+                if self.body_m is None:
+                    self.body_m = R.imap()
+                    with contextlib.suppress(Exception):
+                        self.body_m.sock.settimeout(90)
+                got = R.fetch_bodies_on(self.body_m, folder, uids)
+                self.body_used = time.time()
+                return got
+            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                if attempt:
+                    raise
+
+    def fetch_bodies_now(self, c):
+        """Newest first, many mails per command, one SELECT per folder, at a polite pace, making way
+        for the user; no folder or flag work in between (that was a whole sync per 50 mails)."""
+        folders = self.body_folders()
+        if not folders:
+            return
+        marks = ",".join("?" * len(folders))
+        count = "select count(*) from msgs where has_body=0 and folder in (%s)" % marks
+        left = c.execute(count, folders).fetchone()[0]
+        skip = set()                    # asked this time and not given: tried again on a later pass
+        self.bodies = {"done": 0, "left": left}
+        while left > len(skip) and not self.stopping.is_set():
+            rows = c.execute("select folder, uid from msgs where has_body=0 and folder in (%s) order by ts desc "
+                             "limit ?" % marks, folders + [self.BODY_ROUND + len(skip)]).fetchall()
+            rows = [r for r in rows if (r["folder"], r["uid"]) not in skip][:self.BODY_ROUND]
+            if not rows:
+                break
+            by = {}
+            for r in rows:
+                by.setdefault(r["folder"], []).append(r["uid"])
+            for f, uids in by.items():
+                for k in range(0, len(uids), R.BODY_BATCH):
+                    part = uids[k:k + R.BODY_BATCH]
+                    self.quiet_wait()
+                    if self.stopping.is_set():
+                        return
+                    got = self.body_fetch(f, part)
+                    R.store_bodies(c, f, got)
+                    skip.update((f, u) for u in part if u not in got)
+                    self.bodies = {"done": self.bodies["done"] + len(got), "left": max(0, left - len(got))}
+                    left = self.bodies["left"]
+                    self.stopping.wait(self.BODY_PAUSE)
+            left = c.execute(count, folders).fetchone()[0]
 
     def look(self):
         """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
@@ -1392,7 +1502,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks}
+                "news": self.news, "asks": self.asks, "bodies": self.bodies}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2754,8 +2864,9 @@ class Backend:
         self.wake.set()
         self.sched_wake.set()
         self.pre_wake.set()
+        self.body_wake.set()
         self.drop()
-        for m in (self.dm, self.sync_m, self.pre_m):
+        for m in (self.dm, self.sync_m, self.pre_m, self.body_m):
             cut(m)
 
 

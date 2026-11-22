@@ -1434,19 +1434,28 @@ def fetch_headers(folder, uids, m=None):
         return segments(data)
 
 
+BODY_BATCH = 50     # mails per FETCH command: one command for many mails, never one each
+
+
+def fetch_bodies_on(m, folder, uids, per=BODY_BATCH):
+    """{uid: the start of its body} for these UIDs, on a connection the caller keeps (and keeps the
+    folder open on: the next batch of the same folder needs no SELECT)."""
+    use(m, folder)
+    out = {}
+    for i in range(0, len(uids), per):
+        typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + per])),
+                          "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                out[uid] = literal_after(seg, rb"BODY\[\]<0>")
+    return out
+
+
 def fetch_bodies(folder, uids):
     """Worker: the start of each body for these UIDs, on its own connection."""
-    out = {}
     with session() as m:
-        select(m, folder)
-        for i in range(0, len(uids), 25):
-            typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + 25])),
-                              "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
-            for seg in segments(data):
-                uid = seg_uid(seg)
-                if uid is not None:
-                    out[uid] = literal_after(seg, rb"BODY\[\]<0>")
-    return out
+        return fetch_bodies_on(m, folder, uids, per=25)
 
 
 def store_bodies(c, folder, got):
