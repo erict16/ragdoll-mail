@@ -64,7 +64,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 FROZEN = bool(getattr(sys, "frozen", False))      # inside the built Ragdoll Mail app
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312

@@ -2,7 +2,7 @@
 """Point the Homebrew cask, the Homebrew formula and the winget manifests at a release.
 
     python3 packaging/bump.py            # the version in pyproject.toml
-    python3 packaging/bump.py 0.10.0
+    python3 packaging/bump.py 0.11.0
 
 It takes each file's SHA-256 from the release on GitHub (the API gives every asset a digest).
 When the API has none, it downloads the file and hashes it itself.
