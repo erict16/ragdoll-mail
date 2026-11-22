@@ -478,5 +478,63 @@ class PicturesInTheText(DemoBackend):
         self.assertEqual(len(A.file_parts(light, False)), 1)
 
 
+class OriginalMoved(DemoBackend):
+    """#13: a reply or forward draft is saved and sent after its original was moved or deleted."""
+    def reply_draft(self, mode="reply"):
+        orig = self.add_mail(outlook_mail())
+        c = self.b.api_compose({"mode": mode, "id": orig})
+        a = compose(self.b, mode=mode, orig=orig, atts=c["atts"], html="<div>Noted</div>")
+        a["replace"] = self.b.api_save_draft(dict(a))["id"]
+        return orig, a
+
+    def test_moved_original_is_found_again(self):
+        orig, a = self.reply_draft()
+        self.b.api_move({"ids": [orig], "to": "archive"})
+        with self.assertRaises(A.ApiError):
+            self.b.raw(orig)
+        a["replace"] = self.b.api_save_draft(dict(a))["id"]
+        msg = msg_of(self.b.raw(a["replace"]))
+        self.assertEqual(R.hdr(msg, "In-Reply-To"), "<outlook-0@cust.vn>")
+        self.assertIn("发件人", R.bodies(msg)[1])
+        reopened = self.b.api_compose({"mode": "draft", "id": a["replace"]})
+        self.assertNotEqual(reopened["orig"], orig)                   # where the original is now
+        self.assertEqual(self.b.parse(reopened["orig"])[0], R.CFG.folders["archive"])
+        self.assertIn("发件人", reopened["quote"])
+        _, out = self.b.call("prepare_send", dict(a))
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(self.b.send_now({"id": out["data"]["id"]})["sent"])
+
+    def test_deleted_original_keeps_the_quote_and_thread(self):
+        for mode in ("reply", "forward"):
+            orig, a = self.reply_draft(mode)
+            self.b.demo_delete(orig)
+            self.b.exec("delete from msgs where msgid=?", ("<outlook-0@cust.vn>",))      # gone for good
+            _, out = self.b.call("save_draft", dict(a))
+            self.assertTrue(out["ok"], out)
+            msg = msg_of(self.b.raw(out["data"]["id"]))
+            html = R.bodies(msg)[1]
+            self.assertEqual(html.count("发件人"), 1)                 # the quote the draft had, once
+            self.assertEqual(R.hdr(msg, "In-Reply-To" if mode == "reply" else R.FWD_HEADER), "<outlook-0@cust.vn>")
+            self.assertEqual({p["Content-ID"].strip("<>") for p in msg.walk() if p["Content-ID"]},
+                             {"image001.png@01DA1234", "image002.jpg@01DA1234"})   # its pictures too
+            self.assertEqual(A.app_problems(msg, mode == "reply"), [])
+            reopened = self.b.api_compose({"mode": "draft", "id": out["data"]["id"]})
+            self.assertIn("发件人", reopened["quote"])
+            self.assertIn("data:image/", reopened["quote"])
+            a["replace"] = out["data"]["id"]
+            _, out = self.b.call("prepare_send", dict(a))
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["data"]["problems"], [])
+
+    def test_new_compose_whose_original_went_still_saves(self):
+        orig = self.add_mail(outlook_mail())
+        c = self.b.api_compose({"mode": "reply", "id": orig})
+        self.b.demo_delete(orig)
+        self.b.exec("delete from msgs where msgid=?", ("<outlook-0@cust.vn>",))
+        _, out = self.b.call("save_draft", compose(self.b, mode="reply", orig=orig, to=c["to"]))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(R.hdr(msg_of(self.b.raw(out["data"]["id"])), "In-Reply-To"), "<outlook-0@cust.vn>")
+
+
 if __name__ == "__main__":
     unittest.main()

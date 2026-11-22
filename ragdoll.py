@@ -2036,6 +2036,15 @@ def clean_quoted_html(html):
     return html
 
 
+QUOTE_HEAD = '<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+
+
+def quote_of(html):
+    """The quoted history (quote_block) in a mail made here, or ""."""
+    k = (html or "").find(QUOTE_HEAD)
+    return html[k:] if k >= 0 else ""
+
+
 def quote_block(orig):
     plain, html = bodies(orig)
     if not html:
@@ -2056,7 +2065,7 @@ def quote_block(orig):
     def people(v):
         return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
     cc = people(hdr(orig, "Cc"))
-    head = ('<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+    head = (QUOTE_HEAD +
             '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
             '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
             % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
@@ -2117,14 +2126,18 @@ def text_to_html(t):
 
 
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False, font=""):
+                  signature_html="", high=False, font="", quote_html="", quote_src=None):
     """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
-    (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times."""
+    (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times.
+    quote_html, quote_src: with no orig, a quote already made (quote_of an earlier draft) and the mail
+    that holds its pictures."""
     if font and signature_html.strip():
         signature_html = '<div data-rd-sig="1" style="%s">%s</div>' % (re.sub(r'["<>&\\]', "", font), signature_html)
     html = body_html + "<div><br></div>" + signature_html
     if orig is not None:
         html += "<div><br></div>" + quote_block(orig)
+    elif quote_html:
+        html += "<div><br></div>" + quote_html
     msg = EmailMessage()
     msg["From"] = formataddr((CFG.name, CFG.user)) if CFG.name else CFG.user
     if to:
@@ -2151,9 +2164,10 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
     msg.add_alternative(html, subtype="html")
     hpart = msg.get_body(("html",))
     used = set(re.findall(r"(?i)cid:([^\"'\s>)]+)", html))
-    if orig is not None:
+    src = orig if orig is not None else quote_src
+    if src is not None:
         done = set()
-        for p in orig.walk():
+        for p in src.walk():
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
@@ -2161,7 +2175,7 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
                 mt, st = image_type(p).split("/", 1)
                 add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
                 done.add(cid)
-        if mode == "forward":
+        if mode == "forward" and orig is not None:
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
                     add_file(msg, part_bytes(p), "application", "octet-stream", fname(p))

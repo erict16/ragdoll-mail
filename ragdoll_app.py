@@ -801,6 +801,7 @@ class Backend:
         self.focus_at = 0                       # when the page last said its window is in front
         self.web_notice_at = 0                  # when a page that shows the browser's own notices last asked
         self.made = set()                       # files the app wrote (only these may be revealed)
+        self.orig_mids = {}                     # id -> Message-ID of each mail a reply or forward was opened on
         self.demo_raw = {}
         self.thread = None
         self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
@@ -2138,6 +2139,7 @@ class Backend:
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
+            self.orig_mids[a["id"]] = R.hdr(orig, "Message-ID").strip()
             q = R.quote_block(orig)
             out["quote"] = page_html(q, cid_map(orig))
             if mode == "forward":
@@ -2158,8 +2160,12 @@ class Backend:
                 out["signature"] = self.signature()
                 if state.get("orig"):
                     with contextlib.suppress(ApiError, SystemExit, Exception):
-                        orig = R.to_msg(self.raw(state["orig"]))
-                        out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        orig, i = self.find_orig(dict(state, replace=a["id"]))
+                        if orig is not None:
+                            out["orig"] = i
+                            out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        else:       # the original is gone: the quote the draft already has
+                            out["quote"] = page_html(R.quote_of(R.bodies(msg)[1]), cid_map(msg))
                 out["atts"] = [x for x in state.get("atts", []) if os.path.isfile(x["path"])]
                 return out
             plain, html = R.bodies(msg)
@@ -2197,11 +2203,49 @@ class Backend:
         size = p.get("font_size") if p.get("font_size") in FONT_SIZES else 14
         return "font-family:%s;font-size:%dpx" % (FONT_CSS.get(p.get("font"), FONT_CSS["system"]), size)
 
+    def find_orig(self, a):
+        """The mail a reply or forward (a["orig"]) answers: (its message, its id now), or (None, None).
+        Moved since (archived, filed): found again by its Message-ID, which the draft itself keeps."""
+        i = a.get("orig")
+        try:
+            return R.to_msg(self.raw(i)), i
+        except (ApiError, SystemExit):
+            pass
+        mid = a.get("orig_mid") or self.orig_mids.get(i)
+        old = self.old_draft(a)
+        if not mid and old is not None:
+            mid = R.hdr(old, R.FWD_HEADER if a.get("mode") == "forward" else "In-Reply-To").strip()
+        for r in self.q("select folder, uid from msgs where msgid=? order by ts desc", (mid,)) if mid else []:
+            j = R.make_id(r["folder"], r["uid"])
+            if j != i:
+                try:
+                    return R.to_msg(self.raw(j)), j
+                except (ApiError, SystemExit):
+                    continue
+        return None, None
+
+    def old_draft(self, a):
+        """The saved draft this compose replaces, as a message, or None."""
+        i = a.get("replace")
+        if not i:
+            return None
+        try:
+            if self.parse(i)[0] != R.CFG.folders["drafts"]:
+                return None
+            return R.to_msg(self.raw(i))
+        except (ApiError, SystemExit):
+            return None
+
     def build(self, a):
         mode = a.get("mode") or "new"
-        orig = None
+        orig = old = None
         if a.get("orig"):
-            orig = R.to_msg(self.raw(a["orig"]))
+            orig, i = self.find_orig(a)
+            if orig is not None:
+                a["orig"] = i                   # where it is now: the saved state keeps that
+                a["orig_mid"] = R.hdr(orig, "Message-ID").strip()
+            else:
+                old = self.old_draft(a)         # gone for good: the quote the last save made stays
         to, cc, bcc = people_in(a.get("to")), people_in(a.get("cc")), people_in(a.get("bcc"))
         to, cc = R.clean_recipients(to, cc, set())
         subject = (a.get("subject") or "").strip()
@@ -2215,7 +2259,17 @@ class Backend:
         body, images = data_images(a.get("html") or "")
         sig = self.signature() if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
-                              bcc, atts, sig, font=self.body_font(body))
+                              bcc, atts, sig, font=self.body_font(body),
+                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
+        if a.get("orig") and orig is None:
+            # the original is gone: the threading the last save had is kept, so the reply stays in its thread
+            mid = a.get("orig_mid") or self.orig_mids.get(a["orig"]) or ""
+            for h in ("In-Reply-To", "References", R.FWD_HEADER):
+                v = R.hdr(old, h).strip() if old is not None else ""
+                if not v and mid and (h == R.FWD_HEADER) == (mode == "forward"):
+                    v = mid
+                if v and not msg[h]:
+                    msg[h] = v
         if mode == "draft" and not orig and a.get("irt"):
             msg["In-Reply-To"] = a["irt"]
             msg["References"] = a.get("refs") or a["irt"]
@@ -2262,7 +2316,7 @@ class Backend:
                     self.db_delete(old)
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
-        state = {k: a.get(k) for k in ("mode", "orig", "to", "cc", "bcc", "subject", "html", "atts",
+        state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
                                        "use_signature", "irt", "refs", "fwd")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
