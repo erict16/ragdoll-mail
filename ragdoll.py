@@ -108,7 +108,20 @@ WEEK = "一二三四五六日"
 # Fold only at the RFC 5322 hard limit: folding at 78 made Python encode long Message-IDs as
 # =?utf-8?q?...?=, which broke threading (sent:1431, 16th Nov 2026); no limit at all let a
 # reply-all To line pass 998 characters.
-OUT_POLICY = policy.SMTP.clone(max_line_length=998)
+# The subject and the names in the address lines are the exception: at 998 a Chinese subject became one
+# encoded word of hundreds of characters, and RFC 2047 allows 75. Those fold at 76, into words of at most 72.
+WORD_HEADERS = frozenset(("subject", "from", "to", "cc", "bcc", "reply-to", "sender"))
+WORD_POLICY = policy.SMTP.clone(max_line_length=76)
+
+
+class OutPolicy(policy.EmailPolicy):
+    def _fold(self, name, value, refold_binary=False):
+        if name.lower() in WORD_HEADERS:
+            return WORD_POLICY._fold(name, value, refold_binary)
+        return super()._fold(name, value, refold_binary)
+
+
+OUT_POLICY = OutPolicy(linesep="\r\n", max_line_length=998)
 PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{0,40}\]|\bX{3,}\b|\bTBD\b|\{\{|待定|待补|待填|【[^】\n]{0,20}】")
 ATTACH_WORDS_RE = re.compile(r"(?i)\battach(ed|ment|ments)?\b|\benclosed\b|附件|附上|随附|见附|附图|đính kèm")
 
@@ -2123,16 +2136,15 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
             cid = p.get("Content-ID").strip().strip("<>")
             if cid in used and cid not in done and is_inline(p):
                 mt, st = image_type(p).split("/", 1)
-                hpart.add_related(p.get_payload(decode=True) or b"", mt, st, cid="<%s>" % cid,
-                                  filename=fname(p))
+                add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
                 done.add(cid)
         if mode == "forward":
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
-                    msg.add_attachment(part_bytes(p), "application", "octet-stream", filename=one_line(fname(p)))
+                    add_file(msg, part_bytes(p), "application", "octet-stream", fname(p))
                     continue
                 mt, st = p.get_content_type().split("/", 1)
-                msg.add_attachment(part_bytes(p), mt, st, filename=one_line(fname(p)))
+                add_file(msg, part_bytes(p), mt, st, fname(p))
     for f in attach:
         # a path, or (path, the file's own name): the name on disk may be a safe stand-in for it
         f, name = f if isinstance(f, tuple) else (f, os.path.basename(f))
@@ -2142,8 +2154,43 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
             ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
-            msg.add_attachment(fh.read(), mt, st, filename=name)
+            add_file(msg, fh.read(), mt, st, name)
     return msg
+
+
+def add_file(holder, data, mt, st, name, cid=None):
+    """Add a file to the mail, or with cid a picture its HTML shows (holder: the HTML part), under the
+    file's own name: as RFC 2231 filename*= (what the email module writes) and, for the mail apps that
+    read only that, as name= in RFC 2047 words on Content-Type, as Thunderbird and Outlook write it."""
+    name = one_line(name or "").strip() or None
+    if cid:
+        holder.add_related(data, mt, st, cid=cid, filename=name)
+    else:
+        holder.add_attachment(data, mt, st, filename=name)
+    if name:
+        name_param(list(holder.iter_parts())[-1], name)
+
+
+def name_param(part, name):
+    if name.isascii():
+        part.set_param("name", name)
+        return
+    words, cur = [], b""
+    for ch in name:         # whole characters in each word; 42 bytes = 56 base64 = a 68-character word
+        b = ch.encode()
+        if cur and len(cur) + len(b) > 42:
+            words.append(cur)
+            cur = b""
+        cur += b
+    words.append(cur)
+    value = "=?utf-8?B?%s?=" % "?=\n =?utf-8?B?".join(base64.b64encode(w).decode() for w in words)
+    keep = "".join('; %s="%s"' % (k, v) for k, v in (part.get_params() or [])[1:]
+                   if k.lower() != "name" and isinstance(v, str) and v.isascii() and '"' not in v)
+    # set as it is to be written: the email module would turn the words back into RFC 2231
+    for k, (h, _) in enumerate(part._headers):
+        if h.lower() == "content-type":
+            part._headers[k] = (h, '%s%s;\n name="%s"' % (part.get_content_type(), keep, value))
+            break
 
 
 def append_draft(m, raw):

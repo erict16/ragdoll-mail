@@ -230,5 +230,59 @@ class AttachmentNames(DemoBackend):
         self.assertNotIn(b"\nBcc", raw)
 
 
+EW_RE = re.compile(rb"=\?[^?\s]+\?[bBqQ]\?[^?\s]*\?=")
+
+
+class EncodedWords(unittest.TestCase):
+    """Long Chinese subjects, names and file names within RFC 2047 / 2231, with a name= fallback."""
+    def setUp(self):
+        self.home = own_cfg(self)
+
+    def built(self, subject, names):
+        paths = []
+        for k, n in enumerate(names):
+            p = os.path.join(self.home, "f%d" % k)
+            with open(p, "wb") as f:
+                f.write(b"data")
+            paths.append((p, n))
+        msg = R.build_message("<div>hi</div>", [("张三" * 30, "a@b.com")], [], subject, attach=paths)
+        return msg.as_bytes(policy=R.OUT_POLICY)
+
+    def test_every_encoded_word_is_75_or_less(self):
+        for n in (20, 60, 200, 400):
+            subject = ("报价单" * n)[:n]
+            raw = self.built(subject, ["很长的文件名" * (n // 6 + 1) + ".pdf"])
+            words = EW_RE.findall(raw)
+            self.assertTrue(words)
+            self.assertLessEqual(max(map(len, words)), 75, n)
+            self.assertLessEqual(max(len(x) for x in raw.split(b"\r\n")), 998)
+            back = msg_of(raw)
+            self.assertEqual(str(back["Subject"]), subject)
+            self.assertEqual(R.addrs(str(back["To"])), [("张三" * 30, "a@b.com")])
+
+    def test_file_names_have_a_name_fallback(self):
+        names = ["很长的文件名" * 20 + ".xlsx", "PO#123: 最终版?.pdf", "plain name.txt"]
+        raw = self.built("s", names)
+        back = msg_of(raw)
+        parts = list(back.iter_attachments())
+        self.assertEqual([p.get_filename() for p in parts], names)          # RFC 2231 filename*=
+        self.assertEqual([p.get_param("name") for p in parts], names)       # Content-Type name=
+        self.assertIn(b'name="=?utf-8?B?', raw)
+        for p in parts:                                                     # a reader of name= only
+            del p["Content-Disposition"]
+        self.assertEqual([R.fname(p) for p in parts], names)
+
+    def test_a_sent_draft_keeps_the_encoding(self):
+        raw = self.built("报价单" * 70, ["文件" * 40 + ".pdf"])
+        self.assertEqual(msg_of(raw).as_bytes(policy=R.OUT_POLICY), raw)  # send_draft parses and writes again
+
+    def test_long_message_ids_still_stay_raw(self):
+        mid = "<d0425af1094366e3ae8f29d3fde9e1d11ec2bdcf.b4c078c5aa1b2c3d4e5f60718293a4b5c6d7e8f9@larksuite.com>"
+        o = msg_of(b"From: a@b.com\r\nSubject: x\r\nMessage-ID: " + mid.encode() + b"\r\n\r\nhi\r\n")
+        raw = R.build_message("<div>x</div>", [("", "a@b.com")], [], "回复：" + "长" * 80, o, "reply").as_bytes(
+            policy=R.OUT_POLICY)
+        self.assertIn(b"In-Reply-To: " + mid.encode(), raw)
+
+
 if __name__ == "__main__":
     unittest.main()
