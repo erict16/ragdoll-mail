@@ -456,9 +456,18 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .disclose .i { transition: transform .2s var(--ease); }
 .disclose.open .i { transform: rotate(90deg); }
 .sig-edit { min-height: 120px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); outline: 0; user-select: text; background: var(--bg); line-height: 1.5; }
-.seg { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
-.seg button { height: 28px; padding: 0 12px; border-radius: 7px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
-.seg button.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+/* a segmented control: 2px padding + 1px border = 3px around the picked item, so its corners are 9 - 3 = 6px.
+   The picked item is drawn by a thumb (app.js segmented) that slides to the next pick; until it is placed,
+   the button itself carries the same look. The shadow is even all round, so the gap looks the same above and below. */
+.seg { position: relative; display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
+.seg button { position: relative; z-index: 1; height: 28px; padding: 0 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
+.seg button:not(.on):hover { color: var(--text); }
+.seg button.on { background: var(--seg-on); color: var(--text); box-shadow: var(--seg-shadow); }
+.seg-thumb { position: absolute; top: 2px; left: 0; height: 28px; width: var(--seg-w, 0); transform: translateX(var(--seg-x, 0)); border-radius: 6px;
+  background: var(--seg-on); box-shadow: var(--seg-shadow); opacity: 0; pointer-events: none; }
+.seg.seg-ready .seg-thumb { opacity: 1; }
+.seg.seg-ready button.on { background: transparent; box-shadow: none; }
+.seg.seg-slide .seg-thumb { transition: transform .24s var(--ease), width .24s var(--ease); }
 .settings-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .settings { display: grid; grid-template-columns: 188px 1fr; flex: 1; min-height: 0; }
 .settings-nav { padding: 18px 10px; border-right: 1px solid var(--line); background: var(--side); border-radius: 14px 0 0 0; display: flex; flex-direction: column; gap: 1px; }
@@ -649,6 +658,9 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group C2_READ: new rules for this group only ---- */
+/* the segmented control's picked item: clearly lighter than its track in both themes */
+:root { --seg-on: #ffffff; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.07), 0 .5px 2.5px rgba(0,0,0,.09); }
+:root[data-theme="dark"] { --seg-on: #3a3a3a; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.45), 0 .5px 2.5px rgba(0,0,0,.3), inset 0 .5px 0 rgba(255,255,255,.06); }
 
 
 /* ---- 0.11 group D_SYNC: new rules for this group only ---- */

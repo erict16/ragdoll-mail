@@ -2354,23 +2354,23 @@ async function openSettings() {
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
     } else if (tab === "sending") {
-      const seg = el("div", { class: "seg" });
-      for (const n of UNDO_CHOICES) {
-        seg.append(el("button", { class: undoSeconds() === n ? "on" : "", onclick: () => { setPref({ undo: n }); draw(); } }, n ? t("seconds", n) : t("undo_off")));
-      }
+      const seg = segmented(UNDO_CHOICES.map((n) => [n, n ? t("seconds", n) : t("undo_off")]), undoSeconds(), (n) => setPref({ undo: n }));
       const font = selectBox(FONTS.map(([k]) => [k, fontLabel(k)]), PREFS.font || "system", (val) => { setPref({ font: val }); draw(); });
-      const sizes = el("div", { class: "seg" });
-      for (const n of FONT_SIZES) sizes.append(el("button", { class: mailSize() === n ? "on" : "", onclick: () => { setPref({ font_size: n }); draw(); } }, String(n)));
       const sample = el("div", { class: "font-sample", style: `font-family:${mailFont()};font-size:${mailSize()}px` }, t("font_sample"));
+      const sizes = segmented(FONT_SIZES.map((n) => [n, String(n)]), mailSize(), (n) => { setPref({ font_size: n }); sample.style.fontSize = n + "px"; });
       body.append(el("h2", {}, t("composing")), el("div", { class: "form" },
         el("label", {}, el("span", { class: "lab" }, t("default_font")), font),
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("default_size")), sizes), sample,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("undo_send")), seg), el("div", { class: "note" }, t("undo_note"))));
     } else if (tab === "notify") {
-      const seg = el("div", { class: "seg" });
-      for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
-        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } } draw(); } }, t(lab)));
-      }
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.notify !== false, (on) => {
+        setPref({ notify: on });
+        if (!on) { $(".notice-off", form)?.remove(); return; }
+        askNotice();
+        if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); }
+        setTimeout(check, noticeAsked ? 1500 : 0);
+        noticeAsked = false;
+      });
       const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg));
       body.append(el("h2", {}, t("notifications")), form);
       // macOS keeps its own switch for the app; when it is off, say so and lead to it
@@ -2422,12 +2422,10 @@ async function openSettings() {
         el("label", {}, el("span", { class: "lab" }, t("language")), lang),
         el("label", {}, el("span", { class: "lab" }, t("time_zone")), tz)));
     } else {
-      const seg = el("div", { class: "seg" });
-      for (const [k, ic] of [["system", "monitor"], ["light", "sun"], ["dark", "moon"]]) {
-        seg.append(el("button", { class: v.theme === k ? "on" : "", onclick: () => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); draw(); }, html: icon(ic, "small") + esc(t(k)) }));
-      }
-      const ts = el("div", { class: "seg" });
-      for (const n of [13, 14, 16, 18]) ts.append(el("button", { class: textSize() === n ? "on" : "", onclick: () => { setTextSize(n); draw(); } }, String(n)));
+      // the sheet stays as it is: the picked item slides over and the whole window fades to the new theme
+      const seg = segmented([["system", t("system"), "monitor"], ["light", t("light"), "sun"], ["dark", t("dark"), "moon"]], v.theme,
+        (k) => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); });
+      const ts = segmented([13, 14, 16, 18].map((n) => [n, String(n)]), textSize(), (n) => setTextSize(n));
       body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts)));
     }
@@ -2454,6 +2452,35 @@ async function openSettings() {
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];
+
+// a segmented control: [value, label, icon?] items; the picked one sits on a thumb that slides to the next pick
+// (the control is changed in place, never drawn again, so the slide can be seen)
+function segmented(items, value, pick) {
+  const thumb = el("span", { class: "seg-thumb", "aria-hidden": "true" });
+  const seg = el("div", { class: "seg", role: "radiogroup" }, thumb);
+  const place = (slide) => {
+    const on = $("button.on", seg);
+    if (!on || !on.offsetWidth) return;
+    seg.classList.toggle("seg-slide", slide && !REDUCED.matches);
+    const a = seg.getBoundingClientRect(), b = on.getBoundingClientRect();     // exact, not rounded like offsetLeft
+    seg.style.setProperty("--seg-x", b.left - a.left - seg.clientLeft + "px");
+    seg.style.setProperty("--seg-w", b.width + "px");
+    seg.classList.add("seg-ready");
+  };
+  for (const [v, label, ic] of items) {
+    const b = el("button", { class: v === value ? "on" : "", role: "radio", "aria-checked": String(v === value),
+      html: (ic ? icon(ic, "small") : "") + esc(label), onclick: () => {
+        if (b.classList.contains("on")) return;
+        for (const x of $$("button", seg)) { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", String(x === b)); }
+        place(true);
+        pick(v);
+      } });
+    seg.append(b);
+  }
+  // placed once it is laid out (it is made before it is shown), and again when its size changes
+  if (window.ResizeObserver) new ResizeObserver(() => place(false)).observe(seg);
+  return seg;
+}
 
 // a native select in our own frame, with a chevron
 function selectBox(options, value, onchange) {

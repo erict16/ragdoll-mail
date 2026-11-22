@@ -104,5 +104,37 @@ class Frames(unittest.TestCase):
         self.assertIn("overflow-x:auto;overflow-y:hidden", js)
 
 
+def css_rule(css, selector):
+    m = re.search(r"(?m)^" + re.escape(selector) + r" \{([^}]*)\}", css)
+    return m.group(1) if m else ""
+
+
+def dark_tokens(css):
+    return dict(re.findall(r"(--[\w-]+):\s*([^;]+);", "".join(re.findall(r':root\[data-theme="dark"\] \{([^}]*)\}', css))))
+
+
+class Segmented(unittest.TestCase):
+    """#27: concentric corners, a picked item that shows in dark mode, a thumb that slides."""
+
+    def test_corners_are_concentric(self):
+        css = read("app", "style.css")
+        seg = css_rule(css, ".seg")
+        outer = int(re.search(r"border-radius: (\d+)px", seg).group(1))
+        inset = int(re.search(r"padding: (\d+)px", seg).group(1)) + int(re.search(r"border: (\d+)px", seg).group(1))
+        for sel in (".seg button", ".seg-thumb"):
+            self.assertIn("border-radius: %dpx" % (outer - inset), css_rule(css, sel), sel)
+
+    def test_picked_item_is_lighter_than_the_track_in_dark(self):
+        tok = dark_tokens(read("app", "style.css"))
+        lum = lambda h: sum(int(h.strip()[i:i + 2], 16) for i in (1, 3, 5)) / 3      # noqa: E731
+        self.assertGreater(lum(tok["--seg-on"]) - lum(tok["--sunk"]), 16)
+
+    def test_every_segmented_control_is_made_in_one_place(self):
+        js = read("app", "app.js")
+        self.assertEqual(js.count('el("div", { class: "seg"'), 1)
+        self.assertIn("function segmented(", js)
+        self.assertGreaterEqual(js.count("segmented("), 6)
+
+
 if __name__ == "__main__":
     unittest.main()
