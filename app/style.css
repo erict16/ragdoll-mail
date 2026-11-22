@@ -661,6 +661,12 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 /* the segmented control's picked item: clearly lighter than its track in both themes */
 :root { --seg-on: #ffffff; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.07), 0 .5px 2.5px rgba(0,0,0,.09); }
 :root[data-theme="dark"] { --seg-on: #3a3a3a; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.45), 0 .5px 2.5px rgba(0,0,0,.3), inset 0 .5px 0 rgba(255,255,255,.06); }
+/* light/dark: the window cross-fades as one picture (app.js applyTheme, View Transitions) */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .32s; animation-timing-function: ease; }
+/* where that is missing, every colour eases over, the dots, marks and shadows too; the segmented thumb still slides */
+.theming *::before, .theming *::after { transition: background-color .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease !important; }
+.theming * { transition-property: background-color, border-color, color, fill, box-shadow, outline-color !important; }
+.theming .seg-thumb { transition: transform .24s var(--ease), width .24s var(--ease), background-color .3s ease, box-shadow .3s ease !important; }
 
 
 /* ---- 0.11 group D_SYNC: new rules for this group only ---- */

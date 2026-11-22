@@ -162,15 +162,22 @@ const isDark = () => document.documentElement.dataset.theme === "dark";
 function applyTheme(theme) {
   S.theme = theme || "system";
   const dark = S.theme === "dark" || (S.theme === "system" && darkMQ.matches);
-  const root = document.documentElement, was = root.dataset.theme;
-  if (was && was !== (dark ? "dark" : "light") && !REDUCED.matches) {
-    root.classList.add("theming");
-    clearTimeout(applyTheme.timer);
-    applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  const root = document.documentElement, was = root.dataset.theme, now = dark ? "dark" : "light";
+  const swap = () => {
+    root.dataset.theme = now;
+    if (was && was !== now) restyleFrames();
+    syncWindowTheme();
+  };
+  if (!was || was === now || REDUCED.matches || document.hidden) return swap();
+  // the whole window, open mails included, cross-fades from one picture to the other (WebKit on macOS 15+,
+  // WebView2); elsewhere the colours ease over (.theming)
+  if (document.startViewTransition) {
+    try { document.startViewTransition(swap); return; } catch { /* the fade below */ }
   }
-  root.dataset.theme = dark ? "dark" : "light";
-  if (was && was !== document.documentElement.dataset.theme) refreshFrames();
-  syncWindowTheme();
+  root.classList.add("theming");
+  clearTimeout(applyTheme.timer);
+  applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  swap();
 }
 // the native title bar (Windows caption, macOS traffic lights) follows the app theme, not only the system's
 function syncWindowTheme() {
@@ -1514,6 +1521,10 @@ function fitColumn(d) {
 
 function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style id="rd-style">${frameCss({ plain, dark })}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+}
+// the frame's own look; a new theme changes it in place (restyleFrames), without loading the mail again
+function frameCss({ plain, dark }) {
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
   let css = CJK_FACES + `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
 .rd-root{max-width:44em}.rd-root.rd-wide{max-width:none}p,li{text-wrap:pretty}
@@ -1525,7 +1536,7 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
     css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+  return css;
 }
 
 // a picture worth enlarging: not an icon, a spacer or a tracking pixel
@@ -1686,6 +1697,16 @@ function refreshFrames() {
     if (!st.wrap.isConnected) { frames.delete(st); continue; }
     st.toggle?.remove(); st.toggle = null; st.hidden = [];
     st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() });
+  }
+}
+// a new theme: every open mail takes the new colours where it is (no blank frame, the folded quote stays folded);
+// a frame not loaded yet is loaded again
+function restyleFrames() {
+  for (const st of frames) {
+    if (!st.wrap.isConnected) { frames.delete(st); continue; }
+    const s = st.frame.contentDocument?.getElementById("rd-style");
+    if (s) s.textContent = frameCss({ plain: st.plain, dark: isDark() });
+    else { st.toggle?.remove(); st.toggle = null; st.hidden = []; st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() }); }
   }
 }
 

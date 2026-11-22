@@ -136,5 +136,35 @@ class Segmented(unittest.TestCase):
         self.assertGreaterEqual(js.count("segmented("), 6)
 
 
+class ThemeSwitch(unittest.TestCase):
+    """#26: light/dark cross-fades the whole window; open mails change colour in place."""
+
+    def setUp(self):
+        self.js = read("app", "app.js")
+        self.apply = self.js[self.js.index("function applyTheme("):self.js.index("function syncWindowTheme(")]
+
+    def test_view_transition_with_a_fallback_and_reduced_motion(self):
+        self.assertIn("document.startViewTransition(swap)", self.apply)
+        self.assertIn("REDUCED.matches", self.apply)
+        self.assertIn('root.classList.add("theming")', self.apply)
+
+    def test_mail_frames_are_restyled_not_reloaded(self):
+        self.assertIn("restyleFrames()", self.apply)
+        self.assertNotIn("refreshFrames()", self.apply)
+        restyle = self.js[self.js.index("function restyleFrames("):self.js.index("function collapseQuote(")]
+        self.assertIn('getElementById("rd-style")', restyle)
+        self.assertIn('<style id="rd-style">', self.js)
+
+    def test_settings_sheet_is_not_drawn_again(self):
+        line = next(x for x in self.js.splitlines() if '["system", t("system"), "monitor"]' in x)
+        block = self.js[self.js.index(line):self.js.index("const ts = segmented(")]
+        self.assertNotIn("draw()", block)
+
+    def test_fallback_covers_dots_and_shadows(self):
+        css = read("app", "style.css")
+        self.assertIn(".theming *::before, .theming *::after", css)
+        self.assertIn("::view-transition-old(root)", css)
+
+
 if __name__ == "__main__":
     unittest.main()
