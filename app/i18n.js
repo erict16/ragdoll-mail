@@ -788,20 +788,44 @@ for (const [k, v] of Object.entries(MORE_D_SYNC)) Object.assign(LANGS[k], v);
 // 0.11 group E_FOLDERS: new strings for this group only
 const MORE_E_FOLDERS = {
   "en": {
+    empty_trash: "Empty Trash", empty_junk: "Empty Junk", empty_q_trash: "Empty Trash?", empty_q_junk: "Empty Junk?",
+    empty_text_1: "1 mail will be deleted for good. This can't be undone.", empty_text_n: "%s mails will be deleted for good. This can't be undone.",
+    emptied_trash: "Trash emptied", emptied_junk: "Junk emptied", empty_none: "There is nothing to delete.",
   },
   "zh-Hans": {
+    empty_trash: "清空已删除", empty_junk: "清空垃圾邮件", empty_q_trash: "清空“已删除”？", empty_q_junk: "清空“垃圾邮件”？",
+    empty_text_1: "1 封邮件会被彻底删除，无法恢复。", empty_text_n: "%s 封邮件会被彻底删除，无法恢复。",
+    emptied_trash: "已清空“已删除”", emptied_junk: "已清空垃圾邮件", empty_none: "没有可删除的邮件。",
   },
   "zh-Hant": {
+    empty_trash: "清空垃圾桶", empty_junk: "清空垃圾郵件", empty_q_trash: "清空垃圾桶？", empty_q_junk: "清空垃圾郵件？",
+    empty_text_1: "1 封郵件會被永久刪除，無法復原。", empty_text_n: "%s 封郵件會被永久刪除，無法復原。",
+    emptied_trash: "已清空垃圾桶", emptied_junk: "已清空垃圾郵件", empty_none: "沒有可刪除的郵件。",
   },
   "ja": {
+    empty_trash: "ゴミ箱を空にする", empty_junk: "迷惑メールを空にする", empty_q_trash: "ゴミ箱を空にしますか？", empty_q_junk: "迷惑メールを空にしますか？",
+    empty_text_1: "メール 1 件が完全に削除されます。元に戻せません。", empty_text_n: "メール %s 件が完全に削除されます。元に戻せません。",
+    emptied_trash: "ゴミ箱を空にしました", emptied_junk: "迷惑メールを空にしました", empty_none: "削除するメールはありません。",
   },
   "ko": {
+    empty_trash: "휴지통 비우기", empty_junk: "스팸 비우기", empty_q_trash: "휴지통을 비울까요?", empty_q_junk: "스팸함을 비울까요?",
+    empty_text_1: "메일 1개가 영구적으로 삭제됩니다. 되돌릴 수 없습니다.", empty_text_n: "메일 %s개가 영구적으로 삭제됩니다. 되돌릴 수 없습니다.",
+    emptied_trash: "휴지통을 비웠습니다", emptied_junk: "스팸함을 비웠습니다", empty_none: "삭제할 메일이 없습니다.",
   },
   "es": {
+    empty_trash: "Vaciar papelera", empty_junk: "Vaciar correo no deseado", empty_q_trash: "¿Vaciar la papelera?", empty_q_junk: "¿Vaciar el correo no deseado?",
+    empty_text_1: "1 correo se eliminará para siempre. No se puede deshacer.", empty_text_n: "%s correos se eliminarán para siempre. No se puede deshacer.",
+    emptied_trash: "Papelera vaciada", emptied_junk: "Correo no deseado vaciado", empty_none: "No hay nada que eliminar.",
   },
   "fr": {
+    empty_trash: "Vider la corbeille", empty_junk: "Vider les indésirables", empty_q_trash: "Vider la corbeille ?", empty_q_junk: "Vider les indésirables ?",
+    empty_text_1: "1 e-mail sera supprimé définitivement. C’est irréversible.", empty_text_n: "%s e-mails seront supprimés définitivement. C’est irréversible.",
+    emptied_trash: "Corbeille vidée", emptied_junk: "Indésirables vidés", empty_none: "Il n’y a rien à supprimer.",
   },
   "de": {
+    empty_trash: "Papierkorb leeren", empty_junk: "Spam leeren", empty_q_trash: "Papierkorb leeren?", empty_q_junk: "Spam leeren?",
+    empty_text_1: "1 E-Mail wird endgültig gelöscht. Das lässt sich nicht rückgängig machen.", empty_text_n: "%s E-Mails werden endgültig gelöscht. Das lässt sich nicht rückgängig machen.",
+    emptied_trash: "Papierkorb geleert", emptied_junk: "Spam geleert", empty_none: "Es gibt nichts zu löschen.",
   },
 };
 for (const [k, v] of Object.entries(MORE_E_FOLDERS)) Object.assign(LANGS[k], v);

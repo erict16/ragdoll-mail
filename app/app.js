@@ -392,6 +392,7 @@ function renderNav() {
   $("#here-btn").className = "here-btn" + (unread && S.folder !== "inbox" ? " dot" : "");
   $("#here-btn").innerHTML = icon(here?.other ? "folder-open" : FOLDER_ICON[S.folder] || "folder-open") + `<span class="label" dir="auto">${esc(folderName(S.folder))}</span>`;
   $("#head-title").textContent = folderName(S.folder);
+  emptyBtn(here);
   let seenOther = false;
   for (const [i, f] of folders.entries()) {
     if (f.other && !seenOther) nav.append(navSection());
@@ -501,6 +502,48 @@ async function deleteFolder(f) {
     await refreshCounts();
   } catch (e) { fail(e); }
 }
+// a question before something that can't be taken back, or that moves a lot of mail
+function confirmSheet({ title, text, ok, run, safe = false }) {
+  const go = el("button", { class: "btn primary danger", onclick: async () => {
+    go.disabled = true;
+    go.innerHTML = icon("loader-circle", "small spin") + esc(ok);
+    try { await run(); closeLayer(); } catch (e) { go.disabled = false; go.textContent = ok; fail(e); }
+  } }, ok);
+  const no = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
+  sheet(el("div", {}, el("h2", {}, title), el("p", { class: "sheet-sub" }, text), el("div", { class: "sheet-acts" }, no, go)));
+  (safe ? no : go).focus();
+}
+
+// every mail in Trash or Junk deleted for good, after a question that says how many
+async function emptyFolder(key) {
+  for (const job of [...pendingMoves]) if (job.to === key) await job.commit();
+  let n;
+  try { n = (await api("folder_empty", { key, check: true })).count; } catch (e) { return fail(e); }
+  if (!n) return toast(t("empty_none"));
+  confirmSheet({ title: t("empty_q_" + key), text: t(n === 1 ? "empty_text_1" : "empty_text_n", n), ok: t("empty_" + key), safe: true, run: async () => {
+    await api("folder_empty", { key });
+    if (S.sel?.startsWith(key + ":") || S.thread?.rows.some((r) => r.folder === key)) { S.sel = null; S.thread = null; showEmpty(); }
+    if (S.folder === key && !S.query) await loadList({ quiet: true });
+    await refreshCounts();
+    toast(t("emptied_" + key));
+  } });
+}
+// the list header of Trash and Junk has a button for it
+function emptyBtn(here) {
+  const on = (S.folder === "trash" || S.folder === "junk") && !S.query;
+  let b = $("#empty-btn");
+  if (!b) {
+    if (!on) return;
+    b = el("button", { class: "icon-btn", id: "empty-btn", onclick: () => emptyFolder(S.folder) });
+    $("#filter-btn").before(b);
+  }
+  b.hidden = !on;
+  if (!on) return;
+  b.innerHTML = icon("trash-2");
+  b.dataset.tip = t("empty_" + S.folder);
+  b.setAttribute("aria-label", b.dataset.tip);
+  b.disabled = !here?.total;
+}
 // every unread mail of a folder becomes read; the list on screen follows at once
 async function readAll(key) {
   try {
@@ -512,6 +555,9 @@ async function readAll(key) {
 const READ_ALL_IN = ["inbox", "flagged", "archive", "junk", "trash"];
 function folderMenu(anchor, f) {
   const all = { icon: "mail-open", label: t("read_all"), run: () => readAll(f.key) };
+  if (f.key === "trash" || f.key === "junk") {
+    return menu(anchor, f.total ? [all, "-", { icon: "trash-2", label: t("empty_" + f.key), run: () => emptyFolder(f.key) }] : [all]);
+  }
   if (!f.other) return menu(anchor, [all]);
   menu(anchor, [
     all,

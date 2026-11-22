@@ -13,6 +13,7 @@ import atexit
 import base64
 import contextlib
 import datetime as dt
+import glob
 import hashlib
 import html as htmlmod
 import imaplib
@@ -1916,6 +1917,71 @@ class Backend:
         self.bump()
         return {}
 
+    def drop_rows(self, folder, uids=None):
+        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
+        with self.dblock:
+            if uids is None:
+                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
+            else:
+                rows = []
+                uids = sorted(set(uids))
+                for k in range(0, len(uids), 500):
+                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
+                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
+            for r in rows:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.commit()
+        for r in rows:
+            self.demo_raw.pop((folder, r["uid"]), None)
+            cache_drop((folder, r["uidv"], r["uid"]))
+        return len(rows)
+
+    def server_count(self, m, folder):
+        typ, data = m.status(R.q(folder), "(MESSAGES)")
+        mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
+        if typ != "OK" or not mo:
+            fail("The mail server said: %s" % said(data))
+        return int(mo.group(1))
+
+    def api_folder_empty(self, a):
+        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
+        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
+        k = a.get("key")
+        if k not in ("trash", "junk"):
+            fail("can't empty %s" % k)
+        folder = R.CFG.folders.get(k)
+        if not folder:
+            fail("No %s folder is set." % k)
+        if self.demo:
+            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
+            if a.get("check") is not True:
+                self.drop_rows(folder)
+                self.bump()
+            return {"count": n}
+
+        def go(m):
+            if a.get("check") is True:
+                return None, self.server_count(m, folder)
+            R.select(m, folder, readonly=False)
+            uids = R.uids_of(m)
+            for i in range(0, len(uids), 500):
+                batch = ",".join(map(str, uids[i:i + 500]))
+                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
+                if typ != "OK":
+                    fail("The mail server said: %s" % said(data))
+                if R.has_cap(m, "UIDPLUS"):
+                    m.uid("EXPUNGE", batch)
+            if uids and not R.has_cap(m, "UIDPLUS"):
+                m.expunge()
+            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+            return uids, len(uids)
+        uids, n = self.imap(go)
+        if uids is not None:
+            self.drop_rows(folder, uids)
+            self.bump()
+        return {"count": n}
+
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
         raw, light = self.view(i)
@@ -2712,6 +2778,18 @@ def folder_sep(m):
 
 def said(data):
     return b" ".join(x for x in data or [] if isinstance(x, bytes)).decode("utf-8", "replace")
+
+
+def cache_files(k):
+    """The copies of one mail kept on disk (k = folder, uidvalidity, uid): whole, light, and its files."""
+    whole = R.cache_path(*k)
+    return [whole, R.light_path(*k)] + glob.glob(glob.escape(whole[:-4]) + ".part*.eml")
+
+
+def cache_drop(k):
+    for p in cache_files(k):
+        with contextlib.suppress(OSError):
+            os.remove(p)
 
 
 def list_folders(m):

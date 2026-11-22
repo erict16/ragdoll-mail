@@ -655,6 +655,12 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group E_FOLDERS: new rules for this group only ---- */
+/* a question before deleting for good */
+.btn.primary.danger { background: var(--danger); color: #fff; }
+.btn.primary.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 86%, #000); }
+.btn.primary.danger:disabled { opacity: .7; }
+.list-head.searching #empty-btn { display: none; }
+#empty-btn { flex: none; margin-left: 2px; }
 
 
 /* ---- 0.11 group F_INVITES: new rules for this group only ---- */
