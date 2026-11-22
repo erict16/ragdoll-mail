@@ -666,6 +666,12 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 /* where that is missing, every colour eases over, the dots, marks and shadows too; the segmented thumb still slides */
 .theming *::before, .theming *::after { transition: background-color .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease !important; }
 .theming * { transition-property: background-color, border-color, color, fill, box-shadow, outline-color !important; }
+/* Settings > Privacy: the senders whose images always show, and a way to clear them */
+.form .img-senders { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 12.5px; }
+.form .img-senders .btn { height: 26px; padding: 0 11px; font-size: 12px; }
+.imgs-bar { flex-wrap: wrap; row-gap: 4px; }
+.imgs-bar .link-btn { white-space: nowrap; }
+.imgs-bar .link-btn + .link-btn { margin-left: 4px; }
 .theming .seg-thumb { transition: transform .24s var(--ease), width .24s var(--ease), background-color .3s ease, box-shadow .3s ease !important; }
 
 

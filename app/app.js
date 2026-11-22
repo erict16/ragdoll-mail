@@ -1334,13 +1334,26 @@ function renderBody(body, m) {
       body.append(all);
     }
   }
-  const remote = m.remote && S.showImages.has(m.id);
+  // images from the web load unless Settings > Privacy says no (then a sender can be trusted for good);
+  // mail in Junk never loads them by itself
+  const junk = m.id.slice(0, m.id.lastIndexOf(":")) === "junk", addr = (m.from?.addr || "").toLowerCase();
+  const remote = m.remote && (S.showImages.has(m.id) || (!junk && (PREFS.remote_images !== false || imgSenders().includes(addr))));
   if (m.remote && !remote) {
     body.append(el("div", { class: "imgs-bar" }, el("span", { html: icon("image", "small") }), el("span", {}, t("images_hidden")), el("span", { class: "grow" }),
-      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images"))));
+      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images")),
+      junk || !addr ? null : el("button", { class: "link-btn", onclick: () => {
+        savePref({ img_senders: [...imgSenders(), addr].slice(-2000) });
+        rerenderBodies();
+      } }, t("img_always"))));
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
+}
+
+const imgSenders = () => (Array.isArray(PREFS.img_senders) ? PREFS.img_senders : []);
+// the open mails again, after the images setting changed
+function rerenderBodies() {
+  for (const n of $$(".msg")) { const b = n.querySelector(".msg-body"); if (n._msg && b) renderBody(b, n._msg); }
 }
 
 // a mailing list's way out, beside the sender's address, as in Gmail and Apple Mail
@@ -2336,7 +2349,7 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"],
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["privacy", "shield", "privacy"], ["region", "languages", "region"],
     ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
@@ -2413,6 +2426,19 @@ async function openSettings() {
       // a moment after the switch here: macOS may be asking its question right now
       setTimeout(check, noticeAsked ? 1500 : 0);
       noticeAsked = false;
+    } else if (tab === "privacy") {
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.remote_images !== false, (on) => {
+        setPref({ remote_images: on });
+        rerenderBodies();
+      });
+      const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("remote_images")), seg),
+        el("div", { class: "note" }, t("remote_note")));
+      if (imgSenders().length) {
+        const row = el("div", { class: "img-senders" }, el("span", {}, t("img_senders_n", imgSenders().length)),
+          el("button", { class: "btn", onclick: () => { setPref({ img_senders: [] }); row.remove(); rerenderBodies(); } }, t("img_forget")));
+        form.append(row);
+      }
+      body.append(el("h2", {}, t("privacy")), form);
     } else if (tab === "cli") {
       const form = el("div", { class: "form" });
       body.append(el("h2", {}, t("cli")), form);

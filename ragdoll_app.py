@@ -1311,6 +1311,12 @@ class Backend:
             p["fmt_bar"] = a["fmt_bar"]
         if isinstance(a.get("notify"), bool):
             p["notify"] = a["notify"]
+        # images from the web: on by default; the senders whose images always load when it is off
+        if isinstance(a.get("remote_images"), bool):
+            p["remote_images"] = a["remote_images"]
+        s = a.get("img_senders")
+        if isinstance(s, list) and len(s) <= 2000 and all(isinstance(x, str) and 0 < len(x) <= 320 and "@" in x for x in s):
+            p["img_senders"] = list(dict.fromkeys(x.strip().lower() for x in s))
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f

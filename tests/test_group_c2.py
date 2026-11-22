@@ -196,5 +196,56 @@ class SystemTheme(unittest.TestCase):
         self.assertEqual(backend.api_window_theme({"dark": True, "system": True}), {})
 
 
+class DemoBackend(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cfg = R.CFG                         # demo mode swaps the config; the other tests need it back
+        cls.backend = A.Backend(demo=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.backend.close()
+        shutil.rmtree(A.R.CFG.home, ignore_errors=True)
+        A.R.CFG = cls.cfg
+
+
+class RemoteImages(DemoBackend):
+    """#22: images from the web show by default; a Privacy switch, trusted senders, never in Junk."""
+
+    def test_prefs_are_checked(self):
+        p = self.backend.api_prefs({"remote_images": False, "img_senders": ["A@x.com", "a@x.com", "b@y.org"]})
+        self.assertIs(p["remote_images"], False)
+        self.assertEqual(p["img_senders"], ["a@x.com", "b@y.org"])
+        p = self.backend.api_prefs({"remote_images": "no", "img_senders": ["not an address"]})
+        self.assertIs(p["remote_images"], False)
+        self.assertEqual(p["img_senders"], ["a@x.com", "b@y.org"])
+        p = self.backend.api_prefs({"remote_images": True, "img_senders": []})
+        self.assertIs(p["remote_images"], True)
+        self.assertEqual(p["img_senders"], [])
+
+    def test_page_shows_them_unless_switched_off_and_never_in_junk(self):
+        js = read("app", "app.js")
+        body = js[js.index("function renderBody("):js.index("function unsubLink(")]
+        self.assertIn('PREFS.remote_images !== false', body)
+        self.assertIn("!junk &&", body)
+        self.assertIn('t("img_always")', body)
+        self.assertIn('["privacy", "shield", "privacy"]', js)
+        self.assertIn('"shield":', read("app", "icons.js"))
+
+
+class Strings(unittest.TestCase):
+    def test_every_new_string_is_in_every_language(self):
+        src = read("app", "i18n.js")
+        block = src[src.index("const MORE_C2_READ = {"):src.index("for (const [k, v] of Object.entries(MORE_C2_READ))")]
+        langs = dict(re.findall(r'"([\w-]+)": \{(.*?)\n  \},', block, re.S))
+        self.assertEqual(sorted(langs), sorted(["en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de"]))
+        keys = {k: set(re.findall(r"(\w+): \"", v)) for k, v in langs.items()}
+        for lang, ks in keys.items():
+            self.assertEqual(ks, keys["en"], lang)
+        js = read("app", "app.js")
+        for k in keys["en"]:
+            self.assertRegex(js, r'\bt\("%s"|STR\.%s\b|"%s"' % (k, k, k), k)
+
+
 if __name__ == "__main__":
     unittest.main()

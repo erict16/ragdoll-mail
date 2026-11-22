@@ -746,20 +746,44 @@ for (const [k, v] of Object.entries(MORE_C1_LIST)) Object.assign(LANGS[k], v);
 // 0.11 group C2_READ: new strings for this group only
 const MORE_C2_READ = {
   "en": {
+    privacy: "Privacy", remote_images: "Load images from the web",
+    remote_note: "Images from the web let the sender see when you open a mail. Mail in Junk never loads them.",
+    img_always: "Always show from this sender", img_senders_n: "Senders always shown: %s", img_forget: "Clear",
   },
   "zh-Hans": {
+    privacy: "隐私", remote_images: "加载网络图片",
+    remote_note: "加载网络图片会让发件人知道你何时打开了邮件。垃圾邮件中的图片始终不加载。",
+    img_always: "始终显示此发件人的图片", img_senders_n: "已对 %s 位发件人始终显示图片", img_forget: "清除",
   },
   "zh-Hant": {
+    privacy: "隱私", remote_images: "載入網路圖片",
+    remote_note: "載入網路圖片會讓寄件者知道你何時打開了郵件。垃圾郵件中的圖片一律不載入。",
+    img_always: "一律顯示此寄件者的圖片", img_senders_n: "已對 %s 位寄件者一律顯示圖片", img_forget: "清除",
   },
   "ja": {
+    privacy: "プライバシー", remote_images: "Web 上の画像を読み込む",
+    remote_note: "Web 上の画像を読み込むと、メールを開いたことが送信者に伝わります。迷惑メールでは読み込みません。",
+    img_always: "この送信者の画像を常に表示", img_senders_n: "%s 人の送信者の画像を常に表示", img_forget: "クリア",
   },
   "ko": {
+    privacy: "개인정보 보호", remote_images: "웹 이미지 불러오기",
+    remote_note: "웹 이미지를 불러오면 보낸 사람이 메일을 연 시점을 알 수 있습니다. 스팸 메일에서는 불러오지 않습니다.",
+    img_always: "이 보낸 사람의 이미지 항상 표시", img_senders_n: "보낸 사람 %s명의 이미지를 항상 표시", img_forget: "지우기",
   },
   "es": {
+    privacy: "Privacidad", remote_images: "Cargar imágenes de la web",
+    remote_note: "Las imágenes de la web le indican al remitente cuándo abres un correo. El correo no deseado nunca las carga.",
+    img_always: "Mostrar siempre de este remitente", img_senders_n: "Remitentes siempre mostrados: %s", img_forget: "Borrar",
   },
   "fr": {
+    privacy: "Confidentialité", remote_images: "Charger les images du web",
+    remote_note: "Les images du web indiquent à l’expéditeur quand vous ouvrez un e-mail. Les courriers indésirables ne les chargent jamais.",
+    img_always: "Toujours afficher pour cet expéditeur", img_senders_n: "Expéditeurs toujours affichés : %s", img_forget: "Effacer",
   },
   "de": {
+    privacy: "Datenschutz", remote_images: "Bilder aus dem Web laden",
+    remote_note: "Bilder aus dem Web verraten dem Absender, wann Sie eine E-Mail öffnen. Im Spam-Ordner werden sie nie geladen.",
+    img_always: "Für diesen Absender immer anzeigen", img_senders_n: "Immer angezeigte Absender: %s", img_forget: "Löschen",
   },
 };
 for (const [k, v] of Object.entries(MORE_C2_READ)) Object.assign(LANGS[k], v);
