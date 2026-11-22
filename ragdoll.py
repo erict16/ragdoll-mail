@@ -1348,10 +1348,11 @@ def header_row(seg):
             "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
 
 
-def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
+def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=False):
     """New mail headers, flags and deletions for one folder. Returns new row count.
     held(folder, since) -> {uid: {"seen": 1, ...}}: flags the caller has changed that the server may
-    not have had when it was asked at `since`; they stay as the caller set them."""
+    not have had when it was asked at `since`; they stay as the caller set them.
+    deep: the flags of older mail too (deep_flags), not only of the newest 300."""
     try:
         uidv = select(m, folder)
     except LookupError:
@@ -1364,27 +1365,19 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
     c.execute("insert or replace into state values(?,?)", (folder, uidv))
     c.commit()
     server = set(uids_of(m))
-    local = {r["uid"]: r["id"] for r in c.execute(
-        "select uid, id from msgs where folder=? and uidv=?", (folder, uidv))}
-    for uid, rid in local.items():
+    local = {r["uid"]: r for r in c.execute(
+        "select uid, id, seen, flagged, answered from msgs where folder=? and uidv=?", (folder, uidv))}
+    for uid, r in local.items():
         if uid not in server:
-            c.execute("delete from msgs where id=?", (rid,))
-            c.execute("delete from fts where rowid=?", (rid,))
+            c.execute("delete from msgs where id=?", (r["id"],))
+            c.execute("delete from fts where rowid=?", (r["id"],))
+    flags = Flags(c, folder, local, held)
     # flags: all of them on a full sync, the newest 300 otherwise
     known = sorted(u for u in server if u in local)
     check = known if full_flags else known[-300:]
-    for i in range(0, len(check), 500):
-        asked = time.time()
-        typ, data = m.uid("FETCH", ",".join(map(str, check[i:i + 500])), "(UID FLAGS)")
-        mine = held(folder, asked) if held else {}
-        for seg in segments(data):
-            uid = seg_uid(seg)
-            if uid in local:
-                seen, flagged, answered = flags_of(b"".join(seg))
-                if uid in mine:     # a mail just read in the app must not turn unread again
-                    seen, flagged = mine[uid].get("seen", seen), mine[uid].get("flagged", flagged)
-                c.execute("update msgs set seen=?, flagged=?, answered=? where id=?",
-                          (seen, flagged, answered, local[uid]))
+    fetch_flags(m, check, flags)
+    if deep and not full_flags and len(known) > 300:
+        deep_flags(m, c, folder, uidv, known[:-300], flags)
     c.commit()
     new = sorted((u for u in server if u not in local), reverse=True)
     chunks = [new[i:i + 100] for i in range(0, len(new), 100)]
@@ -1418,6 +1411,101 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
         mark_forwarded(c)       # a new forward in Sent, or an original fetched again
         c.commit()
     return len(new)
+
+
+class Flags:
+    """Puts the server's flags into the index rows of one folder; a row is written only when they
+    differ, and a flag the caller holds (held) stays as the caller set it."""
+    def __init__(self, c, folder, local, held):
+        self.c, self.folder, self.local, self.held = c, folder, local, held
+
+    def mine(self, asked):
+        return self.held(self.folder, asked) if self.held else {}
+
+    def put(self, uid, mine, seen=None, flagged=None, answered=None):
+        r = self.local.get(uid)
+        if r is None:
+            return
+        if uid in mine:     # a mail just read in the app must not turn unread again
+            seen = mine[uid].get("seen", seen)
+            flagged = mine[uid].get("flagged", flagged)
+        new = [r["seen"] if seen is None else int(seen), r["flagged"] if flagged is None else int(flagged),
+               r["answered"] if answered is None else int(answered)]
+        if new != [r["seen"], r["flagged"], r["answered"]]:
+            self.c.execute("update msgs set seen=?, flagged=?, answered=? where id=?", (*new, r["id"]))
+
+
+def fetch_flags(m, uids, flags, extra=""):
+    """FLAGS of these UIDs (or of "1:*" with a modifier in extra) into the index."""
+    sets = [uids] if isinstance(uids, str) else [",".join(map(str, uids[i:i + 500])) for i in range(0, len(uids), 500)]
+    for s in sets:
+        if not s:
+            continue
+        asked = time.time()
+        typ, data = m.uid("FETCH", s, "(UID FLAGS)" + extra)
+        if typ != "OK":
+            continue            # e.g. a mail expunged a moment ago: the next pass asks again
+        mine = flags.mine(asked)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                flags.put(uid, mine, *flags_of(b"".join(seg)))
+
+
+SWEEP = 2000        # older mails whose flags are asked for on each pass, in turn, when CONDSTORE is missing
+
+
+def search_set(m, key):
+    typ, data = m.uid("SEARCH", None, key)
+    if typ != "OK":
+        return None
+    return {int(x) for x in b" ".join(x for x in data if isinstance(x, bytes)).split() if x.isdigit()}
+
+
+def highest_modseq(m, folder):
+    try:
+        v = m.untagged_responses.pop("HIGHESTMODSEQ", None)
+        if not v:
+            typ, data = m.status(q(folder), "(HIGHESTMODSEQ)")
+            mo = re.search(rb"HIGHESTMODSEQ (\d+)", b" ".join(x for x in data if isinstance(x, bytes))) if typ == "OK" else None
+            return int(mo.group(1)) if mo else None
+        return int(v[-1])
+    except (imaplib.IMAP4.abort, OSError):
+        raise
+    except Exception:       # noqa: BLE001 - a server that does not say: the other way is used
+        return None
+
+
+def deep_flags(m, c, folder, uidv, older, flags):
+    """Read / unread and the other flags of mail older than the newest 300, which were never asked
+    for again (#47). With CONDSTORE: only the flags changed since the last pass (CHANGEDSINCE).
+    Without: UID SEARCH UNSEEN and FLAGGED give seen and flagged of every mail in two commands, and
+    a rolling sweep of SWEEP mails per pass brings in the rest (answered) in turn."""
+    if has_cap(m, "CONDSTORE"):
+        key = "modseq:" + folder
+        r = c.execute("select v from meta where k=?", (key,)).fetchone()
+        was = (r[0].split() + ["", ""])[:2] if r else ["", ""]
+        now = highest_modseq(m, folder)
+        if now is not None:
+            if was[0] == str(uidv) and was[1].isdigit():
+                if int(was[1]) != now:
+                    fetch_flags(m, "1:*", flags, " (CHANGEDSINCE %d)" % int(was[1]))
+                c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+                return
+            c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+            # the first pass: everything once, the way below; from the next pass on only changes
+    asked = time.time()
+    unseen, flagged = search_set(m, "UNSEEN"), search_set(m, "FLAGGED")
+    mine = flags.mine(asked)
+    for u in older:
+        flags.put(u, mine, None if unseen is None else u not in unseen, None if flagged is None else u in flagged)
+    key = "sweep:" + folder
+    r = c.execute("select v from meta where k=?", (key,)).fetchone()
+    at = int(r[0]) if r and str(r[0]).isdigit() else None
+    below = [u for u in older if at is None or u < at] or older     # the oldest reached: from the top again
+    turn = below[-SWEEP:]
+    fetch_flags(m, turn, flags)
+    c.execute("insert or replace into meta values(?, ?)", (key, str(turn[0])))
 
 
 HEADER_ITEMS = "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])"

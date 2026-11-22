@@ -526,5 +526,123 @@ class OwnFolders(OwnBackend):
         self.assertIsNone(A.folder_status(FakeServer(), "INBOX"))               # no STATUS at all
 
 
+class FlagServer:
+    """A folder of `n` mails with flags kept here; CONDSTORE when `modseq` is given."""
+    def __init__(self, n, unseen=(), modseq=None):
+        self.uids = list(range(1, n + 1))
+        self.flags = {u: ({"\\Seen"} if u not in set(unseen) else set()) for u in self.uids}
+        self.modseq, self.changed = modseq, {}
+        self.capabilities = ("IMAP4REV1",) + (("CONDSTORE",) if modseq is not None else ())
+        self.calls, self.untagged_responses = [], {}
+
+    def set(self, uid, *flags):
+        self.flags[uid] = set(flags)
+        if self.modseq is not None:
+            self.modseq += 1
+            self.changed[uid] = self.modseq
+
+    def select(self, name, readonly=True):
+        return "OK", [str(len(self.uids)).encode()]
+
+    def response(self, code):
+        return code, [b"1"]
+
+    def status(self, name, what):
+        return "OK", [b'"INBOX" (HIGHESTMODSEQ %d)' % self.modseq]
+
+    def uid(self, cmd, *args):
+        self.calls.append((cmd,) + args)
+        if cmd == "SEARCH":
+            key = args[-1]
+            hit = {"ALL": lambda u: True, "UNSEEN": lambda u: "\\Seen" not in self.flags[u],
+                   "FLAGGED": lambda u: "\\Flagged" in self.flags[u]}[key]
+            return "OK", [" ".join(str(u) for u in self.uids if hit(u)).encode()]
+        if cmd == "FETCH":
+            want = self.uids if args[0] == "1:*" else [int(x) for x in args[0].split(",")]
+            since = None
+            if "CHANGEDSINCE" in args[1]:
+                since = int(args[1].split("CHANGEDSINCE ")[1].rstrip(")"))
+            out = []
+            for k, u in enumerate(want, 1):
+                if since is not None and self.changed.get(u, 0) <= since:
+                    continue
+                out.append(b"%d (UID %d FLAGS (%s))" % (k, u, " ".join(sorted(self.flags[u])).encode()))
+            return "OK", out
+        return "OK", [b""]
+
+
+class OlderFlags(unittest.TestCase):
+    """#47: read / unread of mail older than the newest 300 follows the server."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.cfg = R.CFG
+        R.CFG = R.Cfg(dict(R.DEFAULTS, user="me@example.com", data_dir=tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, R.CFG.home, True)
+        self.addCleanup(setattr, R, "CFG", self.cfg)
+        self.c = R.db()
+        self.addCleanup(self.c.close)
+
+    def fill(self, n):
+        for u in range(1, n + 1):
+            self.c.execute("insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,"
+                           "flagged,answered,has_body) values('INBOX',1,?,?,'','',?,'a@b.c','','','s','','',0,0,0,1)",
+                           (u, "<%d@x>" % u, 1700000000 + u))
+        self.c.execute("insert or replace into state values('INBOX', 1)")
+        self.c.commit()
+
+    def unread(self):
+        return self.c.execute("select count(*) from msgs where seen=0").fetchone()[0]
+
+    def test_all_read_on_the_server_is_read_here(self):
+        self.fill(1000)
+        R.sync_headers(FlagServer(1000), self.c, "INBOX")
+        self.assertEqual(self.unread(), 700)                    # the old way: only the newest 300
+        R.sync_headers(FlagServer(1000), self.c, "INBOX", deep=True)
+        self.assertEqual(self.unread(), 0)
+
+    def test_unread_and_flagged_elsewhere(self):
+        self.fill(1000)
+        srv = FlagServer(1000)
+        R.sync_headers(srv, self.c, "INBOX", deep=True)
+        srv.set(5)                                              # marked unread on the phone
+        srv.set(6, "\\Seen", "\\Flagged")
+        R.sync_headers(srv, self.c, "INBOX", deep=True)
+        got = {r[0]: (r[1], r[2]) for r in self.c.execute("select uid, seen, flagged from msgs where uid in (5,6,7)")}
+        self.assertEqual(got, {5: (0, 0), 6: (1, 1), 7: (1, 0)})
+
+    def test_held_mark_stays(self):
+        self.fill(400)
+        R.sync_headers(FlagServer(400, unseen=[3]), self.c, "INBOX", deep=True,
+                       held=lambda f, since: {3: {"seen": 1}})
+        self.assertEqual(self.c.execute("select seen from msgs where uid=3").fetchone()[0], 1)
+
+    def test_answered_comes_in_by_the_sweep(self):
+        self.fill(R.SWEEP + 800)
+        srv = FlagServer(R.SWEEP + 800)
+        srv.set(1, "\\Seen", "\\Answered")
+        srv.set(R.SWEEP + 400, "\\Seen", "\\Answered")
+        answered = lambda: [r[0] for r in self.c.execute("select uid from msgs where answered=1 order by uid")]
+        R.sync_headers(srv, self.c, "INBOX", deep=True)
+        self.assertEqual(answered(), [R.SWEEP + 400])           # the newest older ones first
+        R.sync_headers(srv, self.c, "INBOX", deep=True)
+        self.assertEqual(answered(), [1, R.SWEEP + 400])        # then the rest, in turn
+
+    def test_condstore_asks_only_for_changes(self):
+        self.fill(1000)
+        srv = FlagServer(1000, modseq=100)
+        R.sync_headers(srv, self.c, "INBOX", deep=True)         # the first pass: everything once
+        self.assertEqual(self.unread(), 0)
+        srv.calls.clear()
+        srv.set(10)
+        R.sync_headers(srv, self.c, "INBOX", deep=True)
+        self.assertEqual(self.unread(), 1)
+        self.assertFalse([c for c in srv.calls if c[0] == "SEARCH" and c[-1] != "ALL"])
+        self.assertTrue([c for c in srv.calls if c[0] == "FETCH" and "CHANGEDSINCE 100" in c[2]])
+        srv.calls.clear()
+        R.sync_headers(srv, self.c, "INBOX", deep=True)         # nothing changed: nothing asked
+        self.assertFalse([c for c in srv.calls if c[0] == "FETCH" and "CHANGEDSINCE" in c[2]])
+
+
 if __name__ == "__main__":
     unittest.main()

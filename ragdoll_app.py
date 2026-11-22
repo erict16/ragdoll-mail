@@ -1261,7 +1261,7 @@ class Backend:
                 todo.append(f)
         for f in todo:
             try:
-                R.sync_headers(m, c, f, held=self.held)
+                R.sync_headers(m, c, f, held=self.held, deep=True)
             except LookupError:
                 if f in self.sync_folders():
                     raise
