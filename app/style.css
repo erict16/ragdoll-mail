@@ -640,6 +640,8 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group A_COMPOSE: new rules for this group only ---- */
+/* Return makes a paragraph with a small gap below it, the same gap the sent mail carries (app.js outHTML) */
+.compose .editor p { margin: 0 0 var(--p-gap, 10px); }
 
 
 /* ---- 0.11 group B_SEND: new rules for this group only ---- */

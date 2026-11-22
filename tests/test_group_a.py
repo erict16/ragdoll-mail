@@ -199,3 +199,27 @@ class Addresses(unittest.TestCase):
         f = f[:f.index("\n}\n")]
         self.assertNotIn('.value = ""', f)
         self.assertIn("!opts.auto || ADDR_RE.test(p.addr)", f)
+
+
+def app_src():
+    with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+        return f.read()
+
+
+class Paragraphs(OwnBackend):
+    def test_paragraph_gap_goes_out_with_the_mail(self):
+        html = ('<div data-rd-body="1" style="font-size:14px"><p style="margin:0 0 11px">One</p>'
+                '<p style="margin:0 0 11px">Two<br>Three</p></div>')
+        st = {"mode": "new", "to": [{"name": "", "addr": "a@example.org"}], "cc": [], "bcc": [], "subject": "P",
+              "html": html, "atts": [], "use_signature": False}
+        _, body = A.R.bodies(self.b.build(st))
+        self.assertIn('<p style="margin:0 0 11px">One</p>', body)
+        self.assertIn("Two<br>Three", body)
+
+    @unittest.skipUnless(NODE, "node is not installed")
+    def test_gap_follows_the_text_size(self):
+        self.assertEqual(js("[12, 14, 18].map(K.paraGap)"), [9, 11, 14])
+        src = app_src()
+        self.assertIn('document.execCommand("defaultParagraphSeparator", false, "p")', src)
+        self.assertIn('=== ed) document.execCommand("formatBlock", false, "p");', src)
+        self.assertIn("function outHTML(html)", src)

@@ -1728,12 +1728,21 @@ function renderCompose() {
   subj.addEventListener("input", () => { c.subject = subj.value; touched(); });
   subj.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); ed.focus(); } });
   const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
-    style: `font-family:${mailFont()};font-size:${mailSize()}px` });
+    style: `font-family:${mailFont()};font-size:${mailSize()}px;--p-gap:${K.paraGap(mailSize())}px` });
   ed.innerHTML = cleanHTML(c.html || "");
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
+  // Return starts a paragraph (<p>, a small gap below the one before), Shift+Return a line inside it (<br>)
+  ed.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "p"));
   ed.addEventListener("keydown", (e) => {
     if (K.isIME(e)) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      document.execCommand("defaultParagraphSeparator", false, "p");
+      // a first line typed straight into the box has no paragraph of its own yet: give it one, so it
+      // keeps the same gap below it (an editing command, so Undo still works)
+      if (blockOf(getSelection().anchorNode, ed) === ed) document.execCommand("formatBlock", false, "p");
+      return;
+    }
     const mod = isMod(e), k = e.key.toLowerCase();
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
@@ -1768,6 +1777,13 @@ function renderCompose() {
 }
 
 // ---------------------------------------------------------------- formatting
+
+// the paragraph-like box a node is in, or the editor itself when it sits straight in it
+const BLOCKS = /^(P|DIV|LI|BLOCKQUOTE|H[1-6]|PRE|TD|TH|UL|OL|TABLE)$/;
+function blockOf(node, ed) {
+  for (let n = node; n && n !== ed; n = n.parentNode) if (n.nodeType === 1 && BLOCKS.test(n.tagName)) return n;
+  return ed;
+}
 
 const fmtBarOn = () => PREFS.fmt_bar !== false;
 function toggleFmtBar() {
@@ -2077,8 +2093,20 @@ function composeState(opts = {}) {
 
 // Outlook shows unstyled mail in Times: always say which font the body is in
 function wrapBody(html) {
-  if (!html || !html.replace(/<br\s*\/?>|<\/?div>|&nbsp;|\s/gi, "")) return html || "";
-  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${html}</div>`;
+  if (!html || !html.replace(/<br\s*\/?>|<\/?(div|p)>|&nbsp;|\s/gi, "")) return html || "";
+  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${outHTML(html)}</div>`;
+}
+// the editor's HTML as it goes out: the gap under each paragraph is written on it (the editor shows it
+// with style.css), so Outlook, Gmail and phones show it too
+function outHTML(html) {
+  const box = document.createElement("template");
+  box.innerHTML = html;
+  const gap = `margin:0 0 ${K.paraGap(mailSize())}px`;
+  for (const p of box.content.querySelectorAll("p")) {
+    const st = p.getAttribute("style") || "";
+    if (!/(^|;)\s*margin(-bottom)?\s*:/i.test(st)) p.setAttribute("style", st ? `${gap};${st}` : gap);
+  }
+  return box.innerHTML;
 }
 
 let saving = Promise.resolve();
@@ -2331,6 +2359,7 @@ async function openSettings() {
     } else if (tab === "signature") {
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
       sigEd.innerHTML = cleanHTML(v.signature || "");
+      sigEd.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "div"));
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
     } else if (tab === "sending") {
