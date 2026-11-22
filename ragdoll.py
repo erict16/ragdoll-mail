@@ -890,13 +890,64 @@ def fmt_addrs(lst):
     return ", ".join(formataddr((one_line(n), one_line(a))) if n else one_line(a) for n, a in lst)
 
 
+BLOCK_TAGS = frozenset("""div p li ul ol tr table thead tbody tfoot h1 h2 h3 h4 h5 h6 blockquote pre hr
+    section article header footer nav main aside address center dl dt dd figure figcaption form fieldset
+    details summary""".split())
+TOKEN_RE = re.compile(r"<[^<>]*>|[^<]+|<")      # [^<>]: a stray "<" must not make it quadratic
+TAG_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>")
+
+
 def html_to_text(h):
-    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", " ", h or "")
-    h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>|</blockquote>", "\n", h)
-    h = re.sub(r"(?i)</t[dh]>", "\t", h)
-    h = htmlmod.unescape(re.sub(r"<[^<>]+>", "", h))      # [^<>]: a stray "<" must not make it quadratic
-    h = re.sub(r"[ \t ​]+", " ", h)
-    return re.sub(r"\n\s*\n+", "\n\n", h).strip()
+    """The text of an HTML mail, line by line as it shows: a block (<div>, <p>, a table row, ...) starts
+    a line of its own, also after a bare first line ("Hi,<div>Thanks</div>"); list items keep their
+    bullet or number."""
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>|<!--.*?-->", " ", h or "")
+    out = []
+    lists = []                  # the lists we are in: [ordered, next number]
+
+    def line():
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+    for mo in TOKEN_RE.finditer(h):
+        tok = mo.group()
+        tag = TAG_RE.fullmatch(tok) if tok.startswith("<") else None
+        if tag is None:
+            if tok.startswith("<") and len(tok) > 1 and (tok[1] in "!?/" or tok[1].isalpha()):
+                continue        # some other markup: <!doctype>, <?xml>, <o:p>, ...
+            text = htmlmod.unescape(tok)
+            if "\n" in text and not text.strip():
+                continue        # the HTML's own line breaks between tags show as nothing
+            out.append(text.replace("\x00", "").replace("\x01", ""))
+            continue
+        close, name, rest = tag.group(1), tag.group(2).lower(), tag.group(3)
+        if name == "br":
+            out.append("\n")
+        elif name in ("td", "th"):
+            if close:
+                out.append("\t")
+        elif name in ("ul", "ol"):
+            line()
+            if close:
+                if lists:
+                    lists.pop()
+            else:
+                start = re.search(r"""(?i)\bstart\s*=\s*["']?(-?\d{1,6})""", rest)
+                lists.append([name == "ol", int(start.group(1)) if start else 1])
+        elif name == "li":
+            line()
+            if not close:
+                ordered, n = lists[-1] if lists else (False, 1)
+                if ordered:
+                    lists[-1][1] += 1
+                # \x00: two spaces of a nested list's indent, \x01: the space after the bullet;
+                # the clean-up below leaves them alone
+                out.append("\x00" * max(0, len(lists) - 1) + ("%d.\x01" % n if ordered else "-\x01"))
+        elif name in BLOCK_TAGS:
+            line()
+    text = re.sub("[  ​　]+", " ", "".join(out))
+    text = re.sub(r"(?m)^[ \t]+|[ \t]+$|(?<=\x01) +", "", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return text.replace("\x00", "  ").replace("\x01", " ")
 
 
 def b64_cut(p):

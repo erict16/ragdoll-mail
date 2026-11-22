@@ -159,5 +159,38 @@ class ProgramFiles(DemoBackend):
 REAL_OPEN_PATH = A.open_path
 
 
+class PlainText(unittest.TestCase):
+    """The text part of a mail the app writes: the lines as they show in the HTML."""
+    def test_first_line_is_not_glued_to_the_next(self):
+        self.assertEqual(R.html_to_text("Hi Tom,<div>Thanks</div><div>Linh</div>"), "Hi Tom,\nThanks\nLinh")
+
+    def test_empty_line_and_trailing_br(self):
+        self.assertEqual(R.html_to_text("a<div><br></div><div>b</div>"), "a\n\nb")
+        self.assertEqual(R.html_to_text("<div>a<br></div><div>b</div>"), "a\nb")
+        self.assertEqual(R.html_to_text("<p>a</p>\n<p>b</p>"), "a\nb")
+
+    def test_lists_keep_bullets_and_numbers(self):
+        self.assertEqual(R.html_to_text("Items:<ul><li>one</li><li>two<ul><li>sub</li></ul></li></ul>End"),
+                         "Items:\n- one\n- two\n  - sub\nEnd")
+        self.assertEqual(R.html_to_text('<ol><li>a</li><li>b</li></ol><ol start="5"><li> c</li></ol>'),
+                         "1. a\n2. b\n5. c")
+
+    def test_tables_comments_and_text(self):
+        self.assertEqual(R.html_to_text("<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>"), "a\tb\nc")
+        self.assertEqual(R.html_to_text("<!--[if mso]>x<![endif]--><style>p{}</style>1 &lt; 2 &amp; 3"), "1 < 2 & 3")
+        self.assertEqual(R.html_to_text("1 < 2 and 3 > 2"), "1 < 2 and 3 > 2")
+
+    def test_stray_brackets_stay_fast(self):
+        import time
+        t = time.time()
+        R.html_to_text("<" * 200000 + "<div>" * 50000)
+        self.assertLess(time.time() - t, 2)
+
+    def test_the_sent_text_part(self):
+        own_cfg(self)
+        msg = R.build_message("Hi Tom,<div>Thanks</div><ol><li>PO</li><li>Drawing</li></ol>", [("", "t@x.com")], [], "s")
+        self.assertIn("Hi Tom,\nThanks\n1. PO\n2. Drawing", msg.get_body(("plain",)).get_content())
+
+
 if __name__ == "__main__":
     unittest.main()
