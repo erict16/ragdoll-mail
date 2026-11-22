@@ -1154,6 +1154,8 @@ class Backend:
             c.execute("insert or replace into meta values('folders', ?)", (json.dumps(found),))
             c.commit()
             self.bump()
+        if drop_gone_folders(c, self.server_folders):
+            self.bump()
 
     def note_new(self, c):
         """Unread inbox mail that came in since the last pass becomes news. The first pass only sets the mark."""
@@ -1316,7 +1318,10 @@ class Backend:
     BODY_IDLE = 300         # seconds with nothing to download before its connection is let go
 
     def body_folders(self):
-        return self.sync_folders() + self.extra_folders()
+        """The folders whose mail text is fetched: only ones the server still has (#48)."""
+        fs = self.sync_folders() + self.extra_folders()
+        there = self.server_folders
+        return [f for f in fs if f in there] if there else fs
 
     def start_bodies(self):
         if self.demo:
@@ -1402,7 +1407,11 @@ class Backend:
                     self.quiet_wait()
                     if self.stopping.is_set():
                         return
-                    got = self.body_fetch(f, part)
+                    try:
+                        got = self.body_fetch(f, part)
+                    except LookupError:     # the folder went (renamed or deleted elsewhere): not again this time
+                        skip.update((f, u) for u in uids)
+                        break
                     R.store_bodies(c, f, got)
                     skip.update((f, u) for u in part if u not in got)
                     self.bodies = {"done": self.bodies["done"] + len(got), "left": max(0, left - len(got))}
@@ -2918,6 +2927,28 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
                    R.hdr(msg, "To") + " " + R.hdr(msg, "Cc"), " | ".join(names), body))
     c.commit()
+
+
+def drop_gone_folders(c, names):
+    """Mail of folders the server no longer has (renamed or deleted in webmail or on the phone) leaves
+    the index, so it shows in no search and keeps no sync busy (#48). Returns how many rows went.
+    Only after a LIST that has the inbox: a failed or empty answer removes nothing."""
+    if not names or not any(n.upper() == "INBOX" for n in names):
+        return 0
+    have = set(names)
+    gone = [r[0] for r in c.execute("select folder from msgs union select folder from state").fetchall()
+            if r[0] not in have and r[0].upper() != "INBOX"]
+    n = 0
+    for f in gone:
+        ids = [r[0] for r in c.execute("select id from msgs where folder=?", (f,)).fetchall()]
+        for i in ids:
+            c.execute("delete from fts where rowid=?", (i,))
+        c.execute("delete from msgs where folder=?", (f,))
+        c.execute("delete from state where folder=?", (f,))
+        n += len(ids)
+    if gone:
+        c.commit()
+    return n
 
 
 def folder_label(v):

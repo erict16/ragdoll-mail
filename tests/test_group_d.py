@@ -407,5 +407,72 @@ class Bodies(OwnBackend):
         self.assertEqual(kicked, [1])
 
 
+def add_row(b, folder, uid, has_body=1):
+    with b.dblock:
+        cur = b.c.execute(
+            "insert into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
+            "answered,has_body) values(?,1,?,?,'','',1700000000,'a@b.c','me@example.com','','ghost','','',1,0,0,?)",
+            (folder, uid, "<%s-%d@x>" % (folder, uid), has_body))
+        b.c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,'ghost','','','','')", (cur.lastrowid,))
+        b.c.execute("insert or replace into state values(?,1)", (folder,))
+        b.c.commit()
+
+
+class Listed(Works):
+    def __init__(self, names):
+        super().__init__()
+        self.names = names
+
+    def list(self):
+        return "OK", [('(\\HasNoChildren) "/" "%s"' % R.mutf7(n)).encode() for n in self.names]
+
+
+class GoneFolders(OwnBackend):
+    """#48: a folder renamed or deleted elsewhere leaves no ghost mail and no busy sync."""
+
+    def test_rows_of_a_folder_the_server_lost_go(self):
+        b = self.b
+        add_row(b, "华明印尼", 1)
+        add_row(b, "Keep", 2)
+        with b.dblock:
+            b.note_folders(Listed(["INBOX", "Keep"]), b.c)
+        self.assertEqual(b.q("select count(*) n from msgs where folder='华明印尼'")[0]["n"], 0)
+        self.assertEqual(b.q("select count(*) n from state where folder='华明印尼'")[0]["n"], 0)
+        self.assertEqual(b.q("select count(*) n from fts where subject='ghost'")[0]["n"], 1)
+        self.assertEqual(b.q("select count(*) n from msgs where folder='Keep'")[0]["n"], 1)
+        self.assertTrue(b.q("select count(*) n from msgs where folder='INBOX'")[0]["n"])
+
+    def test_a_failed_list_removes_nothing(self):
+        b = self.b
+        add_row(b, "Keep", 2)
+        for names in ([], ["Keep"]):            # nothing, or an answer without the inbox
+            with b.dblock:
+                b.note_folders(Listed(names), b.c)
+        self.assertEqual(b.q("select count(*) n from msgs where folder='Keep'")[0]["n"], 1)
+
+    def test_body_download_skips_a_folder_that_went(self):
+        b = self.b
+        b.demo, b.BODY_PAUSE = False, 0
+
+        class Server(BodyServer):
+            def select(self, name, readonly=True):
+                self.calls.append(("select", name, readonly))
+                return ("NO", [b"no such folder"]) if "Gone" in name else ("OK", [b"1"])
+        server = Server()
+        self.patch(A.R, "imap", lambda: server)
+        add_row(b, "Gone", 1, has_body=0)
+        add_row(b, "INBOX", 9001, has_body=0)
+        b.body_folders = lambda: ["Gone", "INBOX"]
+        with b.dblock:
+            b.fetch_bodies_now(b.c)
+        self.assertEqual(b.q("select has_body from msgs where folder='INBOX' and uid=9001")[0]["has_body"], 1)
+        self.assertEqual(len([c for c in server.calls if c[0] == "select" and "Gone" in c[1]]), 1)
+
+    def test_only_folders_on_the_server_get_their_text(self):
+        b = self.b
+        b.server_folders = ["INBOX", "Sent Messages"]
+        self.assertEqual([f for f in b.body_folders() if f not in ("INBOX", "Sent Messages")], [])
+
+
 if __name__ == "__main__":
     unittest.main()
