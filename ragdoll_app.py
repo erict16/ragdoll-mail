@@ -98,6 +98,14 @@ def fail(msg):
 LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
 UNDO_SECONDS = (0, 5, 10, 20, 30)
 FONTS = ("system", "arial", "helvetica", "georgia", "times", "verdana", "courier", "yahei", "pingfang", "simsun")
+# what each font is in CSS, as the page writes it (app.js FONTS, SAFE_FONT for "system")
+FONT_CSS = {
+    "system": "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif",
+    "arial": "Arial, Helvetica, sans-serif", "helvetica": "Helvetica, Arial, sans-serif", "georgia": "Georgia, serif",
+    "times": "'Times New Roman', Times, serif", "verdana": "Verdana, Geneva, sans-serif",
+    "courier": "'Courier New', Courier, monospace", "yahei": "'Microsoft YaHei', 微软雅黑, sans-serif",
+    "pingfang": "'PingFang SC', 苹方, sans-serif", "simsun": "SimSun, 宋体, serif"}
+BODY_FONT_RE = re.compile(r'^\s*<div data-rd-body="1" style="(font-family:[^";<>]{1,300});(font-size:\d{1,2}px)"')
 FONT_SIZES = (12, 13, 14, 16, 18)
 TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
@@ -2182,6 +2190,15 @@ class Backend:
                 return json.load(f)
         return None
 
+    def body_font(self, body):
+        """The font the body is written in (the page wraps it in data-rd-body), else the one in Settings."""
+        mo = BODY_FONT_RE.match(body or "")
+        if mo:
+            return "%s;%s" % mo.groups()
+        p = self.prefs()
+        size = p.get("font_size") if p.get("font_size") in FONT_SIZES else 14
+        return "font-family:%s;font-size:%dpx" % (FONT_CSS.get(p.get("font"), FONT_CSS["system"]), size)
+
     def build(self, a):
         mode = a.get("mode") or "new"
         orig = None
@@ -2200,7 +2217,7 @@ class Backend:
         body, images = data_images(a.get("html") or "")
         sig = self.signature() if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
-                              bcc, atts, sig)
+                              bcc, atts, sig, font=self.body_font(body))
         if mode == "draft" and not orig and a.get("irt"):
             msg["In-Reply-To"] = a["irt"]
             msg["References"] = a.get("refs") or a["irt"]
@@ -2287,8 +2304,10 @@ class Backend:
                 fail("The draft is gone.")
             msg = R.to_msg(raw)
             self.demo_delete(a["id"])
+            bcc = R.hdr(msg, "Bcc").strip()
             del msg["Bcc"]
-            self.demo_insert(R.CFG.folders["sent"], msg.as_bytes(policy=R.OUT_POLICY), int(time.time()), 1, 0)
+            sent = R.sent_copy(msg.as_bytes(policy=R.OUT_POLICY), bcc)     # Sent keeps who was Bcc'd
+            self.demo_insert(R.CFG.folders["sent"], sent, int(time.time()), 1, 0)
             fwd = R.forward_source(msg)
             irt = R.hdr(msg, "In-Reply-To").strip()
             if fwd:

@@ -284,5 +284,119 @@ class EncodedWords(unittest.TestCase):
         self.assertIn(b"In-Reply-To: " + mid.encode(), raw)
 
 
+class SendWorld:
+    """Stands in for the mail server around R.send_draft: the drafts it holds, what SMTP was handed,
+    what was put in Sent. No network."""
+    def __init__(self, test, drafts=None):
+        import contextlib, time as _time, types
+        self.drafts = dict(drafts or {})            # uid -> raw
+        self.smtp, self.appended, self.deleted, self.server_sent = [], [], [], set()
+        self.files_sent = True                      # the server files SMTP mail in Sent by itself
+        self.fail_open = self.fail_login = self.fail_data = self.fail_fetch = None
+        self.logins = 0
+        self.during = None                          # runs while SMTP is taking the mail
+        world = self
+
+        class Imap:
+            def append(self, folder, flags, when, raw):
+                world.appended.append((folder, raw))
+                return "OK", [b"[APPENDUID 1 9] done"]
+
+            def logout(self):
+                pass
+
+        class Smtp:
+            def login(self, user, pw):
+                world.logins += 1
+                if world.fail_login:
+                    raise world.fail_login
+
+            def sendmail(self, frm, rcpts, out):
+                if world.during:
+                    world.during()
+                if world.fail_data:
+                    raise world.fail_data
+                world.smtp.append((rcpts, out))
+                if world.files_sent:
+                    world.server_sent.add(R.hdr(msg_of(out), "Message-ID").strip())
+                return {}
+
+            def quit(self):
+                pass
+
+            def close(self):
+                pass
+
+        @contextlib.contextmanager
+        def session():
+            yield Imap()
+
+        def fetch_raw(m, folder, uid):
+            if world.fail_fetch:
+                raise world.fail_fetch
+            if uid not in world.drafts:
+                R.die("no mail %s (moved or deleted? run search again)" % R.make_id(folder, uid))
+            return world.drafts[uid]
+
+        def smtp_open(host, port, timeout):
+            if world.fail_open:
+                raise world.fail_open
+            return Smtp()
+        quick = types.SimpleNamespace(**{k: getattr(_time, k) for k in dir(_time) if not k.startswith("_")})
+        quick.sleep = lambda s: None
+        for name, value in (("session", session), ("fetch_raw", fetch_raw), ("smtp_open", smtp_open),
+                            ("in_folder", lambda m, folder, mid, last=15: mid in world.server_sent),
+                            ("password", lambda: "pw"), ("delete_uid", lambda m, f, u: world.deleted.append(u)),
+                            ("mark_original", lambda m, msg: None), ("time", quick)):
+            test.patch(R, name, value)
+
+
+class ComposeDetails(DemoBackend):
+    """#20: subject prefixes, the signature's font, a record of Bcc in Sent."""
+    def test_subject_prefixes(self):
+        for s in ("RE：报价", "Re: x", "回复：报价", "答复: 报价", "回复 : x", "AW: x"):
+            self.assertEqual(R.reply_subject(s), s)
+        for s in ("转发: x", "转发：x", "FW：x", "Fwd: x", "WG: x"):
+            self.assertEqual(R.forward_subject(s), s)
+        self.assertEqual(R.reply_subject("报价"), "Re: 报价")
+        self.assertEqual(R.reply_subject("转发: x"), "Re: 转发: x")
+        self.assertEqual(R.forward_subject("回复：报价"), "Fw: 回复：报价")
+        self.assertTrue(R.is_forward_subject("转发：x"))
+
+    def test_signature_has_the_body_font(self):
+        body = '<div data-rd-body="1" style="font-family:Arial, Helvetica, sans-serif;font-size:16px">Hi</div>'
+        html = self.b.build(compose(self.b, html=body)).get_body(("html",)).get_content()
+        self.assertIn('<div data-rd-sig="1" style="font-family:Arial, Helvetica, sans-serif;font-size:16px">', html)
+        self.assertLess(html.index("data-rd-body"), html.index("data-rd-sig"))
+
+    def test_signature_font_from_settings_when_the_body_has_none(self):
+        self.b.api_prefs({"font": "times", "font_size": 18})
+        html = self.b.build(compose(self.b, html="")).get_body(("html",)).get_content()
+        self.assertIn("data-rd-sig=\"1\" style=\"font-family:'Times New Roman', Times, serif;font-size:18px\"", html)
+        html = self.b.build(compose(self.b, use_signature=False)).get_body(("html",)).get_content()
+        self.assertNotIn("data-rd-sig", html)
+
+    def test_bcc_is_kept_in_sent_never_sent(self):
+        own_cfg(self)
+        draft = R.build_message("<div>x</div>", [("", "to@x.com")], [], "s", bcc=[("Boss", "boss@x.com")])
+        w = SendWorld(self, {7: draft.as_bytes(policy=R.OUT_POLICY)})
+        w.files_sent = False                        # we put the copy in Sent ourselves
+        r = R.send_draft(R.CFG.folders["drafts"], 7)
+        self.assertEqual(r["copy_in_sent"], "added by ragdoll")
+        rcpts, out = w.smtp[0]
+        self.assertEqual(rcpts, ["to@x.com", "boss@x.com"])
+        self.assertNotIn(b"boss@x.com", out)       # the mail that went out does not say who was Bcc'd
+        self.assertEqual(R.hdr(msg_of(w.appended[0][1]), "Bcc"), "Boss <boss@x.com>")
+        with open(R.sent_log(), encoding="utf-8") as f:
+            self.assertTrue(f.read().rstrip("\n").endswith("\tBoss <boss@x.com>"))
+        self.assertTrue(R.already_sent(R.hdr(draft, "Message-ID")))
+
+    def test_demo_sent_copy_keeps_bcc(self):
+        _, out = self.b.call("prepare_send", compose(self.b, bcc=[{"name": "", "addr": "boss@x.com"}]))
+        self.b.send_now({"id": out["data"]["id"]})
+        r = self.b.q("select folder, uid from msgs where folder=? order by uid desc limit 1", (R.CFG.folders["sent"],))[0]
+        self.assertEqual(R.hdr(msg_of(self.b.demo_raw[(r["folder"], r["uid"])]), "Bcc"), "boss@x.com")
+
+
 if __name__ == "__main__":
     unittest.main()

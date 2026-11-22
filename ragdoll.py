@@ -1110,7 +1110,7 @@ FWD_HEADER = "X-Forwarded-Message-Id"     # as Thunderbird does; Exmail keeps no
 
 
 def is_forward_subject(s):
-    return bool(re.match(r"(?i)\s*(fw|fwd|转发)\s*[:：]", s or ""))
+    return bool(FWD_PREFIX_RE.match(s or ""))
 
 
 def forward_source(msg):
@@ -2083,13 +2083,18 @@ def clean_recipients(to, cc, drop):
     return out_to, out_cc
 
 
+# a reply or forward prefix as mail apps write it, with an ASCII or a full-width colon (RE：, 回复：)
+REPLY_PREFIX_RE = re.compile(r"(?i)\s*(re|aw|回复|答复|回覆|答覆|trả lời)\s*[:：]")
+FWD_PREFIX_RE = re.compile(r"(?i)\s*(fw|fwd|wg|tr|转发|轉寄|轉發|chuyển tiếp)\s*[:：]")
+
+
 def reply_subject(s):
-    """Re: + the full original subject; only an existing Re: is not doubled."""
-    return s if re.match(r"(?i)\s*re\s*:", s) else "Re: " + s
+    """Re: + the full original subject; only an existing reply prefix is not doubled."""
+    return s if REPLY_PREFIX_RE.match(s or "") else "Re: " + (s or "")
 
 
 def forward_subject(s):
-    return s if re.match(r"(?i)\s*(fw|fwd)\s*:", s) else "Fw: " + s
+    return s if FWD_PREFIX_RE.match(s or "") else "Fw: " + (s or "")
 
 
 def text_to_html(t):
@@ -2097,8 +2102,11 @@ def text_to_html(t):
 
 
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False):
-    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'."""
+                  signature_html="", high=False, font=""):
+    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
+    (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times."""
+    if font and signature_html.strip():
+        signature_html = '<div data-rd-sig="1" style="%s">%s</div>' % (re.sub(r'["<>&\\]', "", font), signature_html)
     html = body_html + "<div><br></div>" + signature_html
     if orig is not None:
         html += "<div><br></div>" + quote_block(orig)
@@ -2429,11 +2437,22 @@ def already_sent(mid):
     return None
 
 
-def log_sent(mid, subject):
+def log_sent(mid, subject, bcc=""):
+    """One line per mail sent: Message-ID, when, subject, and who was Bcc'd (the mail itself no longer says)."""
     os.makedirs(CFG.home, exist_ok=True)
     with open(sent_log(), "a", encoding="utf-8") as f:
-        f.write("%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
-                                  re.sub(r"\s+", " ", subject)[:200]))
+        f.write("%s\t%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
+                                      re.sub(r"\s+", " ", subject)[:200], re.sub(r"\s+", " ", bcc or "")))
+
+
+def sent_copy(out, bcc):
+    """The copy for Sent: the mail as it went out, plus its Bcc line, as other mail apps keep it.
+    Only this copy has it; the mail sent over SMTP never does."""
+    if not bcc:
+        return out
+    copy = to_msg(out)
+    copy["Bcc"] = one_line(bcc)
+    return copy.as_bytes(policy=OUT_POLICY)
 
 
 def cmd_send(a):
@@ -2518,10 +2537,12 @@ def send_draft(folder, uid, wait=3):
     rcpts = [x for _, x in addrs(hdr(msg, "To")) + addrs(hdr(msg, "Cc")) + addrs(hdr(msg, "Bcc"))]
     if not rcpts:
         die("the draft has no recipients")
+    bcc = hdr(msg, "Bcc").strip()
     del msg["Bcc"]
     del msg["Date"]
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
-    out = msg.as_bytes(policy=OUT_POLICY)
+    out = msg.as_bytes(policy=OUT_POLICY)        # what goes out: never a Bcc line
+    keep = sent_copy(out, bcc)
     s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
     try:
         s.login(CFG.user, password())
@@ -2531,7 +2552,7 @@ def send_draft(folder, uid, wait=3):
             s.quit()
         except Exception:
             pass
-    log_sent(mid, hdr(msg, "Subject"))           # from here on a retry refuses instead of sending twice
+    log_sent(mid, hdr(msg, "Subject"), bcc)      # from here on a retry refuses instead of sending twice
     saved, cleanup = False, []
     try:
         # a fresh connection: the first one may have timed out during a long upload
@@ -2542,7 +2563,7 @@ def send_draft(folder, uid, wait=3):
                     saved = True
                     break
             if not saved:
-                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), out)
+                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), keep)
                 if typ == "OK":
                     pass
                 elif b"saved by smtp" in b" ".join(x for x in data if isinstance(x, bytes)).lower():

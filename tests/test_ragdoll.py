@@ -46,7 +46,7 @@ class Basics(unittest.TestCase):
 
     def test_subjects(self):
         self.assertEqual(ragdoll.reply_subject("Order"), "Re: Order")
-        self.assertEqual(ragdoll.reply_subject("回复： Order"), "Re: 回复： Order")
+        self.assertEqual(ragdoll.reply_subject("回复： Order"), "回复： Order")     # its own reply prefix
         self.assertEqual(ragdoll.reply_subject("RE: Order"), "RE: Order")
         self.assertEqual(ragdoll.forward_subject("Re: Order"), "Fw: Re: Order")
 
@@ -82,7 +82,7 @@ class Drafts(unittest.TestCase):
         m = self.build()
         self.assertEqual(m["In-Reply-To"], "<abc@cust.vn>")
         self.assertIn("<root@cust.vn>", m["References"])
-        self.assertEqual(str(m["Subject"]), "Re: 回复： PO-1234")
+        self.assertEqual(str(m["Subject"]), "回复： PO-1234")      # its own reply prefix is not doubled
         html = m.get_body(("html",)).get_content()
         self.assertLess(html.find("+1 555 0100"), html.find("发件人"))
         self.assertIn("cid:logo1", html)
