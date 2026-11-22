@@ -783,6 +783,9 @@ class Backend:
         self.demo = demo
         self.demo_set = DEMO_SETS[demo_lang if demo_lang in DEMO_SETS else "en"]
         self.lock = threading.RLock()           # the action IMAP connection
+        self.dlock = threading.RLock()          # the download connection: big mails and files (#55)
+        self.dm = None
+        self.dm_used = 0
         self.dblock = threading.RLock()         # the request db connection
         self.m = None
         self.m_used = 0
@@ -910,6 +913,34 @@ class Backend:
             with contextlib.suppress(Exception):
                 m.logout()
 
+    DOWNLOAD_IDLE = 120     # seconds the download connection stays open with nothing to fetch
+
+    def download(self, fn):
+        """Run fn(m) on a second kept connection, for a big mail or file. That may take minutes, and
+        opening other mail, marks and moves go on meanwhile on the first one (#55)."""
+        if self.demo:
+            fail("not in the demo")
+        with self.dlock:
+            for attempt in (0, 1):
+                try:
+                    if self.dm is not None and not still_there(self.dm, self.dm_used, 90):
+                        self.drop_download()
+                    if self.dm is None:
+                        self.dm = R.imap()
+                        with contextlib.suppress(Exception):
+                            self.dm.sock.settimeout(90)
+                    r = fn(self.dm)
+                    self.dm_used = time.time()
+                    return r
+                except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout, BrokenPipeError):
+                    self.drop_download()
+                    if attempt:
+                        raise
+
+    def drop_download(self):
+        m, self.dm = self.dm, None
+        R.quit_imap(m, quick=True)
+
     def bump(self):
         self.rev += 1
 
@@ -960,7 +991,9 @@ class Backend:
                 time.sleep(0.05)
             raw = R.cache_get(path)
             if not raw:
-                raw = self.imap(lambda m: R.fetch_raw(m, folder, uid))
+                # a big one may take minutes: on its own connection, so other mail opens meanwhile
+                go = self.download if (r["size"] or 0) > R.LIGHT_MIN else self.imap
+                raw = go(lambda m: R.fetch_raw(m, folder, uid))
                 R.cache_put(path, raw)
         finally:
             self.fg -= 1
@@ -1179,13 +1212,18 @@ class Backend:
             self.pass_cut = True
             print("a sync pass took over %d s: its connection was cut" % self.SYNC_STUCK, file=sys.stderr)
             cut(self.sync_m)
+        if self.dm is not None and time.time() - self.dm_used > self.DOWNLOAD_IDLE and self.dlock.acquire(blocking=False):
+            try:
+                self.drop_download()            # nothing to download for a while: let it go
+            finally:
+                self.dlock.release()
 
     def woke(self):
         """The computer woke (or the app was stopped a long while): every kept connection is dead.
         Cut them all, so nobody waits out a timeout on one, and look for new mail now (#56)."""
         self.woke_at = time.time()
         print("woke from sleep: connecting again", file=sys.stderr)
-        for m in (self.m, self.sync_m, self.pre_m):
+        for m in (self.m, self.dm, self.sync_m, self.pre_m):
             cut(m)
         self.wake.set()
 
@@ -1259,6 +1297,8 @@ class Backend:
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
         m, self.sync_m = self.sync_m, None
         R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
 
     def look(self):
         """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
@@ -2014,7 +2054,7 @@ class Backend:
         path = R.part_path(r["folder"], r["uidv"], r["uid"], sec)
         raw = R.cache_get(path)
         if not raw:
-            raw = self.imap(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
+            raw = self.download(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
             R.cache_put(path, raw)
         return R.to_msg(raw)
 
@@ -2715,7 +2755,7 @@ class Backend:
         self.sched_wake.set()
         self.pre_wake.set()
         self.drop()
-        for m in (self.sync_m, self.pre_m):
+        for m in (self.dm, self.sync_m, self.pre_m):
             cut(m)
 
 

@@ -474,7 +474,7 @@ class OwnBackend(unittest.TestCase):
                 raise e
             b.m = self.server
             return fn(self.server)
-        b.imap = imap
+        b.imap = b.download = imap
 
     def hold_queue(self):
         self.b.flag_q, self.b.flag_thread = FakeQueue(), Busy

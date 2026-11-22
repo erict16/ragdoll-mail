@@ -4,7 +4,7 @@ import contextlib, imaplib, io, json, os, socket, sys, threading, time, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll_app as A  # noqa: E402
-from test_app import FakeServer, OwnBackend  # noqa: E402
+from test_app import LIGHT, PART, FakeServer, OwnBackend  # noqa: E402
 
 R = A.R
 
@@ -255,6 +255,68 @@ class Wake(OwnBackend):
         b.sync_loop()
         self.assertTrue(fresh.listed)
         self.assertIsNone(b.sync["error"])
+
+
+class Downloads(OwnBackend):
+    """#55: a big file downloads on its own connection; other mail and marks do not wait for it."""
+
+    def setUp(self):
+        super().setUp()
+        self.b.demo = False
+        self.made = []
+
+        def imap():
+            m = Works()
+            self.made.append(m)
+            return m
+        self.patch(A.R, "imap", imap)
+        self.down = __import__("tempfile").mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.down, True)
+        self.patch(A, "downloads_dir", lambda: self.down)
+
+    def test_a_mark_goes_through_while_a_file_downloads(self):
+        b, going, release = self.b, threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def fetch_part_raw(m, folder, uid, sec):
+            going.set()
+            release.wait(5)
+            return PART
+        self.patch(A.R, "fetch_part_raw", fetch_part_raw)
+        b.view = lambda i: (LIGHT, True)
+        i = self.ids(seen=1)[0]
+        out = {}
+        t = threading.Thread(target=lambda: out.update(b.api_attachment({"id": i, "i": 0, "action": "save"})))
+        t.start()
+        self.assertTrue(going.wait(5))
+        started = time.time()
+        b.set_flag([self.ids()[0]], "seen", True)          # waits for the server to have it
+        self.assertLess(time.time() - started, 2)
+        self.assertEqual(len(self.made), 2)                  # one connection each
+        self.assertIsNot(b.m, b.dm)
+        release.set()
+        t.join(5)
+        self.assertEqual(out["name"], "big.pdf")
+
+    def test_big_whole_mail_downloads_aside_small_one_on_the_main_connection(self):
+        b, used = self.b, []
+        b.imap = lambda fn: used.append("main") or fn(Works())
+        b.download = lambda fn: used.append("download") or fn(Works())
+        self.patch(A.R, "fetch_raw", lambda m, f, u: b"Subject: x\r\n\r\nhi")
+        small, big = self.ids()[:2]
+        b.exec("update msgs set size=? where folder=? and uid=?", (R.LIGHT_MIN + 1, *R.parse_id(big)))
+        b.exec("update msgs set size=? where folder=? and uid=?", (1000, *R.parse_id(small)))
+        b.raw(small)
+        b.raw(big)
+        self.assertEqual(used, ["main", "download"])
+
+    def test_idle_download_connection_is_let_go(self):
+        b = self.b
+        b.download(lambda m: None)
+        self.assertIsNotNone(b.dm)
+        b.dm_used = time.time() - b.DOWNLOAD_IDLE - 1
+        b.watch_tick()
+        self.assertIsNone(b.dm)
 
 
 if __name__ == "__main__":
