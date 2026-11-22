@@ -1929,14 +1929,16 @@ def quote_block(orig):
     f = addrs(hdr(orig, "From"))
     fn, fa = f[0] if f else ("", "")
 
+    esc = htmlmod.escape        # every name, address and subject here comes from the sender
+
     def people(v):
-        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (htmlmod.escape(n or a_), a_) for n, a_ in addrs(v))
+        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
     cc = people(hdr(orig, "Cc"))
     head = ('<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
             '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
             '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
-            % (htmlmod.escape(fn or fa), fa, t.year, t.month, t.day, WEEK[t.weekday()],
-               t.strftime("%H:%M"), htmlmod.escape(hdr(orig, "Subject")), people(hdr(orig, "To")),
+            % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
+               t.strftime("%H:%M"), esc(hdr(orig, "Subject")), people(hdr(orig, "To")),
                "<div>抄送：%s</div>" % cc if cc else ""))
     return head + ('<blockquote style="margin:0 0 0 4px;padding-left:8px;border-left:2px solid #d0d3d6">'
                    + html + "</blockquote>")
