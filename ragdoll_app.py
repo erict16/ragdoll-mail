@@ -275,14 +275,12 @@ def has_remote(html):
                           r"\sbackground\s*=\s*[\"']?\s*https?:", html))
 
 
-def file_parts(msg):
-    """The mail's files (not the images shown in the body), in a fixed order."""
-    out = []
-    for p in R.attachments(msg, inline=True):
-        if R.is_inline(p):
-            continue
-        out.append(p)
-    return out
+def file_parts(msg, light=False):
+    """The mail's files, in a fixed order: not the pictures its text shows (R.is_inline with the body's
+    cid: links), whatever their disposition. In a light mail, a picture too big to come with it
+    (R.SHOWN_MAX) cannot show, so it is a file to open."""
+    refs = R.body_refs(msg)
+    return [p for p in R.attachments(msg, inline=True) if not R.is_inline(p, refs) or left_out(p, light)]
 
 
 def left_out(p, light):
@@ -1529,7 +1527,7 @@ class Backend:
         out = {"id": i, "from": person(n, ad), "to": people_json(R.hdr(msg, "To")),
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
-               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
+               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg, light))],
                "big": R.big_attachment_lines(R.html_to_text(html) or plain),
                "unsub": list_unsub(msg), "invite": invite_of(msg)}
         return out
@@ -1945,7 +1943,7 @@ class Backend:
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
         raw, light = self.view(i)
-        return file_parts(R.to_msg(raw)), light
+        return file_parts(R.to_msg(raw), light), light
 
     def whole_part(self, i, p, light):
         """The file with its data. A big one the light mail left on the server is fetched by itself,

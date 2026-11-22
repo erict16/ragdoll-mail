@@ -398,5 +398,85 @@ class ComposeDetails(DemoBackend):
         self.assertEqual(R.hdr(msg_of(self.b.demo_raw[(r["folder"], r["uid"])]), "Bcc"), "boss@x.com")
 
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 40
+JPG = b"\xff\xd8\xff\xe0" + b"\0" * 40
+
+
+def outlook_mail(octet=False):
+    """Outlook / Foxmail style: the pictures the text shows are marked as attachments; a real photo
+    also has a Content-ID (Outlook gives every file one) but the text does not show it.
+    octet: QQ Mail style, the pictures as application/octet-stream."""
+    m = email.message.EmailMessage()
+    m["From"] = "Linh <linh@cust.vn>"
+    m["To"] = "me@example.com"
+    m["Subject"] = "Drawing"
+    m["Message-ID"] = "<outlook-%d@cust.vn>" % octet
+    m["Date"] = "Mon, 16 Nov 2026 08:10:47 +0800"
+    m.set_content("see below")
+    m.add_alternative('<p>See:</p><img src="cid:image001.png@01DA1234"><p>Logo</p>'
+                      '<img src="cid:image002.jpg@01DA1234">', subtype="html")
+    html = m.get_body(("html",))
+    for cid, name, data in (("image001.png@01DA1234", "image001.png", PNG), ("image002.jpg@01DA1234", "image002.jpg", JPG)):
+        mt, st = ("application", "octet-stream") if octet else ("image", name.endswith("png") and "png" or "jpeg")
+        html.add_related(data, mt, st, cid="<%s>" % cid, filename=name, disposition="attachment")
+    m.add_attachment(JPG, "image", "jpeg", filename="site photo.jpg", cid="<photo@01DA1234>")
+    m.add_attachment(b"%PDF-1.4", "application", "pdf", filename="drawing.pdf", cid="<pdf@01DA1234>")
+    return m.as_bytes(policy=R.OUT_POLICY)
+
+
+class PicturesInTheText(DemoBackend):
+    """#71 and #16: pictures the text shows by cid:, marked as attachments, are not files; in a reply or
+    forward they come along as pictures, not as files."""
+    def names(self, msg):
+        return [R.fname(p) for p in A.file_parts(msg)]
+
+    def test_outlook_and_qq_pictures_are_not_files(self):
+        for octet in (False, True):
+            msg = msg_of(outlook_mail(octet))
+            self.assertEqual(self.names(msg), ["site photo.jpg", "drawing.pdf"], octet)
+            self.assertEqual([R.fname(p) for p in R.attachments(msg)], ["site photo.jpg", "drawing.pdf"])
+            i = self.add_mail(outlook_mail(octet))
+            m = self.b.build_message(i)
+            self.assertEqual([x["name"] for x in m["atts"]], ["site photo.jpg", "drawing.pdf"])
+            self.assertEqual(m["html"].count("data:image/"), 2)        # both show in the text
+
+    def test_an_inline_picture_the_text_does_not_show_is_a_file(self):
+        m = msg_of(b"From: a@b.c\r\nSubject: s\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=B\r\n\r\n"
+                   b"--B\r\nContent-Type: text/html\r\n\r\n<p>no picture</p>\r\n--B\r\nContent-Type: image/png\r\n"
+                   b"Content-ID: <x@y>\r\nContent-Disposition: inline; filename=x.png\r\n\r\nPNG\r\n--B--\r\n")
+        self.assertEqual(self.names(m), ["x.png"])
+
+    def test_reply_and_forward_carry_the_pictures(self):
+        for octet in (False, True):
+            i = self.add_mail(outlook_mail(octet))
+            for mode in ("reply", "forward"):
+                c = self.b.api_compose({"mode": mode, "id": i})
+                self.assertEqual(c["quote"].count("data:image/"), 2)
+                msg = self.b.build(compose(self.b, mode=mode, orig=i, atts=c["atts"]))
+                files = [p.get_filename() for p in msg.iter_attachments()]
+                self.assertEqual(files, [] if mode == "reply" else ["site photo.jpg", "drawing.pdf"], (mode, octet))
+                related = {p["Content-ID"].strip("<>") for p in msg.walk() if p["Content-ID"]}
+                self.assertEqual(related, {"image001.png@01DA1234", "image002.jpg@01DA1234"})
+                self.assertEqual(A.app_problems(msg, mode == "reply"), [])
+
+    def test_light_mail_pictures(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_ragdoll as T
+        m = T.BigMailServer()
+        light = msg_of(R.fetch_light(m, "INBOX", 7))
+        self.assertEqual([R.fname(p) for p in A.file_parts(light, True)], ["big.pdf"])
+        # QQ style: the picture as a nameless octet-stream, too big to come with the light mail
+        parts = dict(T.BIG_PARTS, **{"2.MIME": b"Content-Type: application/octet-stream\r\nContent-ID: <pic1@x>\r\n"
+                                     b"Content-Disposition: attachment\r\nContent-Transfer-Encoding: base64\r\n\r\n"})
+        big = T.BIG_STRUCTURE.replace(b'"IMAGE" "PNG" ("NAME" "p.png")', b'"APPLICATION" "OCTET-STREAM" NIL').replace(
+            b"300000", b"%d" % (R.SHOWN_MAX + 10))
+        light = msg_of(R.fetch_light(T.BigMailServer(structure=big, parts=parts), "INBOX", 7))
+        pic = light.get_payload()[1]
+        self.assertEqual(pic["X-Ragdoll-Part"], "2")
+        self.assertTrue(R.is_inline(pic, R.body_refs(light)))         # the text shows it
+        self.assertEqual(len(A.file_parts(light, True)), 2)           # but it could not come along: open it as a file
+        self.assertEqual(len(A.file_parts(light, False)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

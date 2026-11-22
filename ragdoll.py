@@ -1067,14 +1067,29 @@ def image_type(p):
     return next((t for magic, t in IMAGE_MAGIC if head.startswith(magic)), "")
 
 
-def is_inline(p):
-    """An image shown in the body (cid:), not a file: a PDF with a Content-ID is still a file."""
-    return (bool(p.get("Content-ID")) and p.get_content_disposition() != "attachment"
-            and bool(image_type(p)))
+def is_inline(p, refs=None):
+    """A picture shown in the mail's text, not a file. refs: the Content-IDs the HTML body shows
+    (body_refs). Then a part is such a picture when its Content-ID is one of them and it is an image
+    (by its type, its name or its bytes, or a nameless octet-stream a light mail left on the server),
+    whatever its disposition: Outlook, Foxmail and QQ Mail mark these pictures as attachments. An image
+    the body does not show is a file. A PDF with a Content-ID is always a file.
+    Without refs: an image with a Content-ID that is not marked as an attachment."""
+    cid = (p.get("Content-ID") or "").strip().strip("<>")
+    if not cid:
+        return False
+    if refs is None:
+        return p.get_content_disposition() != "attachment" and bool(image_type(p))
+    return cid in refs and (bool(image_type(p)) or p.get_content_type() == "application/octet-stream")
+
+
+def body_refs(msg):
+    """The Content-IDs the mail's HTML body shows."""
+    return cid_refs(bodies(msg)[1])
 
 
 def attachments(msg, inline=False):
     out = []
+    refs = body_refs(msg)
     for p in leaf_parts(msg):
         if p is msg and (msg.is_multipart() or not (
                 p.get_content_disposition() == "attachment" or p.get_filename()
@@ -1082,8 +1097,8 @@ def attachments(msg, inline=False):
             continue     # a mail that is only a file (a scanner's PDF) still shows that file
         is_file = (p.get_content_disposition() == "attachment" or p.get_filename()
                    or p.get_content_type() == "message/rfc822"
-                   or (p.get("Content-ID") and not is_inline(p)))
-        if is_file and (inline or not is_inline(p)):
+                   or (p.get("Content-ID") and not is_inline(p, refs)))
+        if is_file and (inline or not is_inline(p, refs)):
             out.append(p)
     return out
 
@@ -1874,7 +1889,7 @@ def cmd_read(a):
     plain, html = bodies(msg)
     text = plain.strip() or html_to_text(html)
     atts = [{"name": fname(p) or "(no name)", "kb": len(part_bytes(p)) // 1024,
-             "inline": is_inline(p)} for p in attachments(msg, inline=True)]
+             "inline": is_inline(p, body_refs(msg))} for p in attachments(msg, inline=True)]
     atts = [x for x in atts if not (x["inline"] and INLINE_ID.match(x["name"]))]
     if a.html:
         with open(a.html, "w", encoding="utf-8") as f:
@@ -2142,7 +2157,7 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
-            if cid in used and cid not in done and is_inline(p):
+            if cid in used and cid not in done and is_inline(p, used):
                 mt, st = image_type(p).split("/", 1)
                 add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
                 done.add(cid)
