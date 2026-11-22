@@ -644,5 +644,34 @@ class OlderFlags(unittest.TestCase):
         self.assertFalse([c for c in srv.calls if c[0] == "FETCH" and "CHANGEDSINCE" in c[2]])
 
 
+class OtherSync(OwnBackend):
+    """#53: while another process holds the index, the app does not say it synced."""
+
+    def one_pass(self):
+        b = self.b
+        b.stopping.clear()
+        b.start_bodies = lambda: b.stopping.set()
+        b.wake.set()
+        b.sync_loop()
+
+    def test_busy_lock_is_not_a_sync(self):
+        b = self.b
+        self.patch(A.R, "imap", Works)
+        b.sync_pass = lambda m, c: None
+        with R.file_lock("headers", wait=False) as got:
+            self.assertTrue(got)
+            self.one_pass()
+            self.assertIsNone(b.sync["last"])
+            self.assertIsNone(b.sync["error"])
+            b.lock_busy = time.time() - b.LOCK_WARN - 1          # held for minutes
+            self.one_pass()
+            self.assertEqual(b.sync["error"], A.BUSY_MSG)
+            self.assertIsNone(b.sync["last"])
+        self.one_pass()                                         # free again: a real sync
+        self.assertIsNone(b.sync["error"])
+        self.assertIsNotNone(b.sync["last"])
+        self.assertIsNone(b.lock_busy)
+
+
 if __name__ == "__main__":
     unittest.main()

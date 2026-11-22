@@ -141,6 +141,8 @@ def cut(m):
             sock.shutdown(socket.SHUT_RDWR)
 
 
+BUSY_MSG = "Waiting for another sync to finish. New mail comes in when it is done."
+
 IDLE_CHECK = 60     # seconds a kept connection may sit unused before it is asked whether it is still there
 
 
@@ -791,6 +793,7 @@ class Backend:
         self.m_used = 0
         self.rev = 1
         self.sync = {"running": False, "error": None, "last": None}
+        self.lock_busy = None                   # since when another process has held the headers lock
         self.sync_m = None                      # the sync's own connection
         self.pre_m = None                       # the head start's own connection
         self.pass_at = None                     # when the sync pass under way began (time.monotonic)
@@ -1273,11 +1276,16 @@ class Backend:
         if full:
             self.extra_at = time.time()
 
+    LOCK_RETRY = 10     # seconds before the sync tries again while another process syncs
+    LOCK_WARN = 180     # seconds of that before the page is told
+
     def sync_loop(self):
         c = None
+        wait = 0
         while not self.stopping.is_set():
-            self.wake.wait(60)
+            self.wake.wait(wait or 60)
             self.wake.clear()
+            wait = 0
             if self.stopping.is_set():
                 break
             if not configured():
@@ -1307,8 +1315,18 @@ class Backend:
                                     raise
                         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
                         c.commit()
-                self.sync["error"] = None
-                self.sync["last"] = int(time.time())
+                if got:
+                    self.lock_busy = None
+                    self.sync["error"] = None
+                    self.sync["last"] = int(time.time())
+                else:
+                    # the ragdoll command (or one that hangs) has the index: nothing was synced, so
+                    # nothing says it was; ask again soon, and say so when it lasts (#53)
+                    now = time.time()
+                    self.lock_busy = self.lock_busy or now
+                    if now - self.lock_busy > self.LOCK_WARN:
+                        self.sync["error"] = BUSY_MSG
+                    wait = self.LOCK_RETRY
                 self.start_bodies()
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
                 self.sync["error"] = friendly(e)

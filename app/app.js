@@ -62,6 +62,10 @@ const MSGS = [
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
 ];
+// 0.11 group D_SYNC: sync, connection, sign-in and settings messages
+MSGS.push(
+  [/^Waiting for another sync to finish\./, "err_busy"],
+);
 function tr(msg) {
   msg = String(msg ?? "");
   for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1)); }

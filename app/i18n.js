@@ -767,20 +767,28 @@ for (const [k, v] of Object.entries(MORE_C2_READ)) Object.assign(LANGS[k], v);
 // 0.11 group D_SYNC: new strings for this group only
 const MORE_D_SYNC = {
   "en": {
+    err_busy: "Waiting for another sync to finish. New mail comes in when it is done.",
   },
   "zh-Hans": {
+    err_busy: "正在等另一个同步完成。完成后新邮件就会进来。",
   },
   "zh-Hant": {
+    err_busy: "正在等另一個同步完成。完成後新郵件就會進來。",
   },
   "ja": {
+    err_busy: "別の同期が終わるのを待っています。終わると新しいメールが届きます。",
   },
   "ko": {
+    err_busy: "다른 동기화가 끝나기를 기다리는 중입니다. 끝나면 새 메일이 들어옵니다.",
   },
   "es": {
+    err_busy: "Esperando a que termine otra sincronización. El correo nuevo llegará cuando acabe.",
   },
   "fr": {
+    err_busy: "En attente de la fin d'une autre synchronisation. Les nouveaux e-mails arriveront ensuite.",
   },
   "de": {
+    err_busy: "Warten, bis eine andere Synchronisierung fertig ist. Danach kommen neue Mails an.",
   },
 };
 for (const [k, v] of Object.entries(MORE_D_SYNC)) Object.assign(LANGS[k], v);
