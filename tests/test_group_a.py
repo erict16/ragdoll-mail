@@ -142,3 +142,35 @@ class Keys(unittest.TestCase):
         block = body[body.index("if (S.compose) {"):]
         block = block[:block.index("\n  }\n")]
         self.assertTrue(block.rstrip().endswith("return;"), block)
+
+
+class SendFlow(unittest.TestCase):
+    """The page's send and save rules (#4, #5, #8), read from app.js."""
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+            cls.src = f.read()
+
+    def fn(self, name):
+        s = self.src[self.src.index(name):]
+        return s[:s.index("\n}\n")]
+
+    def test_busy_before_the_first_wait(self):
+        f = self.fn("async function sendCompose(")
+        self.assertLess(f.index("lockCompose(c, true)"), f.index("await saving"))
+        self.assertIn("if (!c || c.busy) return;", self.fn("async function discardCompose("))
+        self.assertIn("if (!S.compose.busy) saveDraft()", self.src)
+        self.assertIn("if (!c || c.busy) return;", self.fn("function saveDraft("))
+
+    def test_words_typed_during_a_save_stay_unsaved(self):
+        f = self.fn("function saveDraft(")
+        self.assertIn("const edits = c.edits;", f)
+        self.assertIn("if (c.edits === edits) c.dirty = false;", f)
+        self.assertIn("c.edits = (c.edits || 0) + 1;", self.fn("function touched("))
+
+    def test_no_close_while_uploading(self):
+        self.assertIn('if (c.atts.some((a) => a.uploading)) { toast(t("att_wait")', self.fn("async function leaveCompose("))
+        self.assertIn("if (S.compose === c) touched(c);", self.fn("async function uploadFiles("))
+
+    def test_a_sent_mail_leaves_an_open_compose_alone(self):
+        self.assertIn("if (S.thread && !S.compose) openThread(", self.fn("async function sendWithUndo("))

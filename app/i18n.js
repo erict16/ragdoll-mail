@@ -683,20 +683,28 @@ for (const [k, v] of Object.entries(MORE9)) Object.assign(LANGS[k], v);
 // 0.11 group A_COMPOSE: new strings for this group only
 const MORE_A_COMPOSE = {
   "en": {
+    att_wait: "An attachment is still uploading.",
   },
   "zh-Hans": {
+    att_wait: "附件还在上传。",
   },
   "zh-Hant": {
+    att_wait: "附件還在上傳。",
   },
   "ja": {
+    att_wait: "添付ファイルをアップロード中です。",
   },
   "ko": {
+    att_wait: "첨부 파일을 아직 올리는 중입니다.",
   },
   "es": {
+    att_wait: "Un archivo adjunto aún se está subiendo.",
   },
   "fr": {
+    att_wait: "Une pièce jointe est encore en cours d’envoi.",
   },
   "de": {
+    att_wait: "Ein Anhang wird noch hochgeladen.",
   },
 };
 for (const [k, v] of Object.entries(MORE_A_COMPOSE)) Object.assign(LANGS[k], v);

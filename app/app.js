@@ -1145,7 +1145,7 @@ function renderToolbar() {
       iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
-      iconBtn("trash-2", t("discard"), () => discardCompose()));
+      iconBtn("trash-2", t("discard"), () => discardCompose(), { disabled: !!S.compose.busy }));
     return;
   }
   if (S.sched) {
@@ -1887,13 +1887,21 @@ function linkSheet() {
   requestAnimationFrame(() => url.focus());
 }
 
-function touched() {
-  const c = S.compose;
+// a change to the compose: it counts edits, so a save knows whether more came in while it ran
+function touched(c = S.compose) {
   if (!c) return;
   c.dirty = true;
-  setStatus("");
+  c.edits = (c.edits || 0) + 1;
+  if (S.compose === c) setStatus("");
   clearTimeout(c.autosave);
-  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty) saveDraft(c).catch(() => {}); }, 15000);
+  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty && !c.busy) saveDraft(c, { auto: true }).catch(() => {}); }, 15000);
+}
+// while Send checks and saves the mail, the compose can't change under it
+function lockCompose(c, on) {
+  c.busy = on;
+  const box = $(".compose");
+  if (box && S.compose === c) box.inert = on;
+  renderToolbar();
 }
 function setStatus(s) {
   if (S.compose) S.compose.status = s;
@@ -2012,7 +2020,7 @@ async function uploadFiles(files) {
       const j = await r.json();
       if (!j.ok) throw new Error(tr(j.error) || t("error"));
       Object.assign(a, j.data, { uploading: false });
-      touched();
+      if (S.compose === c) touched(c); else c.dirty = true;
     } catch (e) {
       c.atts = c.atts.filter((x) => x !== a);
       fail(e);
@@ -2048,7 +2056,7 @@ function cleanHTML(html, opts = {}) {
   return K.sanitizeBody(doc.body, opts).innerHTML;
 }
 
-function composeState() {
+function composeState(opts = {}) {
   const c = S.compose;
   const ed = $(".compose .editor");
   if (ed) c.html = ed.innerHTML;
@@ -2072,15 +2080,18 @@ function wrapBody(html) {
 }
 
 let saving = Promise.resolve();
-function saveDraft(c = S.compose) {
+function saveDraft(c = S.compose, opts = {}) {
   const job = saving.then(async () => {
-    if (!c) return;
-    const st = S.compose === c ? composeState() : c.lastState;
+    if (!c || c.busy) return;         // Send has it: a second copy would stay in Drafts
+    const edits = c.edits;
+    const st = S.compose === c ? composeState(opts) : c.lastState;
     if (!st) return;
     if (S.compose === c) setStatus(t("saving"));
     try {
       const r = await api("save_draft", st);
-      c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
+      c.replace = r.id; c.lastState = { ...st, replace: r.id };
+      // words typed while it saved are not in this copy: they still need saving
+      if (c.edits === edits) c.dirty = false;
       if (S.compose === c) setStatus(t("saved"));
       refreshCounts();
     } catch (e) {
@@ -2098,6 +2109,8 @@ async function leaveCompose() {
   if (!c) return true;
   clearTimeout(c.autosave);
   if (c.busy) return false;
+  // a draft saved now would go without the file still uploading
+  if (c.atts.some((a) => a.uploading)) { toast(t("att_wait"), { id: "att-wait" }); return false; }
   if (c.dirty) {
     try { await saveDraft(c); toast(t("draft_saved")); }
     catch (e) { fail(e); return false; }
@@ -2117,8 +2130,9 @@ async function closeCompose() {
 
 async function discardCompose() {
   const c = S.compose;
-  if (!c) return;
+  if (!c || c.busy) return;           // Send is checking it: Discard waits for that to end
   clearTimeout(c.autosave);
+  c.busy = true;
   await saving;
   S.compose = null;
   if (c.replace) {
@@ -2132,19 +2146,20 @@ async function discardCompose() {
 async function sendCompose(force = false, at = null) {
   const c = S.compose;
   if (!c || c.busy) return;
+  if (c.atts.some((a) => a.uploading)) return toast(t("att_wait"), { id: "att-wait" });
   clearTimeout(c.autosave);
-  if (c.atts.some((a) => a.uploading)) return toast(t("uploading"));
+  // busy before the first wait: a second Send, Discard or Cmd+S in the meantime does nothing
+  lockCompose(c, true);
   await saving;
-  const st = composeState();
-  c.busy = true; renderToolbar();
+  const st = composeState({ commit: true });
   let r;
   try { r = await api("prepare_send", { ...st, force }); }
-  catch (e) { c.busy = false; renderToolbar(); return fail(e); }
-  c.busy = false;
+  catch (e) { lockCompose(c, false); return fail(e); }
   if (r.problems && r.problems.length) {
-    renderToolbar();
+    lockCompose(c, false);
     return problemsSheet(r.problems, at);
   }
+  c.busy = false;
   c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
   const reopen = async () => { if (S.compose && !(await leaveCompose())) return; S.compose = c; renderCompose(); };
   // out of the way while it waits
@@ -2180,7 +2195,7 @@ async function sendWithUndo(id, onUndo) {
     else toast(t("sent_ok"));
     refreshCounts();
     if (["sent", "drafts", "scheduled"].includes(S.folder)) loadList({ quiet: true });
-    if (S.thread) openThread(S.focus || S.sel);
+    if (S.thread && !S.compose) openThread(S.focus || S.sel);
   } catch (e) {
     tt.close();
     fail(e);
@@ -2570,7 +2585,7 @@ function onKey(e) {
   if (e.key === "Escape" && $("#app").classList.contains("side-open")) { e.preventDefault(); sideOpen(false); return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
-    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
+    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!S.compose.busy) saveDraft().catch(fail); return; }
     if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeCompose(); return; }
     // the mailbox's single keys (Backspace, R, J...) never act while a mail is being written, even when
     // focus fell to the page after a click on a button
