@@ -1747,7 +1747,8 @@ function renderCompose() {
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
     else if (k === "b" || k === "i" || k === "u") { e.preventDefault(); edCmd({ b: "bold", i: "italic", u: "underline" }[k]); }
-    else if (e.shiftKey && (k === "7" || k === "8")) { e.preventDefault(); edCmd(k === "7" ? "insertOrderedList" : "insertUnorderedList"); }
+    // with Shift held e.key is "&" or "*" on many layouts: the key's place says which it is
+    else if (e.shiftKey && (e.code === "Digit7" || e.code === "Digit8")) { e.preventDefault(); edCmd(e.code === "Digit7" ? "insertOrderedList" : "insertUnorderedList"); }
   });
   box.append(subj, fmtBar(), ed);
   if (c.signature && c.use_signature) {
@@ -1825,12 +1826,10 @@ function edCmd(cmd, val = null) {
 }
 function fmtSize(px) {
   if (!edFocus()) return;
+  // the browser's own sizes 1-7, left as they are so Undo works and a bare caret gets the size it shows;
+  // style.css draws them at K.FONT_PX and outHTML sends those pixels
   document.execCommand("styleWithCSS", false, false);
-  document.execCommand("fontSize", false, "7");
-  for (const f of $$(".compose .editor font[size='7']")) {
-    const sp = el("span", { style: `font-size:${px}px` });
-    sp.append(...f.childNodes); f.replaceWith(sp);
-  }
+  document.execCommand("fontSize", false, K.sizeKey(px));
   edChanged();
 }
 const FMT_SIZES = [["12", "size_small"], ["14", "size_normal"], ["18", "size_large"], ["24", "size_huge"]];
@@ -2042,22 +2041,33 @@ async function uploadFiles(files) {
   }
 }
 
-function onPaste(e) {
+const readURL = (f) => new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result); rd.onerror = () => ok(null); rd.readAsDataURL(f); });
+const LOCAL_SRC = /^\s*(file|blob|webkit-fake-url):/i;
+async function onPaste(e) {
   const dt = e.clipboardData;
+  // what the clipboard holds is read now: it is gone once this event ends
   const imgs = [...dt.files].filter((f) => f.type.startsWith("image/"));
-  if (imgs.length) {
-    e.preventDefault();
-    for (const f of imgs) {
-      const rd = new FileReader();
-      rd.onload = () => { document.execCommand("insertHTML", false, `<img src="${rd.result}" alt="">`); };
-      rd.readAsDataURL(f);
-    }
-    return;
-  }
-  const html = dt.getData("text/html");
+  const html = dt.getData("text/html"), plain = dt.getData("text/plain");
+  if (!html && !imgs.length) return;
+  e.preventDefault();
+  // Excel and Word put a picture of the table on the clipboard as well: the table itself is what is meant
   if (html) {
-    e.preventDefault();
-    document.execCommand("insertHTML", false, cleanHTML(html));
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // a picture the HTML points to on this computer can't go out with the mail: the clipboard's own
+    // pictures take those places in turn; any left over are dropped
+    const local = [...doc.querySelectorAll("img")].filter((i) => LOCAL_SRC.test(i.getAttribute("src") || ""));
+    const data = await Promise.all(imgs.slice(0, local.length).map(readURL));
+    local.forEach((img, k) => { if (data[k]) img.setAttribute("src", data[k]); });
+    // white text from a dark page or app would not show on the white mail
+    const body = K.sanitizeBody(doc.body, { paste: true });
+    if (body.textContent.trim() || body.querySelector("img, table, hr")) {
+      document.execCommand("insertHTML", false, body.innerHTML);
+      return;
+    }
+    if (!imgs.length) { if (plain) document.execCommand("insertText", false, plain); return; }
+  }
+  for (const src of await Promise.all(imgs.map(readURL))) {
+    if (src && K.safeURL(src, "src")) document.execCommand("insertHTML", false, `<img src="${esc(src)}" alt="">`);
   }
 }
 
@@ -2087,7 +2097,7 @@ function composeState(opts = {}) {
   return {
     mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
-    use_signature: c.use_signature, irt: c.irt, refs: c.refs,
+    use_signature: c.use_signature, irt: c.irt, refs: c.refs, fwd: c.fwd,
   };
 }
 
@@ -2105,6 +2115,10 @@ function outHTML(html) {
   for (const p of box.content.querySelectorAll("p")) {
     const st = p.getAttribute("style") || "";
     if (!/(^|;)\s*margin(-bottom)?\s*:/i.test(st)) p.setAttribute("style", st ? `${gap};${st}` : gap);
+  }
+  for (const f of box.content.querySelectorAll("font[size]")) {
+    const px = K.FONT_PX[f.getAttribute("size").trim()];
+    if (px) { f.style.fontSize = px + "px"; f.removeAttribute("size"); }
   }
   return box.innerHTML;
 }
@@ -2360,7 +2374,7 @@ async function openSettings() {
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
       sigEd.innerHTML = cleanHTML(v.signature || "");
       sigEd.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "div"));
-      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
+      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h, { paste: true })); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
     } else if (tab === "sending") {
       const seg = el("div", { class: "seg" });

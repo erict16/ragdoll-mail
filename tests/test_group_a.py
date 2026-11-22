@@ -223,3 +223,42 @@ class Paragraphs(OwnBackend):
         self.assertIn('document.execCommand("defaultParagraphSeparator", false, "p")', src)
         self.assertIn('=== ed) document.execCommand("formatBlock", false, "p");', src)
         self.assertIn("function outHTML(html)", src)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class Paste(unittest.TestCase):
+    def test_dark_theme_colours_go(self):
+        self.assertEqual(js('K.cleanStyle("color: #fff; background: #1e1e1e; font-weight: bold", { paste: true })'),
+                         "font-weight: bold")
+        self.assertEqual(js('K.cleanStyle("color: rgb(30, 30, 30); background-color: yellow", { paste: true })'),
+                         "color: rgb(30, 30, 30); background-color: yellow")
+        self.assertEqual(js('K.cleanStyle("color: #fff; background: #1e1e1e")'), "color: #fff; background: #1e1e1e")
+        self.assertEqual(js('["white", "#eee", "rgba(255,255,255,.9)", "#000", "windowtext", "var(--x)"].map(K.lightText)'),
+                         [True, True, True, False, False, False])
+
+    def test_paste_prefers_the_html_and_drops_local_pictures(self):
+        src = app_src()
+        f = src[src.index("async function onPaste("):]
+        f = f[:f.index("\n}\n")]
+        self.assertLess(f.index("if (html) {"), f.index("for (const src of await Promise.all(imgs.map(readURL)))"))
+        self.assertIn("K.sanitizeBody(doc.body, { paste: true })", f)
+        self.assertIn("file|blob|webkit-fake-url", src)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class Sizes(unittest.TestCase):
+    def test_menu_sizes_map_to_browser_sizes(self):
+        self.assertEqual(js("[12, 14, 18, 24].map(K.sizeKey)"), ["2", "3", "5", "6"])
+        src = app_src()
+        self.assertNotIn('font[size=\'7\']', src)
+        self.assertIn('e.code === "Digit7"', src)
+        self.assertIn("f.style.fontSize = px + \"px\"", src)
+
+
+class ForwardMarker(OwnBackend):
+    def test_a_forward_draft_keeps_its_marker(self):
+        orig = self.b.q("select msgid from msgs where msgid != '' limit 1")[0]["msgid"]
+        st = {"mode": "draft", "to": [{"name": "", "addr": "a@example.org"}], "cc": [], "bcc": [], "subject": "Fw",
+              "html": "<p>x</p>", "atts": [], "use_signature": False, "fwd": orig}
+        self.assertEqual(A.R.hdr(self.b.build(st), A.R.FWD_HEADER).strip(), orig)
+        self.assertIn("fwd: c.fwd", app_src())

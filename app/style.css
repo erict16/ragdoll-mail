@@ -642,6 +642,14 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 /* ---- 0.11 group A_COMPOSE: new rules for this group only ---- */
 /* Return makes a paragraph with a small gap below it, the same gap the sent mail carries (app.js outHTML) */
 .compose .editor p { margin: 0 0 var(--p-gap, 10px); }
+/* the size menu's browser sizes, at the pixels the mail goes out with (compose-kit.js FONT_PX) */
+.compose .editor font[size="1"] { font-size: 10px; }
+.compose .editor font[size="2"] { font-size: 12px; }
+.compose .editor font[size="3"] { font-size: 14px; }
+.compose .editor font[size="4"] { font-size: 16px; }
+.compose .editor font[size="5"] { font-size: 18px; }
+.compose .editor font[size="6"] { font-size: 24px; }
+.compose .editor font[size="7"] { font-size: 32px; }
 
 
 /* ---- 0.11 group B_SEND: new rules for this group only ---- */
