@@ -2,7 +2,7 @@
 
 <h1 align="center">Ragdoll Mail</h1>
 
-<p align="center"><b>AI 助手也能用的免费邮件软件。<br>Mac / Windows 桌面软件，自带命令行：Claude Code、Codex 这类 AI 可以帮你搜邮件、写回复，发不发由你点。</b></p>
+<p align="center"><b>AI 助手也能用的免费邮件软件。<br>Mac / Windows 桌面软件，自带命令行：Claude Code、Codex 这类 AI 可以帮你搜邮件、写回复，你点头后还能直接帮你发。</b></p>
 
 <p align="center">支持腾讯企业邮箱、QQ 邮箱、163 邮箱、Gmail、iCloud、Fastmail，以及其他支持 IMAP 的邮箱。</p>
 
@@ -23,7 +23,7 @@
 
 ## Ragdoll Mail 是什么？
 
-Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的“邮件”、Outlook 是同一类东西。不同的是，它自带一套叫 `ragdoll` 的命令行，Claude Code、Codex 这类 AI 助手可以直接用。AI 能帮你搜邮件、看完整的来回邮件、写回复；写好的回复存成草稿，在软件里打开给你看，你不点发送，就什么都不会发出去。
+Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的“邮件”、Outlook 是同一类东西。不同的是，它自带一套叫 `ragdoll` 的命令行，Claude Code、Codex 这类 AI 助手可以直接用。AI 能帮你搜邮件、看完整的来回邮件、写回复；写好的回复存成草稿：你在对话里说可以，AI 就帮你发；或者你在软件里打开，自己点发送。
 
 搜索在你自己的电脑上完成。Ragdoll Mail 用 SQLite 给你的邮箱建了一份全文索引，搜一次只要几毫秒，不用每次都去问邮件服务器，断网也能搜。像腾讯企业邮箱这样自带搜索不好用的邮箱（不管搜什么都返回整个文件夹），差别尤其明显。
 
@@ -108,11 +108,11 @@ Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的�
 
 |  | **Ragdoll Mail** | 苹果“邮件” | 新版 Outlook | Thunderbird | Foxmail | Spark |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| 价格 | 免费 | 免费 | 免费版有广告，或付费 | 免费 | 免费 | 有免费版和付费版 |
+| 价格 | 免费 | 免费 | 免费版有广告，或付费 | 免费 | 免费 | 有免费版，Plus 和 Pro 收费 |
 | Mac 和 Windows | 都有 | 只有 Mac | 都有 | 都有 | 都有 | 都有 |
 | 邮件只在你和邮箱服务器之间走 | ✅ | ✅ | 会在微软云端存一份 | ✅ | ✅ | 要经过 Spark 的服务器 |
 | 代码公开，谁都能查 | ✅ | 否 | 否 | ✅ | 否 | 否 |
-| 你自己的 AI 助手可以用这个邮箱 | ✅ | 否 | 否 | 否 | 否 | 否 |
+| 你自己的 AI 助手可以用这个邮箱 | ✅ | 否 | 否 | 否 | 否 | 可以，发信要 Pro |
 | 手机版 | 没有 | ✅ | ✅ | 安卓 | 没有 | ✅ |
 | 一个窗口里看多个邮箱 | 还没有 | ✅ | ✅ | ✅ | ✅ | ✅ |
 
@@ -147,13 +147,15 @@ Ragdoll Mail 是一个 Mac 和 Windows 上的邮件软件，和苹果自带的�
 
 ## 给 AI 助手和命令行用
 
-Ragdoll Mail 还带一个命令 `ragdoll`。Claude Code、Codex 这样的 AI 助手可以用它帮你找邮件、写草稿。它自己发不了邮件：每封都先放在草稿箱里，等你点头才发。
+Ragdoll Mail 还带一个命令 `ragdoll`。Claude Code、Codex 这样的 AI 助手可以用它帮你找邮件、写草稿。它也能帮你发：每封都先放在草稿箱里、先检查，你对这封说了可以才发出去（`ragdoll send <草稿> --yes`，或用 `ragdoll schedule` 定时发）。你也可以在软件里打开草稿，自己点发送。
 
 ```console
 你    › 回复 Jane，把签好字的报价单附上。
 助手  $ ragdoll search Jane quote --json
 助手  $ ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf
 助手  › 草稿已经放进草稿箱了，要发吗？
+你    › 发吧。
+助手  $ ragdoll send drafts:14 --yes
 ```
 
 装命令：在 App 里点 **设置 → 命令行 → 安装**。只要命令行、不装 App 的话，Mac 上依次运行 `brew tap erict16/tap`、`brew trust erict16/tap`、`brew install ragdoll`。它不需要苹果签名，装好后 macOS 不会弹警告。有哪些命令、和 Gmail API 比怎么样：看 **[命令行说明](docs/command-line.md)**（英文）。
