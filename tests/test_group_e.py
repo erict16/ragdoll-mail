@@ -52,6 +52,18 @@ class Demo(OwnBackend):
             getattr(self.b, "api_" + name)(a)
         return str(e.exception)
 
+    def test_rename_parent_takes_children(self):
+        self.b.found.append(("Projects/Acme/2026", ""))
+        mail(self.b, "Projects/Acme/2026", "Deep mail")
+        mail(self.b, "Projects", "Top mail")
+        self.assertEqual(self.b.api_folder_rename({"key": "Projects", "name": "Work"})["key"], "Work")
+        self.assertEqual([k for k in self.keys() if k.startswith(("Work", "Projects"))], ["Work", "Work/Acme", "Work/Acme/2026"])
+        self.assertIn("Deep mail", self.subjects("Work/Acme/2026"))
+        self.assertIn("Top mail", self.subjects("Work"))
+        self.assertEqual(self.subjects("Projects/Acme/2026"), [])
+        st = {r["folder"] for r in self.b.q("select folder from state")}
+        self.assertFalse({f for f in st if f.startswith("Projects")})
+
     def test_delete_with_mail_goes_to_trash(self):
         self.b.found.append(("Projects/Acme/2026", ""))
         mail(self.b, "Projects/Acme/2026", "Deep mail")
@@ -214,6 +226,21 @@ class OnServer(OwnBackend):
 
     def rows(self, folder):
         return sorted(r["uid"] for r in self.b.q("select uid from msgs where folder=?", (folder,)))
+
+    def test_rename_with_folders_inside(self):
+        self.start(".")
+        inner = "其他文件夹.华明印尼.2025"
+        cache = A.R.cache_path(inner, 7, 5)
+        A.R.cache_put(cache, b"Subject: kept\r\n\r\nx")
+        self.assertEqual(self.b.api_folder_rename({"key": "其他文件夹.华明印尼", "name": "印尼"}),
+                         {"key": "其他文件夹.印尼", "sep": "."})
+        self.assertIn("其他文件夹.印尼.2025", self.srv.folders())
+        self.assertEqual(self.rows("其他文件夹.印尼.2025"), [5])
+        self.assertEqual(self.rows(inner), [])
+        self.assertFalse(os.path.exists(cache))           # the copy on disk moved with its folder
+        self.assertTrue(os.path.exists(A.R.cache_path("其他文件夹.印尼.2025", 7, 5)))
+        self.assertIn(("subscribe", "其他文件夹.印尼.2025"), self.srv.calls)
+        self.assertIn(("其他文件夹.印尼.2025", "2025", 2), self.b.others())
 
     def test_delete_folder_with_mail(self):
         s = self.start()

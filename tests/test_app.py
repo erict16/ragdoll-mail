@@ -311,7 +311,7 @@ class AppServer(unittest.TestCase):
         i = self.rows("inbox")[-1]["id"]
         subject = self.rows("inbox")[-1]["subject"]
         self.api("move", {"ids": [i], "to": "Tenders 2026"})
-        self.assertEqual(self.api("folder_rename", {"key": "Tenders 2026", "name": "Tenders"})[1]["data"], {"key": "Tenders"})
+        self.assertEqual(self.api("folder_rename", {"key": "Tenders 2026", "name": "Tenders"})[1]["data"]["key"], "Tenders")
         self.assertNotIn("Tenders 2026", keys())
         got = self.rows("Tenders")
         self.assertEqual([r["subject"] for r in got], [subject])
@@ -324,7 +324,7 @@ class AppServer(unittest.TestCase):
         self.assertNotIn("Tenders", keys())
         self.assertIn("folders inside", err("folder_delete", {"key": "Projects"}))
         # a folder inside another keeps its place when the outer one is renamed
-        self.assertEqual(self.api("folder_rename", {"key": "Projects/Acme", "name": "Acme Ltd"})[1]["data"], {"key": "Projects/Acme Ltd"})
+        self.assertEqual(self.api("folder_rename", {"key": "Projects/Acme", "name": "Acme Ltd"})[1]["data"]["key"], "Projects/Acme Ltd")
         self.api("folder_rename", {"key": "Projects", "name": "Work"})
         self.assertIn("Work/Acme Ltd", keys())
         self.api("folder_rename", {"key": "Work", "name": "Projects"})

@@ -490,9 +490,9 @@ function newFolder(then) {
 function renameFolder(f) {
   nameSheet(t("rename_folder"), f.label, async (name) => {
     const r = await api("folder_rename", { key: f.key, name });
-    if (S.folder === f.key) S.folder = r.key;
+    const shown = followFolder(f.key, r.key, r.sep);
     await refreshCounts();
-    loadList({ quiet: true });
+    if (shown) showMoved(); else loadList({ quiet: true });
   });
 }
 // a question before something that can't be taken back, or that moves a lot of mail
@@ -507,12 +507,33 @@ function confirmSheet({ title, text, ok, run, safe = false }) {
   (safe ? no : go).focus();
 }
 
+// A renamed or moved folder: the open folder and the selection follow it to its new name, and so do
+// the folders inside it (old + sep + ...).
+function followFolder(old, nu, sep) {
+  if (old === nu) return false;
+  const map = (k) => (k === old ? nu : typeof k === "string" && k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
+  const mapId = (i) => { const c = i.lastIndexOf(":"); return c < 0 ? i : map(i.slice(0, c)) + i.slice(c); };
+  const was = S.folder;
+  S.folder = map(S.folder);
+  if (S.sel) S.sel = mapId(S.sel);
+  if (S.anchor) S.anchor = mapId(S.anchor);
+  if (S.focus) S.focus = mapId(S.focus);
+  S.multi = new Set([...S.multi].map(mapId));
+  return S.folder !== was || !!S.thread?.rows.some((r) => mapId(r.id) !== r.id);
+}
 // deleted folders leave nothing behind in the prefs
 function forgetFolders(keys) {
   const gone = new Set(keys), patch = {};
   for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => gone.has(x))) patch[k] = PREFS[k].filter((x) => !gone.has(x));
   if (Object.keys(patch).length) savePref(patch);
 }
+// after a rename or move that reached the open folder or the open mail: the list and the mail are shown
+// again under their new names, the selection kept
+async function showMoved() {
+  await loadList({ quiet: true });
+  if (S.thread && !S.compose && S.focus) openThread(S.focus);
+}
+
 // an empty folder goes at once; one with mail or folders inside asks first, then its mail (and the mail of
 // the folders inside) goes to Trash, never deleted for good, and the folders go
 async function deleteFolder(f) {

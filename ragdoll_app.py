@@ -1804,16 +1804,23 @@ class Backend:
             fail("There is already a folder called %s." % label)
 
     def rename_rows(self, old, new, sep):
-        """The mail already listed follows its folder to the new name (the folders inside it too)."""
+        """The mail already listed follows its folder to the new name (the folders inside it too), and so do
+        the copies of it kept on disk, so nothing is fetched again."""
+        inside = lambda f: f == old or f.startswith(old + sep)     # noqa: E731
         with self.dblock:
             names = {r[0] for r in self.c.execute("select folder from msgs union select folder from state").fetchall()}
+            keep = []
             for f in names:
-                if f == old or f.startswith(old + sep):
+                if inside(f):
                     to = new + f[len(old):]
+                    keep += [(f, to, r[0], r[1]) for r in
+                             self.c.execute("select uidv, uid from msgs where folder=?", (f,)).fetchall()]
                     self.c.execute("delete from state where folder=?", (to,))
                     self.c.execute("update msgs set folder=? where folder=?", (to, f))
                     self.c.execute("update state set folder=? where folder=?", (to, f))
             self.c.commit()
+        for f, to, uidv, uid in keep:
+            cache_move((f, uidv, uid), (to, uidv, uid))
 
     def api_folder_new(self, a):
         label = folder_label(a.get("name"))
@@ -1842,41 +1849,55 @@ class Backend:
         self.bump()
         return {"key": name}
 
+    def demo_rename(self, key, name):
+        self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
+        for (f, u) in list(self.demo_raw):
+            if f == key or f.startswith(key + "/"):
+                self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
+        self.rename_rows(key, name, "/")
+
+    def server_rename(self, m, key, name, sep):
+        """RENAME on the server; the folders inside go along, and stay subscribed under their new names."""
+        inner = [n for n, _ in self.subtree(key, sep)]
+        R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+        typ, data = m.rename(R.q(key), R.q(name))
+        if typ != "OK":
+            fail("The mail server said: %s" % said(data))
+        for n in inner:
+            with contextlib.suppress(Exception):
+                m.unsubscribe(R.q(n))
+                m.subscribe(R.q(name + n[len(key):]))
+        self.rename_rows(key, name, sep)
+        self.refresh_folders(m)
+
     def api_folder_rename(self, a):
+        """{"key", "name"} -> {"key": the new name, "sep"}. The folders inside keep their places in it."""
         key, old = self.own_folder(a)
         label = folder_label(a.get("name"))
         name = key[:len(key) - len(old)] + label
-        if name == key:
-            return {"key": key}
         if self.demo:
-            self.free_name(name, label)
-            self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
-            for (f, u) in list(self.demo_raw):
-                if f == key or f.startswith(key + "/"):
-                    self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
-            self.rename_rows(key, name, "/")
+            if name != key:
+                self.free_name(name, label)
+                self.demo_rename(key, name)
+            sep = "/"
         else:
             def go(m):
                 sep = folder_sep(m)
+                if name == key:
+                    return sep
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
                 self.own_folder(a)
                 self.free_name(name, label)
-                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                typ, data = m.rename(R.q(key), R.q(name))
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                    m.subscribe(R.q(name))
-                self.rename_rows(key, name, sep)
-                self.refresh_folders(m)
-            self.imap(go)
-            self.extra_now = True
-            self.wake.set()
+                self.server_rename(m, key, name, sep)
+                return sep
+            sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
 
     def subtree(self, key, sep):
         """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
@@ -2823,6 +2844,16 @@ def cache_files(k):
     """The copies of one mail kept on disk (k = folder, uidvalidity, uid): whole, light, and its files."""
     whole = R.cache_path(*k)
     return [whole, R.light_path(*k)] + glob.glob(glob.escape(whole[:-4]) + ".part*.eml")
+
+
+def cache_move(old, new):
+    """A renamed folder's mail keeps its copies on disk: they are filed under the folder's name."""
+    for p in cache_files(old):
+        if os.path.exists(p):
+            to = R.cache_path(*new)[:-4] + p[len(R.cache_path(*old)) - 4:]
+            with contextlib.suppress(OSError):
+                os.makedirs(os.path.dirname(to), exist_ok=True)
+                os.replace(p, to)
 
 
 def cache_drop(k):
