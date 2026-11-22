@@ -1586,8 +1586,11 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d || !d.documentElement) return;
     if (!d.body) return;
     // the body's own height: the document's grows with the frame and would never shrink
-    const root = d.querySelector(".rd-root") || d.body;
-    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (d.defaultView?.scrollY || 0)));
+    const root = d.querySelector(".rd-root") || d.body, view = d.defaultView;
+    // a wide mail scrolls sideways: its scrollbar (shown always on Windows, and on a Mac with a mouse) takes room
+    // at the bottom, so the frame is that much taller and the last line is not under it
+    const bar = view ? Math.max(0, view.innerHeight - d.documentElement.clientHeight, d.body.offsetHeight - d.body.clientHeight) : 0;
+    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (view?.scrollY || 0)) + bar);
     if (frame.style.height !== h + "px") frame.style.height = h + "px";
   };
   st.fit = fit;

@@ -94,5 +94,15 @@ console.log(JSON.stringify([
         self.assertEqual(json.loads(out.stdout), [None, "From:", "HR", None, "From:\n   Tan Eric"])
 
 
+class Frames(unittest.TestCase):
+    def test_wide_mail_frame_makes_room_for_its_scrollbar(self):
+        # #64: the frame is the content's height plus the sideways scrollbar's, so the last line is not under it
+        js = read("app", "app.js")
+        fit = js[js.index("const fit = () => {"):js.index("st.fit = fit;")]
+        self.assertIn("view.innerHeight - d.documentElement.clientHeight", fit)
+        self.assertRegex(fit, r"const h = Math\.ceil\(.*\+ bar\);")
+        self.assertIn("overflow-x:auto;overflow-y:hidden", js)
+
+
 if __name__ == "__main__":
     unittest.main()
