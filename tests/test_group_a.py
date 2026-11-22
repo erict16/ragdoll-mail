@@ -174,3 +174,28 @@ class SendFlow(unittest.TestCase):
 
     def test_a_sent_mail_leaves_an_open_compose_alone(self):
         self.assertIn("if (S.thread && !S.compose) openThread(", self.fn("async function sendWithUndo("))
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class Addresses(unittest.TestCase):
+    def test_commas_in_names(self):
+        self.assertEqual(js('K.parseAddrs(\'"Wang, Li" <li@x.com>, Zhang <zhang@x.com>\')'),
+                         [{"name": "Wang, Li", "addr": "li@x.com"}, {"name": "Zhang", "addr": "zhang@x.com"}])
+        self.assertEqual(js('K.parseAddrs("Wang, Li <LI@x.com>; b@y.org")'),
+                         [{"name": "Wang, Li", "addr": "li@x.com"}, {"name": "", "addr": "b@y.org"}])
+
+    def test_full_width_separators(self):
+        self.assertEqual(js('K.parseAddrs("a@x.com，b@y.com；c@z.com").map((p) => p.addr)'),
+                         ["a@x.com", "b@y.com", "c@z.com"])
+
+    def test_when_the_box_makes_a_chip(self):
+        self.assertEqual(js('["a@x.com,", "a@x.com，", "Wang,", \'"Wang,\', "Wang, Li <li@x.com>;", "li.ming@hua", "<a,"]'
+                            '.map(K.commitReady)'), [True, True, False, False, True, False, False])
+
+    def test_autosave_does_not_take_the_box(self):
+        with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+            src = f.read()
+        f = src[src.index("function composeState("):]
+        f = f[:f.index("\n}\n")]
+        self.assertNotIn('.value = ""', f)
+        self.assertIn("!opts.auto || ADDR_RE.test(p.addr)", f)

@@ -1691,18 +1691,8 @@ function collapseQuote(st) {
 
 // ---------------------------------------------------------------- compose
 
-const ADDR_RE = /^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$/;
-function parseAddrs(text) {
-  const out = [];
-  for (const part of text.split(/[,;\n]+/)) {
-    const s = part.trim();
-    if (!s) continue;
-    const m = s.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
-    if (m) out.push({ name: m[1].trim(), addr: m[2].trim().toLowerCase() });
-    else out.push({ name: "", addr: s.replace(/^mailto:/i, "").toLowerCase() });
-  }
-  return out;
-}
+// addresses: commas in quoted names and the full-width ，； of a Chinese input method (compose-kit.js)
+const { ADDR_RE, parseAddrs } = K;
 
 async function openCompose(opts) {
   if (S.compose && !(await leaveCompose())) return;
@@ -1927,12 +1917,15 @@ function addrField(key, label, first = false) {
     if (sug) chips.append(sug);
   };
   const closeSug = () => { sug?.remove(); sug = null; sugItems = []; };
-  const add = (list) => {
+  const add = (list, focus = true) => {
     const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
     for (const p of list) if (p.addr && !have.has(p.addr)) { c[key].push(p); have.add(p.addr); }
-    input.value = ""; closeSug(); draw(); touched(); input.focus();
+    input.value = ""; closeSug(); draw(); touched(); if (focus) input.focus();
   };
-  const commit = () => { const v = input.value.trim(); if (v) add(parseAddrs(v)); };
+  const commit = (focus = true) => { const v = input.value.trim(); if (v) add(parseAddrs(v), focus); };
+  // Send turns what is still typed into chips, shown (composeState)
+  input.rdCommit = () => commit(false);
+  input.dataset.k = key;
   const showSug = async () => {
     const q = input.value.trim();
     if (!q) return closeSug();
@@ -1949,8 +1942,12 @@ function addrField(key, label, first = false) {
       el("span", { class: "n" }, p.name || p.addr), p.name ? el("span", { class: "a" }, p.addr) : null)));
     chips.append(sug);
   };
-  input.addEventListener("input", (e) => { clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); if (!e.isComposing && /[,;]\s*$/.test(input.value)) commit(); });
-  input.addEventListener("compositionend", () => { if (/[,;]\s*$/.test(input.value)) commit(); });
+  // typing counts as a change (Esc saves it); a separator after a whole address makes the chip
+  input.addEventListener("input", (e) => {
+    clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); touched();
+    if (!e.isComposing && K.commitReady(input.value)) commit();
+  });
+  input.addEventListener("compositionend", () => { if (K.commitReady(input.value)) commit(); });
   input.addEventListener("keydown", (e) => {
     if (K.isIME(e)) return;
     if (sug && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -1966,7 +1963,7 @@ function addrField(key, label, first = false) {
   });
   input.addEventListener("paste", (e) => {
     const txt = e.clipboardData.getData("text");
-    if (/[,;\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
+    if (/[,;，；\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
   });
   input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) { commit(); closeSug(); } }, 150));
   chips.addEventListener("mousedown", (e) => { if (e.target === chips) { e.preventDefault(); input.focus(); } });
@@ -2060,14 +2057,19 @@ function composeState(opts = {}) {
   const c = S.compose;
   const ed = $(".compose .editor");
   if (ed) c.html = ed.innerHTML;
-  const inputs = $$(".compose .chips input");
-  // an address still being typed counts
-  ["to", "cc", "bcc"].filter((k) => k === "to" || (k === "cc" ? c.showCc : c.showBcc)).forEach((k, idx) => {
-    const v = inputs[idx]?.value.trim();
-    if (v) { c[k].push(...parseAddrs(v)); inputs[idx].value = ""; }
-  });
+  // an address still being typed counts. Send turns it into a chip; a save only reads it and leaves the
+  // box as it is (an autosave in the middle of typing takes whole addresses only)
+  const typed = { to: [], cc: [], bcc: [] };
+  for (const inp of $$(".compose .chips input")) {
+    const k = inp.dataset.k;
+    if (!typed[k] || !inp.value.trim()) continue;
+    if (opts.commit) inp.rdCommit?.();
+    else typed[k] = parseAddrs(inp.value).filter((p) => !opts.auto || ADDR_RE.test(p.addr));
+  }
+  const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
+  const list = (k) => [...c[k], ...typed[k].filter((p) => !have.has(p.addr))];
   return {
-    mode: c.mode, orig: c.orig, replace: c.replace, to: c.to, cc: c.cc, bcc: c.bcc, subject: c.subject,
+    mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
     use_signature: c.use_signature, irt: c.irt, refs: c.refs,
   };
@@ -2470,7 +2472,7 @@ function relabel() {
   syncFilterUI();
   renderNav();
   renderRows();
-  if (S.compose) { composeState(); renderCompose(); }
+  if (S.compose) { composeState({ commit: true }); renderCompose(); }
   else if (S.sched) openScheduled(S.sched);
   else if (S.thread) openThread(S.focus || S.sel);
   else renderToolbar();
