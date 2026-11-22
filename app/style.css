@@ -659,3 +659,5 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 /* ---- 0.11 group F_INVITES: new rules for this group only ---- */
 
+/* a reply to an invitation: who answered, and the note they added */
+.inv-text .inv-note { color: var(--text); font-style: italic; }

@@ -309,85 +309,652 @@ def list_unsub(msg):
     return {"url": url, "mailto": mailto, "one_click": one}
 
 
-# Outlook names Windows time zones, not IANA ones
-WIN_TZ = {"China Standard Time": "Asia/Shanghai", "Singapore Standard Time": "Asia/Singapore",
-          "Taipei Standard Time": "Asia/Taipei", "Tokyo Standard Time": "Asia/Tokyo", "Korea Standard Time": "Asia/Seoul",
-          "India Standard Time": "Asia/Kolkata", "SE Asia Standard Time": "Asia/Bangkok",
-          "W. Australia Standard Time": "Australia/Perth", "AUS Eastern Standard Time": "Australia/Sydney",
-          "GMT Standard Time": "Europe/London", "W. Europe Standard Time": "Europe/Berlin",
-          "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest",
-          "Russian Standard Time": "Europe/Moscow", "Arabian Standard Time": "Asia/Dubai",
-          "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago",
-          "Mountain Standard Time": "America/Denver", "Pacific Standard Time": "America/Los_Angeles",
-          "UTC": "UTC", "Coordinated Universal Time": "UTC"}
+# ---- meeting invitations (iCalendar, RFC 5545; replies per iTIP, RFC 5546)
+
+# Outlook names Windows time zones, not IANA ones: the whole Windows -> IANA table (CLDR windowsZones, "001")
+WIN_TZ = {
+    "Dateline Standard Time": "Etc/GMT+12", "UTC-11": "Etc/GMT+11", "Aleutian Standard Time": "America/Adak",
+    "Hawaiian Standard Time": "Pacific/Honolulu", "Marquesas Standard Time": "Pacific/Marquesas",
+    "Alaskan Standard Time": "America/Anchorage", "UTC-09": "Etc/GMT+9",
+    "Pacific Standard Time (Mexico)": "America/Tijuana", "UTC-08": "Etc/GMT+8",
+    "Pacific Standard Time": "America/Los_Angeles", "US Mountain Standard Time": "America/Phoenix",
+    "Mountain Standard Time (Mexico)": "America/Mazatlan", "Mountain Standard Time": "America/Denver",
+    "Yukon Standard Time": "America/Whitehorse", "Central America Standard Time": "America/Guatemala",
+    "Central Standard Time": "America/Chicago", "Easter Island Standard Time": "Pacific/Easter",
+    "Central Standard Time (Mexico)": "America/Mexico_City", "Mexico Standard Time": "America/Mexico_City",
+    "Mexico Standard Time 2": "America/Chihuahua", "Canada Central Standard Time": "America/Regina",
+    "SA Pacific Standard Time": "America/Bogota", "Eastern Standard Time (Mexico)": "America/Cancun",
+    "Eastern Standard Time": "America/New_York", "Haiti Standard Time": "America/Port-au-Prince",
+    "Cuba Standard Time": "America/Havana", "US Eastern Standard Time": "America/Indiana/Indianapolis",
+    "Turks And Caicos Standard Time": "America/Grand_Turk", "Paraguay Standard Time": "America/Asuncion",
+    "Atlantic Standard Time": "America/Halifax", "Venezuela Standard Time": "America/Caracas",
+    "Central Brazilian Standard Time": "America/Cuiaba", "SA Western Standard Time": "America/La_Paz",
+    "Pacific SA Standard Time": "America/Santiago", "Newfoundland Standard Time": "America/St_Johns",
+    "Tocantins Standard Time": "America/Araguaina", "E. South America Standard Time": "America/Sao_Paulo",
+    "SA Eastern Standard Time": "America/Cayenne", "Argentina Standard Time": "America/Argentina/Buenos_Aires",
+    "Greenland Standard Time": "America/Godthab", "Montevideo Standard Time": "America/Montevideo",
+    "Magallanes Standard Time": "America/Punta_Arenas", "Saint Pierre Standard Time": "America/Miquelon",
+    "Bahia Standard Time": "America/Bahia", "UTC-02": "Etc/GMT+2", "Mid-Atlantic Standard Time": "Etc/GMT+2",
+    "Azores Standard Time": "Atlantic/Azores", "Cape Verde Standard Time": "Atlantic/Cape_Verde",
+    "UTC": "Etc/UTC", "Coordinated Universal Time": "Etc/UTC", "GMT Standard Time": "Europe/London",
+    "Greenwich Standard Time": "Atlantic/Reykjavik", "Sao Tome Standard Time": "Africa/Sao_Tome",
+    "Morocco Standard Time": "Africa/Casablanca", "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest", "Romance Standard Time": "Europe/Paris",
+    "Central European Standard Time": "Europe/Warsaw", "W. Central Africa Standard Time": "Africa/Lagos",
+    "Jordan Standard Time": "Asia/Amman", "GTB Standard Time": "Europe/Bucharest",
+    "Middle East Standard Time": "Asia/Beirut", "Egypt Standard Time": "Africa/Cairo",
+    "E. Europe Standard Time": "Europe/Chisinau", "Syria Standard Time": "Asia/Damascus",
+    "West Bank Standard Time": "Asia/Hebron", "South Africa Standard Time": "Africa/Johannesburg",
+    "FLE Standard Time": "Europe/Kiev", "Israel Standard Time": "Asia/Jerusalem",
+    "Jerusalem Standard Time": "Asia/Jerusalem", "South Sudan Standard Time": "Africa/Juba",
+    "Kaliningrad Standard Time": "Europe/Kaliningrad", "Sudan Standard Time": "Africa/Khartoum",
+    "Libya Standard Time": "Africa/Tripoli", "Namibia Standard Time": "Africa/Windhoek",
+    "Arabic Standard Time": "Asia/Baghdad", "Turkey Standard Time": "Europe/Istanbul",
+    "Arab Standard Time": "Asia/Riyadh", "Belarus Standard Time": "Europe/Minsk",
+    "Russian Standard Time": "Europe/Moscow", "Russia TZ 2 Standard Time": "Europe/Moscow",
+    "E. Africa Standard Time": "Africa/Nairobi", "Volgograd Standard Time": "Europe/Volgograd",
+    "Iran Standard Time": "Asia/Tehran", "Arabian Standard Time": "Asia/Dubai",
+    "Astrakhan Standard Time": "Europe/Astrakhan", "Azerbaijan Standard Time": "Asia/Baku",
+    "Russia Time Zone 3": "Europe/Samara", "Mauritius Standard Time": "Indian/Mauritius",
+    "Saratov Standard Time": "Europe/Saratov", "Georgian Standard Time": "Asia/Tbilisi",
+    "Caucasus Standard Time": "Asia/Yerevan", "Afghanistan Standard Time": "Asia/Kabul",
+    "West Asia Standard Time": "Asia/Tashkent", "Ekaterinburg Standard Time": "Asia/Yekaterinburg",
+    "Pakistan Standard Time": "Asia/Karachi", "Qyzylorda Standard Time": "Asia/Qyzylorda",
+    "India Standard Time": "Asia/Kolkata", "Sri Lanka Standard Time": "Asia/Colombo",
+    "Nepal Standard Time": "Asia/Kathmandu", "Central Asia Standard Time": "Asia/Bishkek",
+    "Bangladesh Standard Time": "Asia/Dhaka", "Omsk Standard Time": "Asia/Omsk",
+    "Myanmar Standard Time": "Asia/Yangon", "SE Asia Standard Time": "Asia/Bangkok",
+    "Altai Standard Time": "Asia/Barnaul", "W. Mongolia Standard Time": "Asia/Hovd",
+    "North Asia Standard Time": "Asia/Krasnoyarsk", "N. Central Asia Standard Time": "Asia/Novosibirsk",
+    "Tomsk Standard Time": "Asia/Tomsk", "China Standard Time": "Asia/Shanghai",
+    "North Asia East Standard Time": "Asia/Irkutsk", "Singapore Standard Time": "Asia/Singapore",
+    "Malay Peninsula Standard Time": "Asia/Singapore", "W. Australia Standard Time": "Australia/Perth",
+    "Taipei Standard Time": "Asia/Taipei", "Ulaanbaatar Standard Time": "Asia/Ulaanbaatar",
+    "Aus Central W. Standard Time": "Australia/Eucla", "Transbaikal Standard Time": "Asia/Chita",
+    "Tokyo Standard Time": "Asia/Tokyo", "North Korea Standard Time": "Asia/Pyongyang",
+    "Korea Standard Time": "Asia/Seoul", "Yakutsk Standard Time": "Asia/Yakutsk",
+    "Cen. Australia Standard Time": "Australia/Adelaide", "AUS Central Standard Time": "Australia/Darwin",
+    "E. Australia Standard Time": "Australia/Brisbane", "AUS Eastern Standard Time": "Australia/Sydney",
+    "West Pacific Standard Time": "Pacific/Port_Moresby", "Tasmania Standard Time": "Australia/Hobart",
+    "Vladivostok Standard Time": "Asia/Vladivostok", "Lord Howe Standard Time": "Australia/Lord_Howe",
+    "Bougainville Standard Time": "Pacific/Bougainville", "Russia Time Zone 10": "Asia/Srednekolymsk",
+    "Magadan Standard Time": "Asia/Magadan", "Norfolk Standard Time": "Pacific/Norfolk",
+    "Sakhalin Standard Time": "Asia/Sakhalin", "Central Pacific Standard Time": "Pacific/Guadalcanal",
+    "Russia Time Zone 11": "Asia/Kamchatka", "Kamchatka Standard Time": "Asia/Kamchatka",
+    "New Zealand Standard Time": "Pacific/Auckland", "UTC+12": "Etc/GMT-12", "Fiji Standard Time": "Pacific/Fiji",
+    "Chatham Islands Standard Time": "Pacific/Chatham", "UTC+13": "Etc/GMT-13",
+    "Tonga Standard Time": "Pacific/Tongatapu", "Samoa Standard Time": "Pacific/Apia",
+    "Line Islands Standard Time": "Pacific/Kiritimati"}
+
+# cities in Outlook's display names ("(UTC+08:00) Beijing, Chongqing, Hong Kong, Urumqi") that are no IANA city
+WIN_CITY = {"beijing": "Asia/Shanghai", "osaka": "Asia/Tokyo", "sapporo": "Asia/Tokyo", "new delhi": "Asia/Kolkata",
+            "mumbai": "Asia/Kolkata", "chennai": "Asia/Kolkata", "hanoi": "Asia/Bangkok", "abu dhabi": "Asia/Dubai",
+            "canberra": "Australia/Sydney", "wellington": "Pacific/Auckland", "brasilia": "America/Sao_Paulo",
+            "eastern time (us & canada)": "America/New_York", "central time (us & canada)": "America/Chicago",
+            "mountain time (us & canada)": "America/Denver", "pacific time (us & canada)": "America/Los_Angeles",
+            "edinburgh": "Europe/London", "bern": "Europe/Zurich", "st. petersburg": "Europe/Moscow",
+            "coordinated universal time": "Etc/UTC", "islamabad": "Asia/Karachi", "astana": "Asia/Bishkek",
+            "ekaterinburg": "Asia/Yekaterinburg", "kuwait": "Asia/Riyadh", "riyadh": "Asia/Riyadh"}
+
+ICS_LINE = re.compile(r'([A-Za-z0-9-]+)((?:;[A-Za-z0-9-]+=(?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)*):(.*)')
+ICS_PARAM = re.compile(r';([A-Za-z0-9-]+)=((?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)')
 
 
-def ics_time(value, params):
-    """An iCalendar date or date-time -> (unix time, all day)."""
-    v = value.strip()
-    if re.fullmatch(r"\d{8}", v):           # a whole day: midnight where the reader is
-        d = dt.datetime.strptime(v, "%Y%m%d")
-        return int(d.timestamp()), True
-    m = re.fullmatch(r"(\d{8}T\d{4})(\d{2})?(Z?)", v)
+def ics_parse(text):
+    """iCalendar text -> its components as a tree: {"name", "props": [(NAME, {PARAM: value}, value, line)], "subs"}.
+    Quoted parameter values may hold ":" and ";" (Outlook: TZID="(UTC+01:00) Amsterdam, Berlin, ...")."""
+    root = {"name": "", "props": [], "subs": []}
+    stack = [root]
+    for line in re.sub(r"\r?\n[ \t]", "", text or "").splitlines():
+        if not line.strip():
+            continue
+        m = ICS_LINE.match(line) or re.match(r"([A-Za-z0-9-]+)((?:;[^:]*)?):(.*)", line)
+        if not m:
+            continue
+        name, value = m.group(1).upper(), m.group(3)
+        if name == "BEGIN":
+            c = {"name": value.strip().upper(), "props": [], "subs": []}
+            stack[-1]["subs"].append(c)
+            stack.append(c)
+            continue
+        if name == "END":
+            if len(stack) > 1 and stack[-1]["name"] == value.strip().upper():
+                stack.pop()
+            continue
+        params = {k.upper(): v.strip('"') for k, v in ICS_PARAM.findall(m.group(2))}
+        stack[-1]["props"].append((name, params, value, line))
+    return root
+
+
+def ics_find(comp, name):
+    """Every component called name, at any depth."""
+    for s in comp["subs"]:
+        if s["name"] == name:
+            yield s
+        yield from ics_find(s, name)
+
+
+def ics_prop(comp, name, default=None):
+    """The first (value, params) of a property, or default."""
+    for n, p, v, _ in comp["props"]:
+        if n == name:
+            return v, p
+    return default
+
+
+def ics_text(v):
+    """An iCalendar TEXT value, unescaped."""
+    return re.sub(r"\\([,;:\\])", r"\1", re.sub(r"\\[nN]", "\n", v or "")).strip()
+
+
+def ics_offset(v):
+    """"+0100" / "-0530" / "+013000" -> seconds east of UTC, or None."""
+    m = re.fullmatch(r"([+-])(\d\d)(\d\d)(\d\d)?", (v or "").strip())
     if not m:
-        return None, False
-    d = dt.datetime.strptime(m.group(1) + (m.group(2) or "00"), "%Y%m%dT%H%M%S")
-    if m.group(3):
-        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False
-    tz = None
-    name = (params.get("TZID") or "").strip('"')
-    if name:
+        return None
+    s = int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4) or 0)
+    return -s if m.group(1) == "-" else s
+
+
+def ics_local(v):
+    """"20261124T100000" -> a naive datetime, or None."""
+    m = re.fullmatch(r"(\d{8})T(\d{4})(\d{2})?Z?", (v or "").strip())
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1) + m.group(2) + (m.group(3) or "00"), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def rule_of(v):
+    """An RRULE value -> {KEY: value}."""
+    return {k.upper(): x for k, _, x in (p.partition("=") for p in (v or "").split(";")) if k}
+
+
+def nth_weekday(year, month, wd, n):
+    """The day of month of the nth (1..5, or -1 = last) weekday wd (0 = Monday), or None."""
+    days = [d for d in range(1, 32) if _valid(year, month, d) and dt.date(year, month, d).weekday() == wd]
+    try:
+        return days[n - 1] if n > 0 else days[n]
+    except IndexError:
+        return None
+
+
+def _valid(y, m, d):
+    try:
+        dt.date(y, m, d)
+        return True
+    except ValueError:
+        return False
+
+
+WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+class VTimezone(dt.tzinfo):
+    """A time zone as the invitation itself describes it (VTIMEZONE: STANDARD and DAYLIGHT, each with its
+    offsets and a yearly rule or fixed dates). Used when the TZID is no name the system knows."""
+
+    def __init__(self, comp):
+        self.parts = []
+        for s in comp["subs"]:
+            if s["name"] not in ("STANDARD", "DAYLIGHT"):
+                continue
+            start = ics_local((ics_prop(s, "DTSTART") or ("", {}))[0]) or dt.datetime(1601, 1, 1)
+            to = ics_offset((ics_prop(s, "TZOFFSETTO") or ("", {}))[0])
+            frm = ics_offset((ics_prop(s, "TZOFFSETFROM") or ("", {}))[0])
+            if to is None:
+                continue
+            rdates = []
+            for n, _p, v, _l in s["props"]:
+                if n == "RDATE":
+                    rdates += [d for d in (ics_local(x) for x in v.split(",")) if d]
+            rr = ics_prop(s, "RRULE")
+            self.parts.append({"start": start, "to": to, "from": frm if frm is not None else to,
+                               "rule": rule_of(rr[0]) if rr else None, "rdates": rdates, "dst": s["name"] == "DAYLIGHT"})
+        if not self.parts:
+            raise ValueError("no offsets")
+
+    def onsets(self, part, year):
+        """Local times in this year at which part begins."""
+        out = [d for d in [part["start"]] + part["rdates"] if d.year == year]
+        r = part["rule"]
+        if r and r.get("FREQ", "").upper() == "YEARLY":
+            until = ics_local(r.get("UNTIL", "")) or (dt.datetime.strptime(r["UNTIL"][:8], "%Y%m%d")
+                                                      if re.fullmatch(r"\d{8}", r.get("UNTIL", "")) else None)
+            months = [int(x) for x in r.get("BYMONTH", str(part["start"].month)).split(",") if x.strip().isdigit()]
+            for mo in months:
+                days = []
+                for b in [x for x in r.get("BYDAY", "").split(",") if x]:
+                    m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b.strip().upper())
+                    if m:
+                        days.append(nth_weekday(year, mo, WEEKDAYS.index(m.group(2)), int(m.group(1) or 1)))
+                for b in [x for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()]:
+                    d = int(b)
+                    days.append(d if d > 0 else None)
+                if not days:
+                    days = [part["start"].day]
+                for d in days:
+                    if d and _valid(year, mo, d):
+                        when = dt.datetime(year, mo, d, part["start"].hour, part["start"].minute, part["start"].second)
+                        if when >= part["start"] and (until is None or when <= until):
+                            out.append(when)
+        return out
+
+    def offset_at(self, d):
+        """Seconds east of UTC at the wall-clock time d (naive)."""
+        best = None
+        for part in self.parts:
+            for y in (d.year - 1, d.year):
+                for on in self.onsets(part, y):
+                    if on <= d and (best is None or on > best[0]):
+                        best = (on, part)
+        if best is None:                    # before every onset: the earliest part's "from"
+            first = min(self.parts, key=lambda p: p["start"])
+            return first["from"], False
+        return best[1]["to"], best[1]["dst"]
+
+    def utcoffset(self, d):
+        return dt.timedelta(seconds=self.offset_at(d.replace(tzinfo=None))[0])
+
+    def dst(self, d):
+        return dt.timedelta(0)
+
+    def tzname(self, d):
+        return None
+
+
+def zone_city(iana):
+    return iana.rsplit("/", 1)[-1].replace("_", " ") if iana and not iana.startswith("Etc/") else ""
+
+
+_CITIES = None
+
+
+def win_display_zone(name, year):
+    """Outlook's display name "(UTC+01:00) Amsterdam, Berlin, ..." -> (IANA name or None, fixed offset or None).
+    A city is taken only when its standard offset is the one in the name."""
+    global _CITIES
+    m = re.match(r"\(\s*(?:UTC|GMT)\s*(?:([+-])(\d{1,2}):?(\d\d))?\s*\)\s*(.*)", name)
+    if not m:
+        return None, None
+    off = (int(m.group(2)) * 3600 + int(m.group(3)) * 60) * (-1 if m.group(1) == "-" else 1) if m.group(2) else 0
+    try:
+        from zoneinfo import ZoneInfo, available_timezones
+        if _CITIES is None:
+            _CITIES = {zone_city(z).lower(): z for z in sorted(available_timezones()) if "/" in z and zone_city(z)}
+        rest = m.group(4).strip()
+        names = [rest.lower()] + [c.strip().lower() for c in rest.split(",")]
+        for c in names:
+            z = WIN_CITY.get(c) or _CITIES.get(c)
+            if not z:
+                continue
+            tz = ZoneInfo(z)
+            std = min(int(dt.datetime(year, mo, 1, tzinfo=tz).utcoffset().total_seconds()) for mo in (1, 7))
+            if std == off:
+                return z, off
+    except Exception:       # noqa: BLE001 - no time zone database: the offset in the name still holds
+        pass
+    return None, off
+
+
+def ics_zone(name, zones, when=None):
+    """A TZID -> (tzinfo or None, IANA name or None). Tries an IANA name, a Windows name, the invitation's own
+    VTIMEZONE, then the offset in an Outlook display name. None: nobody can tell."""
+    name = (name or "").strip().strip('"').strip()
+    if not name:
+        return None, None
+    year = (when or dt.datetime.now()).year
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        ZoneInfo = None
+    if ZoneInfo:
+        tail = re.search(r"([A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?)$", name)     # "/mozilla.org/.../Europe/Berlin"
+        for z in (WIN_TZ.get(name), name if "/" in name or name.upper() in ("UTC", "GMT") else None,
+                  tail.group(1) if tail and tail.group(1) != name else None):
+            if z:
+                try:
+                    return ZoneInfo(z), z
+                except Exception:   # noqa: BLE001 - not a name this system knows
+                    pass
+        z, _ = win_display_zone(name, year)
+        if z:
+            try:
+                tz = ZoneInfo(z)
+                vt = zones.get(name)
+                if vt is None or when is None or tz.utcoffset(when) == vt.utcoffset(when):
+                    return tz, z
+            except Exception:       # noqa: BLE001
+                pass
+    if zones.get(name) is not None:
+        return zones[name], None
+    _, off = win_display_zone(name, year)
+    if off is not None:
+        return dt.timezone(dt.timedelta(seconds=off)), None
+    return None, None
+
+
+def ics_zones(cal):
+    """{TZID: VTimezone} for the invitation's VTIMEZONE blocks that can be read."""
+    out = {}
+    for c in ics_find(cal, "VTIMEZONE"):
+        tzid = (ics_prop(c, "TZID") or ("", {}))[0].strip().strip('"')
+        if tzid:
+            with contextlib.suppress(Exception):
+                out[tzid] = VTimezone(c)
+    return out
+
+
+def ics_time(value, params, zones=None):
+    """An iCalendar date or date-time -> (unix time, all day). A whole day is midnight where the reader is;
+    a time with an unknown zone is read as the reader's (ics_when says it is unknown)."""
+    return ics_when(value, params, zones or {})[:2]
+
+
+def ics_when(value, params, zones):
+    """-> (unix time, all day, {"iana", "offset", "label"} of the event's zone, or None when floating,
+    or {"unknown": True}), (None, False, None) when it can't be read."""
+    v = (value or "").strip()
+    if re.fullmatch(r"\d{8}", v):
         try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(WIN_TZ.get(name, name))
-        except Exception:
-            tz = None
-    return int(d.replace(tzinfo=tz).timestamp() if tz else d.timestamp()), False
+            d = dt.datetime.strptime(v, "%Y%m%d")
+        except ValueError:
+            return None, False, None
+        return int(d.timestamp()), True, None
+    d = ics_local(v)
+    if d is None:
+        return None, False, None
+    if v.upper().endswith("Z"):
+        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False, None     # UTC says nothing of the zone
+    name = (params.get("TZID") or "").strip().strip('"')
+    if not name:
+        return int(d.timestamp()), False, None          # floating: the same wall-clock time everywhere
+    tz, iana = ics_zone(name, zones, d)
+    if tz is None:
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    try:
+        aware = d.replace(tzinfo=tz)
+        off = int(aware.utcoffset().total_seconds())
+        ts = int(aware.timestamp())
+    except Exception:       # noqa: BLE001 - a zone that can't answer for this date
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    mm = re.match(r"\([^)]*\)\s*([^,]*)", name)
+    label = (mm.group(1).strip() if mm and mm.group(1).strip() else "") or zone_city(iana) or name
+    return ts, False, {"iana": iana, "offset": off, "label": label}
+
+
+def ics_duration(v):
+    """"PT1H30M" / "P1D" / "-PT15M" -> seconds, or None."""
+    m = re.fullmatch(r"([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", (v or "").strip())
+    if not m or not any(m.groups()[1:]):
+        return None
+    w, d, h, mi, s = (int(x or 0) for x in m.groups()[1:])
+    n = (((w * 7 + d) * 24 + h) * 60 + mi) * 60 + s
+    return -n if m.group(1) == "-" else n
+
+
+def ics_charset_text(p):
+    """The calendar part as text: its declared charset, then UTF-8, then GB18030 (as for mail text)."""
+    data = R.part_bytes(p)
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    for cs, err in ((p.get_content_charset() or "", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
+        if not cs:
+            continue
+        try:
+            return data.decode(cs, err)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", "replace")
 
 
 def ics_part(msg):
-    """The mail's calendar part (an invitation), or None."""
+    """The mail's calendar part (an invitation), or None. The text/calendar part wins over an .ics file."""
+    found = None
     for p in msg.walk():
-        if p.is_multipart():
+        if p.is_multipart() or p.get_content_type() == "message/rfc822":
             continue
-        if p.get_content_type() == "text/calendar" or (R.fname(p) or "").lower().endswith(".ics"):
+        if p.get_content_type() == "text/calendar":
             return p
+        if found is None and (R.fname(p) or "").lower().endswith(".ics"):
+            found = p
+    return found
+
+
+# links that join an online meeting, the service named by the first group
+JOIN_LINKS = (
+    ("teams", r"https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join|meet|dl/launcher)/[^\s<>\"'\\]+"),
+    ("zoom", r"https://(?:[\w-]+\.)?zoom(?:gov)?\.(?:us|com|com\.cn)/(?:j|my|w|s|wc)/[^\s<>\"'\\]+"),
+    ("meet", r"https://meet\.google\.com/[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}[^\s<>\"'\\]*"),
+    ("tencent", r"https://(?:meeting\.tencent\.com|voovmeeting\.com|work\.weixin\.qq\.com/meeting)/[^\s<>\"'\\]+"),
+    ("webex", r"https://[\w-]+\.webex\.com(?:\.cn)?/[^\s<>\"'\\]+"),
+)
+
+
+def join_link(ev):
+    """The online meeting's link: {"url", "kind"}, or None. Looks where the services put it."""
+    texts = []
+    for n in ("X-MICROSOFT-SKYPETEAMSMEETINGURL", "X-MICROSOFT-ONLINEMEETINGCONFLINK", "X-GOOGLE-CONFERENCE",
+              "URL", "LOCATION", "DESCRIPTION", "X-ALT-DESC"):
+        for pn, _p, v, _l in ev["props"]:
+            if pn == n:
+                texts.append(htmlmod.unescape(ics_text(v)))
+    for n, _p, v, _l in ev["props"]:
+        if n.startswith("X-") and "http" in v:
+            texts.append(ics_text(v))
+    for t in texts:
+        for kind, pat in JOIN_LINKS:
+            m = re.search(pat, t, re.I)
+            if m:
+                return {"url": m.group(0).rstrip(".,;)>]"), "kind": kind}
     return None
 
 
+def ics_person(value, params):
+    addr = re.sub(r"(?i)^mailto:", "", (value or "").strip()).strip().lower()
+    return {"name": (params.get("CN") or "").strip().strip('"'), "addr": addr if "@" in addr else ""}
+
+
+def rrule_info(v, tz, start_local):
+    """An RRULE -> what the page needs to say it ({"freq", "interval", "byday", "bymonthday", "count", "until"})."""
+    r = rule_of(v)
+    freq = r.get("FREQ", "").upper()
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+        return None
+    out = {"freq": freq, "interval": max(1, int(r["INTERVAL"])) if r.get("INTERVAL", "").isdigit() else 1,
+           "byday": [x.strip().upper() for x in r.get("BYDAY", "").split(",") if x.strip()],
+           "bymonthday": [int(x) for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()],
+           "count": int(r["COUNT"]) if r.get("COUNT", "").isdigit() else None, "until": None}
+    u = r.get("UNTIL", "").strip()
+    if re.fullmatch(r"\d{8}", u):
+        out["until_day"] = u
+    elif ics_local(u):
+        d = ics_local(u)
+        out["until"] = int((d.replace(tzinfo=dt.timezone.utc) if u.upper().endswith("Z") else
+                            d.replace(tzinfo=tz) if tz else d).timestamp())
+    return out
+
+
+def rrule_next(start, dur, tz, rr, now, exdates=()):
+    """The first occurrence (as a naive local start) of a repeating event that has not ended by now, or None when
+    the series is over. Covers DAILY, WEEKLY (BYDAY), MONTHLY (BYMONTHDAY or nth BYDAY) and YEARLY."""
+    def ts(d):
+        return (d.replace(tzinfo=tz) if tz else d).timestamp()
+    until = rr.get("until")
+    until_day = rr.get("until_day")
+    count = rr.get("count")
+    n = 0
+    k = 0
+    iv = rr["interval"]
+    while k < 5000:
+        if rr["freq"] == "DAILY":
+            cands = [start + dt.timedelta(days=k * iv)]
+        elif rr["freq"] == "WEEKLY":
+            week0 = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * iv)
+            days = [WEEKDAYS.index(b[-2:]) for b in rr["byday"] if b[-2:] in WEEKDAYS] or [start.weekday()]
+            cands = [week0 + dt.timedelta(days=d) for d in sorted(set(days))]
+        elif rr["freq"] == "MONTHLY":
+            mi = start.month - 1 + k * iv
+            y, mo = start.year + mi // 12, mi % 12 + 1
+            days = []
+            for b in rr["byday"]:
+                m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b)
+                if m and m.group(1):
+                    days.append(nth_weekday(y, mo, WEEKDAYS.index(m.group(2)), int(m.group(1))))
+            days += [d for d in rr["bymonthday"] if d > 0] or ([] if days else [start.day])
+            cands = [start.replace(year=y, month=mo, day=d) for d in sorted(x for x in days if x) if _valid(y, mo, d)]
+        else:
+            y = start.year + k * iv
+            cands = [start.replace(year=y)] if _valid(y, start.month, start.day) else []
+        for c in cands:
+            if c < start:
+                continue
+            if until is not None and ts(c) > until or until_day and c.strftime("%Y%m%d") > until_day:
+                return None
+            n += 1
+            if count and n > count:
+                return None
+            if c in exdates:
+                continue
+            if ts(c) + dur > now:
+                return c
+        k += 1
+    return None
+
+
+def pick_event(cal):
+    """The VEVENT the mail is about: the series, unless an occurrence with RECURRENCE-ID was changed later."""
+    evs = list(ics_find(cal, "VEVENT"))
+    if not evs:
+        return None
+    def seq(e):
+        v = (ics_prop(e, "SEQUENCE") or ("0", {}))[0].strip()
+        return int(v) if v.isdigit() else 0
+    master = next((e for e in evs if not ics_prop(e, "RECURRENCE-ID")), None)
+    others = [e for e in evs if e is not master]
+    if master is None:
+        return others[0]
+    newer = [e for e in others if seq(e) > seq(master)]
+    return max(newer, key=seq) if newer else master
+
+
 def invite_of(msg):
-    """What a meeting invitation says: {"title", "start", "end", "all_day", "where", "organizer", "method"}, or None."""
+    """What a meeting invitation (or a reply to one, a cancellation, a new time proposed) says, or None.
+    {"title", "start", "end", "all_day", "where", "organizer", "method", "cancelled", "uid", ...}."""
     p = ics_part(msg)
     if p is None:
         return None
     try:
-        text = R.part_bytes(p).decode("utf-8", "replace")
-    except Exception:
+        cal = ics_parse(ics_charset_text(p))
+    except Exception:       # noqa: BLE001 - a broken calendar part is no invitation
         return None
-    text = re.sub(r"\r?\n[ \t]", "", text)               # unfold
-    method = (re.search(r"(?mi)^METHOD:(.*)$", text) or [None, ""])[1].strip().upper()
-    ev = re.search(r"(?s)BEGIN:VEVENT(.*?)END:VEVENT", text)
-    if not ev:
+    vcal = next(ics_find(cal, "VCALENDAR"), cal)
+    method = ((ics_prop(vcal, "METHOD") or ics_prop(cal, "METHOD") or ("", {}))[0].strip().upper()
+              or (p.get_param("method") or "").upper())
+    ev = pick_event(cal)
+    if ev is None:
         return None
-    props = {}
-    for line in ev.group(1).splitlines():
-        m = re.match(r"([A-Za-z-]+)((?:;[^:]*)?):(.*)", line)
-        if not m or m.group(1).upper() in props:
-            continue
-        params = dict(re.findall(r';([A-Za-z-]+)=("[^"]*"|[^;]*)', m.group(2)))
-        props[m.group(1).upper()] = (m.group(3), {k.upper(): v for k, v in params.items()})
-    unesc = lambda v: re.sub(r"\\([,;\\])", r"\1", v.replace("\\n", "\n").replace("\\N", "\n")).strip()
-    start, all_day = ics_time(*props["DTSTART"]) if "DTSTART" in props else (None, False)
+    zones = ics_zones(cal)
+    g = lambda n: ics_prop(ev, n) or ("", {})
+    if not ics_prop(ev, "DTSTART"):
+        return None
+    start, all_day, zone = ics_when(*g("DTSTART"), zones)
     if start is None:
         return None
-    end = ics_time(*props["DTEND"])[0] if "DTEND" in props else None
-    org = props.get("ORGANIZER")
-    organizer = ""
-    if org:
-        organizer = org[1].get("CN", "").strip('"') or re.sub(r"(?i)^mailto:", "", org[0])
-    return {"title": unesc(props.get("SUMMARY", ("", {}))[0]), "start": start, "end": end, "all_day": all_day,
-            "where": unesc(props.get("LOCATION", ("", {}))[0]), "organizer": organizer,
-            "method": method, "cancelled": method == "CANCEL" or props.get("STATUS", ("", {}))[0].upper() == "CANCELLED"}
+    end = None
+    if ics_prop(ev, "DTEND"):
+        end = ics_when(*g("DTEND"), zones)[0]
+    elif ics_prop(ev, "DURATION"):
+        d = ics_duration(g("DURATION")[0])
+        end = start + d if d is not None else None
+    if all_day and (end is None or end <= start):
+        end = start + 86400
+    org = ics_prop(ev, "ORGANIZER")
+    organizer = ics_person(*org) if org else {"name": "", "addr": ""}
+    people = []
+    for n, pa, v, _l in ev["props"]:
+        if n == "ATTENDEE":
+            x = ics_person(v, pa)
+            if not x["addr"] and not x["name"]:
+                continue
+            x["status"] = (pa.get("PARTSTAT") or "NEEDS-ACTION").upper()
+            x["role"] = (pa.get("ROLE") or "REQ-PARTICIPANT").upper()
+            x["kind"] = (pa.get("CUTYPE") or "INDIVIDUAL").upper()
+            people.append(x)
+    seq_v = g("SEQUENCE")[0].strip()
+    rid = ics_prop(ev, "RECURRENCE-ID")
+    out = {"title": ics_text(g("SUMMARY")[0]), "start": start, "end": end, "all_day": all_day,
+           "where": ics_text(g("LOCATION")[0]), "organizer": organizer["name"] or organizer["addr"],
+           "organizer_addr": organizer["addr"], "method": method or "PUBLISH",
+           "cancelled": method == "CANCEL" or g("STATUS")[0].strip().upper() == "CANCELLED",
+           "uid": g("UID")[0].strip(), "seq": int(seq_v) if seq_v.isdigit() else 0,
+           "occurrence": bool(rid), "rid": rid[0].strip() if rid else "",
+           "zone": zone, "attendees": [x for x in people if x["kind"] not in ("ROOM", "RESOURCE")],
+           "about": ics_about(ics_text(g("DESCRIPTION")[0]))[:2000], "join": join_link(ev), "repeat": None}
+    if all_day:
+        s = g("DTSTART")[0].strip()[:8]
+        out["day0"] = s
+        e = (g("DTEND")[0].strip()[:8] if re.fullmatch(r"\d{8}", g("DTEND")[0].strip()) else None)
+        last = (dt.datetime.strptime(e, "%Y%m%d") - dt.timedelta(days=1)) if e and e > s else dt.datetime.strptime(s, "%Y%m%d")
+        out["day1"] = last.strftime("%Y%m%d")
+    rr = ics_prop(ev, "RRULE")
+    if rr and not rid:
+        tz = None
+        if not all_day and g("DTSTART")[1].get("TZID"):
+            tz = ics_zone(g("DTSTART")[1]["TZID"], zones, ics_local(g("DTSTART")[0]))[0]
+        local = ics_local(g("DTSTART")[0]) or dt.datetime.strptime(g("DTSTART")[0].strip()[:8], "%Y%m%d")
+        if g("DTSTART")[0].strip().upper().endswith("Z"):
+            tz = dt.timezone.utc
+        info = rrule_info(rr[0], tz, local)
+        if info:
+            out["repeat"] = info
+            exd = set()
+            for n, _pa, v, _l in ev["props"]:
+                if n == "EXDATE":
+                    exd |= {d for d in (ics_local(x) for x in v.split(",")) if d}
+            dur = (end - start) if end else 0
+            nxt = rrule_next(local, dur, tz, info, time.time(), exd)
+            if nxt is not None and nxt != local:
+                ns = int((nxt.replace(tzinfo=tz) if tz else nxt).timestamp())
+                out["start"], out["end"] = ns, (ns + dur if end else None)
+                if all_day:
+                    out["day0"] = nxt.strftime("%Y%m%d")
+                    out["day1"] = (nxt + dt.timedelta(seconds=max(0, dur - 86400))).strftime("%Y%m%d")
+                if zone and zone.get("iana") is not None and tz is not None:
+                    out["zone"] = dict(zone, offset=int(nxt.replace(tzinfo=tz).utcoffset().total_seconds()))
+            out["repeat"]["over"] = nxt is None
+    if method in ("REPLY", "COUNTER"):
+        # the attendee who answers (or proposes a new time) is the one ATTENDEE of the reply
+        x = next((a for a in people if a["status"] != "NEEDS-ACTION"), people[0] if people else None)
+        out["reply"] = {"name": (x or {}).get("name", ""), "addr": (x or {}).get("addr", ""),
+                        "status": (x or {}).get("status", ""), "comment": ics_text(g("COMMENT")[0])}
+        if not out["reply"]["addr"]:
+            f = R.addrs(R.hdr(msg, "From"))
+            if f:
+                out["reply"]["name"], out["reply"]["addr"] = f[0]
+    return out
+
+
+def ics_about(text):
+    """The first part of a DESCRIPTION worth reading: without the join boilerplate that Teams puts after a
+    line of underscores, and without lines that are only rules."""
+    text = re.split(r"(?m)^\s*_{10,}\s*$", text or "", maxsplit=1)[0]
+    lines = [x.rstrip() for x in text.splitlines() if not re.fullmatch(r"\s*[-_=*~.]{4,}\s*", x)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def invite_for(v, me):
+    """What the invitation asks of the person reading it: are they the organizer, are they asked, how they answered
+    in the invitation itself. Changes v."""
+    me = (me or "").lower()
+    v["mine"] = bool(me) and v.get("organizer_addr") == me
+    x = next((a for a in v.get("attendees") or [] if me and a["addr"] == me), None)
+    v["me_status"] = x["status"] if x else None
+    v["can_answer"] = bool(x) and not v["mine"] and v.get("method") == "REQUEST" and not v.get("cancelled")
+    return v
+
 
 def data_images(html):
     """Pasted data: images in the editor -> (html with cid: links, [(cid, bytes, maintype, subtype)])."""
@@ -1486,6 +2053,8 @@ class Backend:
             raise
         if send:
             send()                      # the server hears it in the background, now that the mail is open
+        if out.get("invite"):
+            self.invite_state(out)
         return out
 
     def build_message(self, i):
@@ -2006,6 +2575,10 @@ class Backend:
         to, _, query = u["mailto"][7:].partition("?")
         subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
         return {"mailto": urllib.parse.unquote(to), "subject": subj}
+
+    def invite_state(self, out):
+        """What the invitation means for the person reading it (organizer, asked to answer)."""
+        invite_for(out["invite"], R.CFG.user)
 
     def api_open_invite(self, a):
         """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""

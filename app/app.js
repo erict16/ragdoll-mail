@@ -1359,26 +1359,105 @@ function unsubLink(node, m) {
   } }, t("unsub")));
 }
 
-// a meeting invitation: when and where, and a way into the system's calendar
+// a meeting invitation: when and where, and a way into the system's calendar. A reply to one says who
+// answered and how; a new time proposed says the time. Only an invitation still to come can be added.
+// an all-day event's days are the invitation's own dates, the same wherever the reader is
+const dayTs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)) / 1000;
+function fmtUTC(ts, opts) {
+  const key = "utc" + JSON.stringify(opts);
+  let f = FMT.get(key);
+  if (!f) {
+    try { f = new Intl.DateTimeFormat(LOCALE, { ...opts, timeZone: "UTC" }); } catch { f = new Intl.DateTimeFormat(undefined, { ...opts, timeZone: "UTC" }); }
+    FMT.set(key, f);
+  }
+  return f.format(new Date(ts * 1000));
+}
+// seconds the reader's clock is ahead of UTC at ts
+function myOffset(ts) {
+  const p = zparts(ts * 1000);
+  return (Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi) - Math.floor(ts / 60) * 60000) / 1000;
+}
+const INV_DAY = { weekday: "short", month: "short", day: "numeric" };
+// "Wed 25 Nov · 17:00–18:00 · 10:00–11:00 Amsterdam": the reader's time first, the event's own when it differs
+function inviteWhen(v) {
+  if (v.all_day) {
+    const a = fmtUTC(dayTs(v.day0), INV_DAY);
+    return (v.day1 && v.day1 !== v.day0 ? a + "–" + fmtUTC(dayTs(v.day1), INV_DAY) : a) + " · " + t("all_day");
+  }
+  const same = v.end && dayKey(v.end * 1000) === dayKey(v.start * 1000);
+  let s = fmt(v.start, INV_DAY) + " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, INV_DAY) + " " + fmt(v.end, HM)) : "");
+  const z = v.zone;
+  if (z?.unknown) s += " · " + t("inv_tz_unknown");
+  else if (z && z.offset != null && z.offset !== myOffset(v.start))
+    s += " · " + fmtUTC(v.start + z.offset, HM) + (v.end && same ? "–" + fmtUTC(v.end + z.offset, HM) : "") + " " + z.label;
+  return s;
+}
+// "Every Monday · until 30 Dec", from the invitation's RRULE
+const WD = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+function weekdayName(code) {
+  const f = new Intl.DateTimeFormat(LOCALE, { weekday: LANG.startsWith("zh") ? "short" : "long", timeZone: "UTC" });
+  return f.format(new Date(Date.UTC(2024, 0, 1 + WD.indexOf(code))));       // 1 Jan 2024 was a Monday
+}
+function listOf(xs) {
+  try { return new Intl.ListFormat(LOCALE, { type: "conjunction" }).format(xs); } catch { return xs.join(", "); }
+}
+function repeatText(v) {
+  const r = v.repeat;
+  if (!r) return "";
+  const n = r.interval || 1;
+  const local = v.all_day ? dayTs(v.day0) : v.start + (v.zone?.offset ?? myOffset(v.start));   // the event's own day
+  const startWd = WD[(new Date(local * 1000).getUTCDay() + 6) % 7];
+  let s;
+  if (r.freq === "DAILY") s = n > 1 ? t("rr_days", n) : t("rr_daily");
+  else if (r.freq === "WEEKLY") {
+    const days = (r.byday.length ? r.byday.map((d) => d.slice(-2)) : [startWd]);
+    const sorted = WD.filter((d) => days.includes(d));
+    if (n === 1 && sorted.join() === "MO,TU,WE,TH,FR") s = t("rr_weekdays");
+    else s = n > 1 ? t("rr_weeks", n, listOf(sorted.map(weekdayName))) : t("rr_weekly", listOf(sorted.map(weekdayName)));
+  } else if (r.freq === "MONTHLY") {
+    const nth = r.byday.map((d) => d.match(/^([+-]?\d)(MO|TU|WE|TH|FR|SA|SU)$/)).find(Boolean);
+    if (n > 1) s = t("rr_months", n);
+    else if (nth) s = t("rr_monthly_nth", +nth[1] < 0 ? t("rr_last") : (t("rr_ord").split(",")[+nth[1] - 1] || nth[1]), weekdayName(nth[2]));
+    else s = t("rr_monthly_day", r.bymonthday[0] || new Date(local * 1000).getUTCDate());
+  } else s = n > 1 ? t("rr_years", n) : t("rr_yearly");
+  if (r.until_day) s += " · " + t("rr_until", fmtUTC(dayTs(r.until_day), { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.until) s += " · " + t("rr_until", fmt(r.until, { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.count) s += " · " + t("rr_count", r.count);
+  return s;
+}
+const REPLY_SAID = { ACCEPTED: "inv_r_accepted", DECLINED: "inv_r_declined", TENTATIVE: "inv_r_tentative", DELEGATED: "inv_r_delegated" };
+const invWho = (x) => (x && (x.addr === S.boot?.user ? t("me") : x.name || x.addr)) || "";
 function inviteCard(m) {
   const v = m.invite;
-  const day = { weekday: "short", month: "short", day: "numeric" };
-  const same = v.end && fmt(v.end, { year: "numeric", month: "numeric", day: "numeric" }) === fmt(v.start, { year: "numeric", month: "numeric", day: "numeric" });
-  let when = fmt(v.start, day);
-  if (v.all_day) when += " · " + t("all_day");
-  else when += " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, day) + " " + fmt(v.end, HM)) : "");
+  const leafTs = v.all_day ? dayTs(v.day0) : v.start;
+  const leafFmt = v.all_day ? fmtUTC : fmt;
   const past = (v.end || v.start) * 1000 < Date.now();
-  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") },
-    el("div", { class: "inv-day" }, el("span", {}, fmt(v.start, { month: "short" })), el("b", {}, fmt(v.start, { day: "numeric" }).replace(/\D+$/, ""))),
-    el("div", { class: "inv-text" },
-      el("b", {}, v.title || t("invite")),
-      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + when),
-      v.where ? el("span", {}, v.where) : null,
-      v.organizer ? el("span", { class: "inv-org" }, t("inv_from", v.organizer)) : null),
-    v.cancelled ? null : el("button", { class: "btn", onclick: async (e) => {
+  const kind = v.method === "REPLY" ? "reply" : v.method === "COUNTER" ? "counter" : ["REFRESH", "DECLINECOUNTER"].includes(v.method) ? "note" : "invite";
+  const lines = [];
+  if (kind === "reply") {
+    lines.push(el("b", {}, t(REPLY_SAID[v.reply?.status] || "inv_r_replied", invWho(v.reply))),
+      el("span", {}, v.title || t("invite")), el("span", {}, inviteWhen(v)));
+    if (v.reply?.comment) lines.push(el("span", { class: "inv-note" }, "“" + v.reply.comment + "”"));
+  } else if (kind === "counter") {
+    lines.push(el("b", {}, t("inv_counter", invWho(v.reply))), el("span", {}, v.title || t("invite")),
+      el("span", {}, t("inv_new_time", inviteWhen(v))));
+  } else {
+    lines.push(el("b", {}, v.title || t("invite")),
+      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + inviteWhen(v)));
+    const rep = repeatText(v);
+    if (rep) lines.push(el("span", {}, rep));
+    if (v.where) lines.push(el("span", {}, v.where));
+    if (v.organizer) lines.push(el("span", { class: "inv-org" }, t("inv_from", v.organizer)));
+  }
+  // Add for an invitation still to come; a cancelled one leaves the calendar the same way
+  const canAdd = kind === "invite" && !past && ["REQUEST", "PUBLISH", "ADD", "CANCEL"].includes(v.method);
+  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") + (kind !== "invite" ? " inv-" + kind : "") },
+    el("div", { class: "inv-day" }, el("span", {}, leafFmt(leafTs, { month: "short" })), el("b", {}, leafFmt(leafTs, { day: "numeric" }).replace(/\D+$/, ""))),
+    el("div", { class: "inv-text" }, lines),
+    canAdd ? el("button", { class: "btn", onclick: async (e) => {
       e.target.disabled = true;
       try { await api("open_invite", { id: m.id }); } catch (err) { fail(err); } finally { e.target.disabled = false; }
-    } }, t("add_cal")));
+    } }, t(v.cancelled ? "inv_remove_cal" : "add_cal")) : null);
 }
 
 function attNode(a, id) {
