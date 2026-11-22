@@ -495,13 +495,6 @@ function renameFolder(f) {
     loadList({ quiet: true });
   });
 }
-async function deleteFolder(f) {
-  try {
-    await api("folder_delete", { key: f.key });
-    if (S.folder === f.key) await openFolder("inbox");
-    await refreshCounts();
-  } catch (e) { fail(e); }
-}
 // a question before something that can't be taken back, or that moves a lot of mail
 function confirmSheet({ title, text, ok, run, safe = false }) {
   const go = el("button", { class: "btn primary danger", onclick: async () => {
@@ -514,6 +507,30 @@ function confirmSheet({ title, text, ok, run, safe = false }) {
   (safe ? no : go).focus();
 }
 
+// deleted folders leave nothing behind in the prefs
+function forgetFolders(keys) {
+  const gone = new Set(keys), patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => gone.has(x))) patch[k] = PREFS[k].filter((x) => !gone.has(x));
+  if (Object.keys(patch).length) savePref(patch);
+}
+// an empty folder goes at once; one with mail or folders inside asks first, then its mail (and the mail of
+// the folders inside) goes to Trash, never deleted for good, and the folders go
+async function deleteFolder(f) {
+  let use;
+  try { use = await api("folder_delete", { key: f.key, check: true }); } catch (e) { return fail(e); }
+  const go = async (trash) => {
+    const r = await api("folder_delete", trash ? { key: f.key, trash } : { key: f.key });
+    const gone = r.deleted || [f.key];
+    forgetFolders(gone);
+    if (gone.includes(S.folder)) await openFolder("inbox");
+    await refreshCounts();
+    if (trash) toast(t("folder_gone_trash", f.label));
+  };
+  if (!use.mails && !use.folders) return go(false).catch(fail);
+  const text = [use.mails ? t(use.mails === 1 ? "del_mails_1" : "del_mails_n", use.mails) : "",
+    use.folders ? t(use.folders === 1 ? "del_kids_1" : "del_kids_n", use.folders) : ""].filter(Boolean).join(" ");
+  confirmSheet({ title: t("del_folder_q", f.label), text, ok: t("delete_folder"), run: () => go(true) });
+}
 // every mail in Trash or Junk deleted for good, after a question that says how many
 async function emptyFolder(key) {
   for (const job of [...pendingMoves]) if (job.to === key) await job.commit();

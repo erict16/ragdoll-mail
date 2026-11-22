@@ -1878,44 +1878,10 @@ class Backend:
         self.bump()
         return {"key": name}
 
-    def api_folder_delete(self, a):
-        """Only a folder with no mail and no folders inside goes; mail is never deleted this way."""
-        key, label = self.own_folder(a)
-        if self.demo:
-            if any(n.startswith(key + "/") for n, _ in self.found):
-                fail("%s has folders inside it. Delete those first." % label)
-            if self.q("select 1 from msgs where folder=? limit 1", (key,)):
-                fail("%s still has mail in it. Move the mail out first." % label)
-            self.found = [(n, f) for n, f in self.found if n != key]
-        else:
-            def go(m):
-                sep = folder_sep(m)
-                self.refresh_folders(m)
-                self.own_folder(a)
-                if any(n.startswith(key + sep) for n, _ in self.found):
-                    fail("%s has folders inside it. Delete those first." % label)
-                typ, data = m.status(R.q(key), "(MESSAGES)")
-                mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
-                if typ != "OK" or not mo:
-                    fail("The mail server said: %s" % said(data))
-                if int(mo.group(1)):
-                    fail("%s still has mail in it. Move the mail out first." % label)
-                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                typ, data = m.delete(R.q(key))
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                self.refresh_folders(m)
-            self.imap(go)
-        with self.dblock:
-            for r in self.c.execute("select id from msgs where folder=?", (key,)).fetchall():
-                self.c.execute("delete from fts where rowid=?", (r["id"],))
-            self.c.execute("delete from msgs where folder=?", (key,))
-            self.c.execute("delete from state where folder=?", (key,))
-            self.c.commit()
-        self.bump()
-        return {}
+    def subtree(self, key, sep):
+        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
+        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
+                      key=lambda x: -x[0].count(sep))
 
     def drop_rows(self, folder, uids=None):
         """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
@@ -1981,6 +1947,79 @@ class Backend:
             self.drop_rows(folder, uids)
             self.bump()
         return {"count": n}
+
+    def api_folder_delete(self, a):
+        """{"key"} deletes a folder with no mail and no folders inside. {"key", "check": true} -> {"mails", "folders"}:
+        what is in it and in the folders inside it. {"key", "trash": true}: that mail goes to Trash (never deleted
+        for good here), then the folders inside and the folder itself are deleted."""
+        key, label = self.own_folder(a)
+        check, trash = a.get("check") is True, a.get("trash") is True
+        bin_ = R.CFG.folders.get("trash")
+        if trash and not bin_:
+            fail("No %s folder is set." % "trash")
+        if self.demo:
+            names = self.subtree(key, "/")
+            mails = self.q("select count(*) n from msgs where folder in (%s)" % ",".join("?" * len(names)),
+                           [n for n, _ in names])[0]["n"]
+            if check:
+                return {"mails": mails, "folders": len(names) - 1}
+            if not trash:
+                if len(names) > 1:
+                    fail("%s has folders inside it. Delete those first." % label)
+                if mails:
+                    fail("%s still has mail in it. Move the mail out first." % label)
+            for n, _ in names:
+                for r in self.q("select uid, ts, seen, answered, flagged from msgs where folder=?", (n,)):
+                    raw = self.demo_raw.get((n, r["uid"]))
+                    if raw:
+                        self.demo_insert(bin_, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+            gone = {n for n, _ in names}
+            self.found = [(n, f) for n, f in self.found if n not in gone]
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                names = self.subtree(key, sep)
+                if check:
+                    return {"mails": sum(self.server_count(m, n) for n, f in names if "\\noselect" not in f.split()),
+                            "folders": len(names) - 1}
+                if not trash:
+                    if len(names) > 1:
+                        fail("%s has folders inside it. Delete those first." % label)
+                    if self.server_count(m, key):
+                        fail("%s still has mail in it. Move the mail out first." % label)
+                else:
+                    if bin_ not in self.folders(m):
+                        fail("The folder %s is no longer on the server." % bin_)
+                    for n, f in names:
+                        if "\\noselect" in f.split():
+                            continue
+                        R.select(m, n, readonly=False)
+                        uids = R.uids_of(m)
+                        if uids:
+                            R.move_uids(m, n, uids, bin_)
+                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+                for n, _ in names:
+                    with contextlib.suppress(Exception):
+                        m.unsubscribe(R.q(n))
+                    typ, data = m.delete(R.q(n))
+                    if typ != "OK":
+                        self.refresh_folders(m)
+                        fail("The mail server said: %s" % said(data))
+                self.refresh_folders(m)
+                return names
+            out = self.imap(go)
+            if check:
+                return out
+            names = out
+            self.extra_now = True
+            self.wake.set()
+        for n, _ in names:
+            self.drop_rows(n)
+            self.exec("delete from state where folder=?", (n,))
+        self.bump()
+        return {"deleted": [n for n, _ in names]}
 
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""

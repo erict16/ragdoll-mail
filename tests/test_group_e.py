@@ -52,6 +52,25 @@ class Demo(OwnBackend):
             getattr(self.b, "api_" + name)(a)
         return str(e.exception)
 
+    def test_delete_with_mail_goes_to_trash(self):
+        self.b.found.append(("Projects/Acme/2026", ""))
+        mail(self.b, "Projects/Acme/2026", "Deep mail")
+        mail(self.b, "Projects", "Top mail")
+        n = len(self.b.q("select 1 from msgs where folder in ('Projects', 'Projects/Acme', 'Projects/Acme/2026')"))
+        self.assertEqual(self.b.api_folder_delete({"key": "Projects", "check": True}), {"mails": n, "folders": 2})
+        self.assertIn("folders inside", self.err("folder_delete", {"key": "Projects"}))     # not without asking
+        trash = len(self.subjects("Deleted Messages"))
+        out = self.b.api_folder_delete({"key": "Projects", "trash": True})
+        self.assertEqual(out["deleted"], ["Projects/Acme/2026", "Projects/Acme", "Projects"])
+        self.assertFalse([k for k in self.keys() if k.startswith("Projects")])
+        self.assertEqual(len(self.subjects("Deleted Messages")), trash + n)
+        self.assertIn("Deep mail", self.subjects("Deleted Messages"))
+        self.assertFalse(self.b.q("select 1 from msgs where folder like 'Projects%'"))
+        # an empty one goes without the question
+        self.b.found.append(("Empty", ""))
+        self.assertEqual(self.b.api_folder_delete({"key": "Empty", "check": True}), {"mails": 0, "folders": 0})
+        self.assertEqual(self.b.api_folder_delete({"key": "Empty"}), {"deleted": ["Empty"]})
+
     def test_empty_trash_and_junk(self):
         mail(self.b, "Deleted Messages", "Old one")
         n = len(self.subjects("Deleted Messages"))
@@ -195,6 +214,21 @@ class OnServer(OwnBackend):
 
     def rows(self, folder):
         return sorted(r["uid"] for r in self.b.q("select uid from msgs where folder=?", (folder,)))
+
+    def test_delete_folder_with_mail(self):
+        s = self.start()
+        key = "其他文件夹/华明印尼"
+        self.assertEqual(self.b.api_folder_delete({"key": key, "check": True}), {"mails": 3, "folders": 1})
+        with self.assertRaises(A.ApiError):
+            self.b.api_folder_delete({"key": key})
+        self.assertEqual(self.srv.count(key), 2)          # nothing happened without trash
+        out = self.b.api_folder_delete({"key": key, "trash": True})
+        self.assertEqual(out["deleted"], [key + s + "2025", key])
+        self.assertEqual(self.srv.count("Deleted Messages"), 4)                 # moved, never deleted for good
+        self.assertNotIn(key, self.srv.folders())
+        self.assertNotIn(key + "/2025", self.srv.folders())
+        self.assertEqual((self.rows(key), self.rows(key + "/2025")), ([], []))
+        self.assertFalse([c for c in self.srv.calls if c[:2] == ("uid", "STORE")])
 
     def test_empty_trash_in_batches(self):
         self.start()
