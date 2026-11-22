@@ -225,5 +225,200 @@ class Charsets(unittest.TestCase):
         self.assertEqual(A.invite_of(mail("", as_file=True, data=data))["title"], "产品培训")
 
 
+def calendar_part(msg):
+    return next(p for p in msg.walk() if p.get_content_type() == "text/calendar")
+
+
+class Reply(unittest.TestCase):
+    """The iTIP REPLY that Accept / Maybe / Decline sends (RFC 5546 3.2.3)."""
+
+    def build(self, answer="ACCEPTED", note="", event=None):
+        orig = mail(cal(event or EVENT % (OUTLOOK_TZ, OUTLOOK_TZ), zones=VTZ_BERLIN % OUTLOOK_TZ))
+        msg = A.build_rsvp(orig, answer, "you@example.com", "Alex Morgan", note, "Accepted: %s")
+        return orig, A.R.to_msg(msg.as_bytes(policy=A.R.OUT_POLICY))
+
+    def test_headers(self):
+        _o, m = self.build()
+        self.assertEqual(A.R.hdr(m, "To"), '"Ong, Gerrick" <gerrick@contoso.com>')
+        self.assertEqual(A.R.hdr(m, "From"), "Alex Morgan <you@example.com>")
+        self.assertEqual(A.R.hdr(m, "Subject"), "Accepted: Supplier sync")
+        self.assertEqual(A.R.hdr(m, "In-Reply-To"), "<inv-1@contoso.com>")
+        self.assertEqual(m.get_content_type(), "multipart/alternative")
+        p = calendar_part(m)
+        self.assertEqual(p.get_param("method"), "REPLY")
+        self.assertEqual(p.get_content_charset(), "utf-8")
+
+    def test_calendar(self):
+        _o, m = self.build("DECLINED", "Sorry, on leave; back Monday")
+        text = A.ics_charset_text(calendar_part(m))
+        for line in text.split("\r\n"):
+            self.assertLessEqual(len(line.encode()), 75, line)
+        c = A.ics_parse(text)
+        vcal = next(A.ics_find(c, "VCALENDAR"))
+        self.assertEqual(A.ics_prop(vcal, "METHOD")[0], "REPLY")
+        ev = next(A.ics_find(c, "VEVENT"))
+        self.assertEqual(A.ics_prop(ev, "UID")[0], "040000008200E00074C5B7101A82E008")
+        self.assertEqual(A.ics_prop(ev, "SEQUENCE")[0], "0")
+        org_v, org_p = A.ics_prop(ev, "ORGANIZER")
+        self.assertEqual((org_v, org_p["CN"]), ("mailto:gerrick@contoso.com", "Ong, Gerrick"))
+        atts = [(v, p) for n, p, v, _l in ev["props"] if n == "ATTENDEE"]
+        self.assertEqual(len(atts), 1)                              # only the person answering
+        self.assertEqual(atts[0][0], "mailto:you@example.com")
+        self.assertEqual(atts[0][1]["PARTSTAT"], "DECLINED")
+        self.assertEqual(atts[0][1]["CN"], "Alex Morgan")
+        self.assertNotIn("RSVP", atts[0][1])
+        self.assertRegex(A.ics_prop(ev, "DTSTAMP")[0], r"^\d{8}T\d{6}Z$")
+        self.assertEqual(A.ics_text(A.ics_prop(ev, "COMMENT")[0]), "Sorry, on leave; back Monday")
+        # the zone the times are in goes along, so the reply reads the same everywhere
+        self.assertEqual(len(list(A.ics_find(c, "VTIMEZONE"))), 1)
+        self.assertEqual(A.invite_of(m)["start"], utc(2026, 11, 24, 9))
+        self.assertEqual(A.invite_of(m)["reply"]["status"], "DECLINED")
+
+    def test_keeps_sequence_and_occurrence(self):
+        e = ("UID:s\r\nSEQUENCE:3\r\nRECURRENCE-ID:20261130T020000Z\r\nDTSTART:20261201T020000Z\r\nSUMMARY:W\r\n"
+             "ORGANIZER:mailto:o@x.com\r\nATTENDEE:mailto:you@example.com\r\n")
+        _o, m = self.build("TENTATIVE", event=e)
+        ev = next(A.ics_find(A.ics_parse(A.ics_charset_text(calendar_part(m))), "VEVENT"))
+        self.assertEqual(A.ics_prop(ev, "SEQUENCE")[0], "3")
+        self.assertEqual(A.ics_prop(ev, "RECURRENCE-ID")[0], "20261130T020000Z")
+        self.assertIn("PARTSTAT=TENTATIVE", A.ics_charset_text(calendar_part(m)).replace("\r\n ", ""))
+        self.assertEqual(A.R.hdr(m, "To"), "o@x.com")
+
+    def test_refuses_nonsense(self):
+        with self.assertRaises(ValueError):
+            A.build_rsvp(mail(cal(EVENT % ("Europe/Berlin", "Europe/Berlin"))), "MAYBE", "you@example.com")
+        m = EmailMessage()
+        m["From"] = "a@b.c"
+        m.set_content("x")
+        with self.assertRaises(ValueError):
+            A.build_rsvp(A.R.to_msg(m.as_bytes()), "ACCEPTED", "you@example.com")
+
+    def test_fold(self):
+        line = "DESCRIPTION:" + "会议" * 60
+        folded = A.ics_fold(line)
+        self.assertTrue(all(len(x.encode()) <= 75 for x in folded.split("\r\n")))
+        self.assertEqual(folded.replace("\r\n ", ""), line)
+
+
+class JoinLinks(unittest.TestCase):
+    def test_services(self):
+        for kind, text in (("teams", "Join: https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=y"),
+                           ("zoom", "https://us02web.zoom.us/j/81234567890?pwd=abc"),
+                           ("meet", "Join with Google Meet: https://meet.google.com/abc-defg-hij"),
+                           ("tencent", "点击链接入会：https://meeting.tencent.com/dm/AbCd123\\n#腾讯会议：123"),
+                           ("webex", "https://acme.webex.com/acme/j.php?MTID=m1234")):
+            ev = A.pick_event(A.ics_parse(cal("UID:a\r\nDTSTART:20261125T060000Z\r\nDESCRIPTION:%s\r\n" % text)))
+            j = A.join_link(ev)
+            self.assertEqual(j["kind"], kind, text)
+            self.assertFalse(j["url"].endswith("\\n"))
+        ev = A.pick_event(A.ics_parse(cal("UID:a\r\nDTSTART:20261125T060000Z\r\nLOCATION:Room 3\r\n")))
+        self.assertIsNone(A.join_link(ev))
+        ev = A.pick_event(A.ics_parse(cal("UID:a\r\nDTSTART:20261125T060000Z\r\nX-MICROSOFT-SKYPETEAMSMEETINGURL:"
+                                          "https://teams.microsoft.com/l/meetup-join/abc\r\n")))
+        self.assertEqual(A.join_link(ev)["kind"], "teams")
+
+    def test_teams_boilerplate_is_left_out(self):
+        about = A.ics_about("Agenda: orders\n\n" + "_" * 40 + "\nMicrosoft Teams meeting\nJoin now")
+        self.assertEqual(about, "Agenda: orders")
+
+
+class DemoAnswer(unittest.TestCase):
+    """Accept in the demo: the reply goes through the app's own draft-and-send path, and nothing leaves."""
+
+    def setUp(self):
+        self.cfg = A.R.CFG
+        self.smtp, self.web = A.R.smtp_open, A.webbrowser.open
+
+        def no(*a, **k):
+            raise AssertionError("the demo must not reach the network")
+        A.R.smtp_open = A.webbrowser.open = no
+
+    def tearDown(self):
+        A.R.smtp_open, A.webbrowser.open = self.smtp, self.web
+        A.R.CFG = self.cfg
+
+    def row(self, b, subject, folder="inbox"):
+        return next(r for r in b.api_list({"folder": folder})["rows"] if r["subject"] == subject)
+
+    def test_accept_then_change(self):
+        b = A.Backend(demo=True, demo_lang="en")
+        try:
+            r = self.row(b, "Weekly supplier sync")
+            v = b.api_message({"id": r["id"]})["invite"]
+            self.assertTrue(v["can_answer"])
+            self.assertEqual(v["repeat"]["freq"], "WEEKLY")
+            self.assertEqual(v["join"]["kind"], "teams")
+            self.assertEqual(v["zone"]["label"], "Amsterdam")
+            self.assertIn(("jane.doe@acme-industrial.com", "ACCEPTED"), [(a["addr"], a["status"]) for a in v["attendees"]])
+            self.assertIsNone(v["answer"])
+            self.assertEqual(b.api_join({"id": r["id"]})["url"], v["join"]["url"])
+
+            # Undo: the draft goes, nothing is sent, nothing is remembered
+            d = b.api_rsvp({"id": r["id"], "answer": "ACCEPTED", "note": "Thanks", "subject": "Accepted: %s"})["draft"]
+            self.assertEqual(self.row(b, "Accepted: Weekly supplier sync", "drafts")["id"], d)
+            b.api_delete_draft({"id": d})
+            self.assertFalse([x for x in b.api_list({"folder": "drafts"})["rows"] if x["subject"].startswith("Accepted")])
+            self.assertIsNone(b.api_message({"id": r["id"]})["invite"]["answer"])
+
+            d = b.api_rsvp({"id": r["id"], "answer": "ACCEPTED", "note": "Thanks", "subject": "Accepted: %s"})["draft"]
+            out = b.api_rsvp_send({"id": r["id"], "draft": d, "answer": "ACCEPTED"})
+            self.assertEqual(out, {"answer": "ACCEPTED", "problems_after_sending": []})
+            self.assertEqual(b.api_message({"id": r["id"]})["invite"]["answer"], "ACCEPTED")
+            sent = self.row(b, "Accepted: Weekly supplier sync", "sent")
+            m = A.R.to_msg(b.view(sent["id"])[0])
+            self.assertEqual(A.R.hdr(m, "To"), "Daniel Ruiz <d.ruiz@contoso.com>")
+            self.assertEqual(calendar_part(m).get_param("method"), "REPLY")
+            self.assertIn("PARTSTAT=ACCEPTED", A.ics_charset_text(calendar_part(m)).replace("\r\n ", ""))
+
+            # Change: a later answer replaces it
+            d = b.api_rsvp({"id": r["id"], "answer": "DECLINED"})["draft"]
+            b.api_rsvp_send({"id": r["id"], "draft": d, "answer": "DECLINED"})
+            self.assertEqual(b.api_message({"id": r["id"]})["invite"]["answer"], "DECLINED")
+            self.assertEqual(self.row(b, "Declined: Weekly supplier sync", "sent")["subject"], "Declined: Weekly supplier sync")
+        finally:
+            b.close()
+
+    def test_not_asked_cannot_answer(self):
+        b = A.Backend(demo=True, demo_lang="zh")
+        try:
+            r = self.row(b, "项目周会（腾讯会议）")
+            v = b.api_message({"id": r["id"]})["invite"]
+            self.assertEqual((v["join"]["kind"], v["where"], v["zone"]), ("tencent", "腾讯会议", {"iana": "Asia/Shanghai",
+                             "offset": 28800, "label": "Shanghai"}))
+            self.assertTrue(v["can_answer"])
+            sub = self.row(b, "[ragdoll-mail] 新版本 v0.5.0 已发布")
+            with self.assertRaises(A.ApiError):
+                b.api_rsvp({"id": sub["id"], "answer": "ACCEPTED"})
+            with self.assertRaises(A.ApiError):
+                b.api_rsvp({"id": r["id"], "answer": "PERHAPS"})
+        finally:
+            b.close()
+
+    def test_updated_invitation_says_what_changed(self):
+        b = A.Backend(demo=True, demo_lang="en")
+        try:
+            e0 = EVENT % ("Europe/Berlin", "Europe/Berlin")
+            e1 = e0.replace("SEQUENCE:0", "SEQUENCE:1").replace("T100000", "T140000").replace("T110000", "T150000")
+            out0 = {"invite": A.invite_of(mail(cal(e0)))}
+            b.invite_state(out0)
+            self.assertFalse(out0["invite"]["updated"])
+            out1 = {"invite": A.invite_of(mail(cal(e1)))}
+            b.invite_state(out1)
+            v = out1["invite"]
+            self.assertTrue(v["updated"])
+            self.assertEqual((v["was"]["start"], v["was"]["end"]), (utc(2026, 11, 24, 9), utc(2026, 11, 24, 10)))
+            self.assertNotIn("where", v["was"])
+            # an answer to the old time does not count for the new one
+            store = b.invites_load()
+            store[A.Backend.invite_key(v)]["answer"] = {"status": "ACCEPTED", "seq": 0}
+            b.invites_save(store)
+            b.invite_state(out1)
+            self.assertIsNone(out1["invite"]["answer"])
+            b.invite_state(out0)
+            self.assertEqual(out0["invite"]["answer"], "ACCEPTED")
+        finally:
+            b.close()
+
+
 if __name__ == "__main__":
     unittest.main()

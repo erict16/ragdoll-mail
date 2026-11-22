@@ -892,7 +892,8 @@ def invite_of(msg):
            "uid": g("UID")[0].strip(), "seq": int(seq_v) if seq_v.isdigit() else 0,
            "occurrence": bool(rid), "rid": rid[0].strip() if rid else "",
            "zone": zone, "attendees": [x for x in people if x["kind"] not in ("ROOM", "RESOURCE")],
-           "about": ics_about(ics_text(g("DESCRIPTION")[0]))[:2000], "join": join_link(ev), "repeat": None}
+           "about": ics_about(ics_text(g("DESCRIPTION")[0]))[:2000], "join": join_link(ev), "repeat": None,
+           "first": [start, end]}
     if all_day:
         s = g("DTSTART")[0].strip()[:8]
         out["day0"] = s
@@ -954,6 +955,112 @@ def invite_for(v, me):
     v["me_status"] = x["status"] if x else None
     v["can_answer"] = bool(x) and not v["mine"] and v.get("method") == "REQUEST" and not v.get("cancelled")
     return v
+
+
+RSVP_SUBJECT = {"ACCEPTED": "Accepted: %s", "TENTATIVE": "Tentative: %s", "DECLINED": "Declined: %s"}
+
+
+def ics_fold(line):
+    """One content line folded at 75 octets (RFC 5545 3.1), never inside a UTF-8 character."""
+    out, cur = [], b""
+    for ch in line:
+        e = ch.encode()
+        if len(cur) + len(e) > (75 if not out else 74):
+            out.append(cur)
+            cur = b""
+        cur += e
+    out.append(cur)
+    return "\r\n ".join(x.decode() for x in out)
+
+
+def ics_escape(s):
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\n") \
+        .replace("\r", "\n").replace("\n", "\\n")
+
+
+def ics_param_value(v):
+    v = (v or "").replace('"', "'")
+    return '"%s"' % v if re.search(r"[;:,]", v) else v
+
+
+def ics_lines(comp):
+    """A parsed component back as content lines (each line as it came, unfolded)."""
+    out = ["BEGIN:" + comp["name"]]
+    out += [line for _n, _p, _v, line in comp["props"]]
+    for s in comp["subs"]:
+        out += ics_lines(s)
+    return out + ["END:" + comp["name"]]
+
+
+def rsvp_ics(cal, ev, partstat, me, name, note="", now=None):
+    """The iTIP REPLY (RFC 5546 3.2.3) to the event ev of the invitation cal: the same UID, SEQUENCE and
+    RECURRENCE-ID, the organizer, and one ATTENDEE, the person answering, with PARTSTAT. DTSTAMP is when the
+    reply is made, so a later answer replaces an earlier one."""
+    used = {p.get("TZID", "").strip() for n, p, _v, _l in ev["props"]
+            if n in ("DTSTART", "DTEND", "RECURRENCE-ID") and p.get("TZID")}
+    lines = ["BEGIN:VCALENDAR", "PRODID:-//Ragdoll Mail//EN", "VERSION:2.0", "METHOD:REPLY"]
+    for z in ics_find(cal, "VTIMEZONE"):
+        if (ics_prop(z, "TZID") or ("", {}))[0].strip().strip('"') in used:
+            lines += ics_lines(z)
+    lines.append("BEGIN:VEVENT")
+    for want in ("UID", "RECURRENCE-ID", "SEQUENCE", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "ORGANIZER"):
+        lines += [line for n, _p, _v, line in ev["props"] if n == want][:1]
+    if not ics_prop(ev, "SEQUENCE"):
+        lines.append("SEQUENCE:0")
+    lines.append("DTSTAMP:" + dt.datetime.fromtimestamp(now or time.time(), dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    me = (me or "").lower()
+    params = next((dict(p) for n, p, v, _l in ev["props"]
+                   if n == "ATTENDEE" and ics_person(v, p)["addr"] == me), {})
+    for k in ("PARTSTAT", "RSVP"):
+        params.pop(k, None)
+    if name and not params.get("CN"):
+        params["CN"] = name
+    lines.append("ATTENDEE" + "".join(";%s=%s" % (k, ics_param_value(v)) for k, v in params.items())
+                 + ";PARTSTAT=%s:mailto:%s" % (partstat, me))
+    if note:
+        lines.append("COMMENT:" + ics_escape(note))
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
+
+
+def build_rsvp(orig, partstat, me, name="", note="", subject=None):
+    """The answer to the invitation mail orig, to its organizer: text/plain (the note) beside
+    text/calendar; method=REPLY. ValueError when the mail holds no invitation to answer."""
+    partstat = (partstat or "").upper()
+    if partstat not in RSVP_SUBJECT:
+        raise ValueError("unknown answer")
+    p = ics_part(orig)
+    if p is None:
+        raise ValueError("no invitation")
+    cal = ics_parse(ics_charset_text(p))
+    ev = pick_event(cal)
+    if ev is None or not ics_prop(ev, "UID"):
+        raise ValueError("no invitation")
+    org = ics_prop(ev, "ORGANIZER")
+    to = ics_person(*org)["addr"] if org else ""
+    to_name = ics_person(*org)["name"] if org else ""
+    if not to:
+        f = R.addrs(R.hdr(orig, "From"))
+        to, to_name = (f[0][1], f[0][0]) if f else ("", "")
+    if not to:
+        raise ValueError("the invitation has no organizer")
+    title = ics_text((ics_prop(ev, "SUMMARY") or ("", {}))[0])
+    form = subject if subject and "%s" in subject else RSVP_SUBJECT[partstat]
+    note = re.sub(r"[\r\n]+", " ", (note or "").strip())[:500]
+    msg = EmailMessage()
+    msg["From"] = formataddr((R.one_line(name), me)) if name else me
+    msg["To"] = formataddr((R.one_line(to_name), to)) if to_name else to
+    msg["Subject"] = R.one_line(form.replace("%s", title, 1)).strip()
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=(me.split("@")[-1] or None))
+    mid = R.hdr(orig, "Message-ID").strip()
+    if mid:
+        msg["In-Reply-To"] = mid
+        msg["References"] = ((R.hdr(orig, "References").strip() + " ") if R.hdr(orig, "References").strip() else "") + mid
+    msg.set_content((note or msg["Subject"]) + "\n")
+    msg.add_alternative(rsvp_ics(cal, ev, partstat, me, name, note), subtype="calendar",
+                        params={"method": "REPLY"})
+    return msg
 
 
 def data_images(html):
@@ -1112,6 +1219,10 @@ DEMO = [
      "Product training next Wednesday",
      "Hi all,\n\nThe product training is next Wednesday at 2 pm in the meeting room on the third floor. "
      "Please be on time.\n\nEmily", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("Daniel Ruiz", "d.ruiz@contoso.com"), [ME], [],
+     "Weekly supplier sync",
+     "Hi Alex,\n\nA short weekly call to go through open orders and shipments. It's on Teams.\n\nDaniel",
+     [("meeting.ics", "teams")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -1205,6 +1316,9 @@ DEMO_ZH = [
     ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME_ZH], [],
      "下周培训安排",
      "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("周敏", "zhou.min@fabrikam.cn"), [ME_ZH], [],
+     "项目周会（腾讯会议）",
+     "各位好，\n\n这周的项目周会改在线上开，请用腾讯会议加入。\n\n周敏", [("meeting.ics", "tencent")], True, None, None),
     ("inbox", 60 * 200, ("陈刚", "chen.gang@example.com"), [ME_ZH], [],
      "备件清单",
      "林工，\n\n附件是明年需要的备件清单。\n\n陈刚", [("备件清单_2027.pdf", "pdf")], True, None, None),
@@ -1266,7 +1380,13 @@ def demo_lang(want=None):
     return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
 
 
-def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
+def demo_attendees(people):
+    """ATTENDEE lines for [(name, addr, PARTSTAT)]."""
+    return "".join('ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=%s;RSVP=TRUE;CN="%s":mailto:%s\r\n' % (st, n, a)
+                   for n, a, st in people)
+
+
+def demo_ics(name, ts, event=DEMO_SETS["en"]["event"], to=()):
     """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
     d = dt.datetime.now() + dt.timedelta(days=1)
     d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
@@ -1274,9 +1394,71 @@ def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
     f = "%Y%m%dT%H%M%SZ"
     title, place, who, addr = event
     return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
-            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
-            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr))
+            "UID:training@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
+            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\n%sEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr,
+               demo_attendees([(n, a, "NEEDS-ACTION") for n, a in to])))
+
+
+DEMO_BERLIN = "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"
+
+
+def demo_ics_teams(to):
+    """A weekly Teams meeting from Outlook in Berlin: a Windows zone name with its VTIMEZONE, a repeat rule,
+    the Teams link, people who answered."""
+    from zoneinfo import ZoneInfo
+    berlin = ZoneInfo("Europe/Berlin")
+    d = dt.datetime.now(berlin) + dt.timedelta(days=1)
+    d = (d + dt.timedelta(days=(1 - d.weekday()) % 7)).replace(hour=10, minute=0, second=0, microsecond=0)
+    until = (d + dt.timedelta(days=120)).astimezone(dt.timezone.utc)
+    url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_RGVtbyBtZWV0aW5n%40thread.v2/0?context=demo"
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("Jane Doe", "jane.doe@acme-industrial.com", "ACCEPTED"), ("Tom Becker", "tom.becker@acme-industrial.com", "TENTATIVE"),
+        ("Priya Natarajan", "priya@fabrikam.com", "DECLINED"), ("Sara Kim", "sara.kim@northwind.io", "NEEDS-ACTION"),
+        ("Marco Rossi", "marco.rossi@example.it", "ACCEPTED")]
+    about = ("A short weekly call to go through open orders and shipments.\\n\\n" + "_" * 80 +
+             "\\nMicrosoft Teams meeting\\nJoin on your computer\\, mobile app or room device\\n" + url +
+             "\\nMeeting ID: 371 552 908 114\\nPasscode: 7xQ2pD\\n" + "_" * 80)
+    z = '"%s"' % DEMO_BERLIN
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN\r\nVERSION:2.0\r\n"
+            "METHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:%s\r\nBEGIN:STANDARD\r\nDTSTART:16010101T030000\r\n"
+            "TZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\n"
+            "BEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\n"
+            "RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\n"
+            "ORGANIZER;CN=Daniel Ruiz:mailto:d.ruiz@contoso.com\r\n%s"
+            "DESCRIPTION;LANGUAGE=en-US:%s\r\nRRULE:FREQ=WEEKLY;UNTIL=%s;INTERVAL=1;BYDAY=TU;WKST=SU\r\n"
+            "UID:040000008200E00074C5B7101A82E00800000000DEMO0001\r\nSUMMARY;LANGUAGE=en-US:Weekly supplier sync\r\n"
+            "DTSTART;TZID=%s:%s\r\nDTEND;TZID=%s:%s\r\nCLASS:PUBLIC\r\nPRIORITY:5\r\nDTSTAMP:%s\r\n"
+            "TRANSP:OPAQUE\r\nSTATUS:CONFIRMED\r\nSEQUENCE:0\r\nLOCATION;LANGUAGE=en-US:Microsoft Teams Meeting\r\n"
+            "X-MICROSOFT-SKYPETEAMSMEETINGURL:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (DEMO_BERLIN, demo_attendees(people), about, until.strftime("%Y%m%dT%H%M%SZ"), z,
+               d.strftime("%Y%m%dT%H%M%S"), z, (d + dt.timedelta(minutes=30)).strftime("%Y%m%dT%H%M%S"),
+               dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), url))
+
+
+def demo_ics_tencent(to):
+    """A Tencent Meeting invitation in Chinese, in Shanghai time with its VTIMEZONE."""
+    from zoneinfo import ZoneInfo
+    d = (dt.datetime.now(ZoneInfo("Asia/Shanghai")) + dt.timedelta(days=2)).replace(hour=15, minute=0, second=0,
+                                                                                   microsecond=0)
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("张伟", "zhang.wei@acme-industrial.cn", "ACCEPTED"), ("赵磊", "zhao.lei@acme-industrial.cn", "NEEDS-ACTION"),
+        ("李明", "li.ming@example.cn", "ACCEPTED"), ("孙佳", "sun.jia@northwind.cn", "TENTATIVE")]
+    url = "https://meeting.tencent.com/dm/Rd9Kx2mDemo"
+    about = ("周敏 邀请您参加腾讯会议\\n会议主题：项目周会\\n\\n点击链接入会，或添加至会议列表：\\n" + url +
+             "\\n\\n#腾讯会议：482-615-730")
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Tencent//WeMeet//CN\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n"
+            "BEGIN:VTIMEZONE\r\nTZID:Asia/Shanghai\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\n"
+            "TZOFFSETFROM:+0800\r\nTZOFFSETTO:+0800\r\nTZNAME:CST\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+            "BEGIN:VEVENT\r\nUID:wemeet-482615730@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\n"
+            "DTSTART;TZID=Asia/Shanghai:%s\r\nDTEND;TZID=Asia/Shanghai:%s\r\nSUMMARY:项目周会\r\n"
+            "LOCATION:腾讯会议\r\nDESCRIPTION:%s\r\nORGANIZER;CN=周敏:mailto:zhou.min@fabrikam.cn\r\n%s"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), d.strftime("%Y%m%dT%H%M%S"),
+               (d + dt.timedelta(hours=1)).strftime("%Y%m%dT%H%M%S"), about, demo_attendees(people)))
+
+
+DEMO_ICS = {"teams": demo_ics_teams, "tencent": demo_ics_tencent}
 
 
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False,
@@ -1306,7 +1488,10 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
         if kind == "ics":
-            msg.add_attachment(demo_ics(name, ts, event), subtype="calendar", filename=name, params={"method": "REQUEST"})
+            msg.add_attachment(demo_ics(name, ts, event, to), subtype="calendar", filename=name,
+                               params={"method": "REQUEST"})
+        elif kind in DEMO_ICS:
+            msg.add_attachment(DEMO_ICS[kind](to), subtype="calendar", filename=name, params={"method": "REQUEST"})
         elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
@@ -2576,9 +2761,126 @@ class Backend:
         subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
         return {"mailto": urllib.parse.unquote(to), "subject": subj}
 
+    # ---- meeting invitations: what was answered, what changed (invites.json, per UID and occurrence)
+
+    INVITE_LOCK = threading.Lock()
+
+    def invites_path(self):
+        return os.path.join(R.CFG.home, "invites.json")
+
+    def invites_load(self):
+        try:
+            with open(self.invites_path(), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def invites_save(self, d):
+        os.makedirs(R.CFG.home, exist_ok=True)
+        if len(d) > 2000:          # the oldest meetings go first
+            for k in sorted(d, key=lambda k: d[k].get("t", 0))[:len(d) - 2000]:
+                del d[k]
+        tmp = self.invites_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, self.invites_path())
+
+    @staticmethod
+    def invite_key(v):
+        return v["uid"] + ("|" + v["rid"] if v.get("rid") else "")
+
     def invite_state(self, out):
-        """What the invitation means for the person reading it (organizer, asked to answer)."""
-        invite_for(out["invite"], R.CFG.user)
+        """What the invitation means for the person reading it: organizer or asked to answer, how they
+        answered here, and for an updated invitation (a higher SEQUENCE) what changed since the one before."""
+        v = invite_for(out["invite"], R.CFG.user)
+        if not v.get("uid") or v["method"] not in ("REQUEST", "PUBLISH", "ADD", "CANCEL"):
+            return
+        snap = {"start": v["first"][0], "end": v["first"][1], "where": v["where"], "all_day": v["all_day"]}
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            seen = e.setdefault("seen", {})
+            if seen.get(str(v["seq"])) != snap:
+                seen[str(v["seq"])] = snap
+                e["t"] = int(time.time())
+                with contextlib.suppress(OSError):
+                    self.invites_save(d)
+        v["updated"] = v["method"] == "REQUEST" and v["seq"] > 0 and not v["cancelled"]
+        before = [int(s) for s in seen if s.lstrip("-").isdigit() and int(s) < v["seq"]]
+        if before and v["updated"]:
+            old = seen[str(max(before))]
+            was = {}
+            if (old.get("start"), old.get("end")) != (snap["start"], snap["end"]):
+                was.update(start=old.get("start"), end=old.get("end"), all_day=old.get("all_day"))
+            if old.get("where", "") != snap["where"]:
+                was["where"] = old.get("where", "")
+            v["was"] = was or None
+        ans = e.get("answer")
+        v["answer"] = ans["status"] if ans and ans.get("seq", 0) >= v["seq"] and not v["cancelled"] else None
+
+    def invite_in(self, i):
+        """(the mail, its invitation as the reader sees it) for a mail id; fails when it holds none."""
+        msg = R.to_msg(self.view(i)[0])
+        v = invite_of(msg)
+        if v is None:
+            fail("This mail has no invitation.")
+        return msg, invite_for(v, R.CFG.user)
+
+    def save_built(self, msg):
+        """A mail built here (not from the compose page) saved as a draft -> its id."""
+        raw = msg.as_bytes(policy=R.OUT_POLICY)
+        drafts = R.CFG.folders["drafts"]
+        if self.demo:
+            uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
+        else:
+            def go(m):
+                return R.append_draft(m, raw), R.select(m, drafts)
+            uid, uidv = self.imap(go)
+            if uid:
+                with self.dblock:
+                    index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
+        self.bump()
+        if not uid:
+            fail("The draft was saved but the server did not say where. Open Drafts and send it from there.")
+        return R.make_id(drafts, uid)
+
+    def api_rsvp(self, a):
+        """Accept / Maybe / Decline: the iTIP reply to the organizer, saved as a draft. The page sends it with
+        api_rsvp_send after the undo pause, the way a mail from compose goes."""
+        msg, v = self.invite_in(a["id"])
+        if not v["can_answer"]:
+            fail("This invitation can't be answered from here.")
+        try:
+            reply = build_rsvp(msg, a.get("answer"), R.CFG.user, R.CFG.name, a.get("note") or "", a.get("subject"))
+        except ValueError as e:
+            fail("Can't answer this invitation: %s." % e)
+        return {"draft": self.save_built(reply)}
+
+    def api_rsvp_send(self, a):
+        """Send the reply api_rsvp saved, then remember the answer for this meeting."""
+        _msg, v = self.invite_in(a["id"])
+        status = (a.get("answer") or "").upper()
+        if status not in RSVP_SUBJECT:
+            fail("Can't answer this invitation: unknown answer.")
+        r = self.api_send({"id": a["draft"]})
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            e["answer"] = {"status": status, "seq": v["seq"], "at": int(time.time())}
+            e["t"] = int(time.time())
+            with contextlib.suppress(OSError):
+                self.invites_save(d)
+        return {"answer": status, "problems_after_sending": r.get("problems_after_sending") or []}
+
+    def api_join(self, a):
+        """Open the online meeting's link (Teams, Zoom, Google Meet, Tencent Meeting, Webex) in the browser."""
+        _msg, v = self.invite_in(a["id"])
+        if not v.get("join"):
+            fail("This invitation has no meeting link.")
+        if not self.demo:
+            webbrowser.open(v["join"]["url"])
+        return {"url": v["join"]["url"]}
 
     def api_open_invite(self, a):
         """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""

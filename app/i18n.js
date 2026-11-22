@@ -809,6 +809,7 @@ for (const [k, v] of Object.entries(MORE_E_FOLDERS)) Object.assign(LANGS[k], v);
 // 0.11 group F_INVITES: new strings for this group only
 const MORE_F_INVITES = {
   "en": {
+    inv_updated: "Updated", inv_one: "One meeting of a series", inv_was: "Was %s", inv_join: "Join", inv_you: "You", inv_more_n: "+%s", att_yes: "Accepted", att_no: "Declined", att_maybe: "Maybe", att_none: "No answer yet", inv_more: "More", inv_less: "Less", rsvp_accept: "Accept", rsvp_maybe: "Maybe", rsvp_decline: "Decline", rsvp_note: "Add a note", rsvp_did_accepted: "You accepted", rsvp_did_tentative: "You replied maybe", rsvp_did_declined: "You declined", rsvp_change: "Change", rsvp_sending: "Sending your answer…", rsvp_sent: "Answer sent", rsvp_subj_accepted: "Accepted: %s", rsvp_subj_tentative: "Tentative: %s", rsvp_subj_declined: "Declined: %s",
     inv_tz_unknown: "time zone unknown", inv_remove_cal: "Remove from Calendar",
     inv_r_accepted: "%s accepted", inv_r_declined: "%s declined", inv_r_tentative: "%s replied maybe",
     inv_r_delegated: "%s delegated", inv_r_replied: "%s replied", inv_counter: "%s proposed a new time", inv_new_time: "New time: %s",
@@ -818,6 +819,7 @@ const MORE_F_INVITES = {
     rr_yearly: "Every year", rr_years: "Every %s years", rr_until: "until %s", rr_count: "%s times",
   },
   "zh-Hans": {
+    inv_updated: "已更新", inv_one: "系列会议中的一次", inv_was: "原为 %s", inv_join: "加入会议", inv_you: "我", inv_more_n: "等 %s 人", att_yes: "已接受", att_no: "已拒绝", att_maybe: "暂定", att_none: "尚未答复", inv_more: "展开", inv_less: "收起", rsvp_accept: "接受", rsvp_maybe: "暂定", rsvp_decline: "拒绝", rsvp_note: "附言", rsvp_did_accepted: "你已接受", rsvp_did_tentative: "你已答复暂定", rsvp_did_declined: "你已拒绝", rsvp_change: "更改", rsvp_sending: "正在发送答复…", rsvp_sent: "答复已发送", rsvp_subj_accepted: "已接受: %s", rsvp_subj_tentative: "暂定: %s", rsvp_subj_declined: "已拒绝: %s",
     inv_tz_unknown: "时区不明", inv_remove_cal: "从日历中删除",
     inv_r_accepted: "%s 已接受", inv_r_declined: "%s 已拒绝", inv_r_tentative: "%s 暂定",
     inv_r_delegated: "%s 已委托他人", inv_r_replied: "%s 已回复", inv_counter: "%s 提议了新时间", inv_new_time: "新时间：%s",
@@ -827,6 +829,7 @@ const MORE_F_INVITES = {
     rr_yearly: "每年", rr_years: "每 %s 年", rr_until: "到 %s 为止", rr_count: "共 %s 次",
   },
   "zh-Hant": {
+    inv_updated: "已更新", inv_one: "系列會議中的一次", inv_was: "原為 %s", inv_join: "加入會議", inv_you: "我", inv_more_n: "等 %s 人", att_yes: "已接受", att_no: "已拒絕", att_maybe: "暫定", att_none: "尚未回覆", inv_more: "展開", inv_less: "收合", rsvp_accept: "接受", rsvp_maybe: "暫定", rsvp_decline: "拒絕", rsvp_note: "附註", rsvp_did_accepted: "你已接受", rsvp_did_tentative: "你已回覆暫定", rsvp_did_declined: "你已拒絕", rsvp_change: "更改", rsvp_sending: "正在傳送回覆…", rsvp_sent: "回覆已傳送", rsvp_subj_accepted: "已接受: %s", rsvp_subj_tentative: "暫訂: %s", rsvp_subj_declined: "已拒絕: %s",
     inv_tz_unknown: "時區不明", inv_remove_cal: "從行事曆中移除",
     inv_r_accepted: "%s 已接受", inv_r_declined: "%s 已拒絕", inv_r_tentative: "%s 暫定",
     inv_r_delegated: "%s 已委派他人", inv_r_replied: "%s 已回覆", inv_counter: "%s 提議了新時間", inv_new_time: "新時間：%s",
@@ -836,6 +839,7 @@ const MORE_F_INVITES = {
     rr_yearly: "每年", rr_years: "每 %s 年", rr_until: "到 %s 為止", rr_count: "共 %s 次",
   },
   "ja": {
+    inv_updated: "更新済み", inv_one: "定期的な会議の 1 回", inv_was: "変更前：%s", inv_join: "参加", inv_you: "自分", inv_more_n: "ほか %s 人", att_yes: "承諾", att_no: "辞退", att_maybe: "仮承諾", att_none: "未回答", inv_more: "もっと見る", inv_less: "閉じる", rsvp_accept: "承諾", rsvp_maybe: "仮承諾", rsvp_decline: "辞退", rsvp_note: "メッセージを添える", rsvp_did_accepted: "承諾しました", rsvp_did_tentative: "仮承諾しました", rsvp_did_declined: "辞退しました", rsvp_change: "変更", rsvp_sending: "返信を送信中…", rsvp_sent: "返信を送信しました", rsvp_subj_accepted: "承諾: %s", rsvp_subj_tentative: "仮承諾: %s", rsvp_subj_declined: "辞退: %s",
     inv_tz_unknown: "タイムゾーン不明", inv_remove_cal: "カレンダーから削除",
     inv_r_accepted: "%s さんが承諾しました", inv_r_declined: "%s さんが辞退しました", inv_r_tentative: "%s さんが仮承諾しました",
     inv_r_delegated: "%s さんが代理を立てました", inv_r_replied: "%s さんが返信しました", inv_counter: "%s さんが新しい日時を提案しました", inv_new_time: "新しい日時：%s",
@@ -845,6 +849,7 @@ const MORE_F_INVITES = {
     rr_yearly: "毎年", rr_years: "%s 年ごと", rr_until: "%s まで", rr_count: "%s 回",
   },
   "ko": {
+    inv_updated: "업데이트됨", inv_one: "반복 회의 중 한 번", inv_was: "변경 전: %s", inv_join: "참가", inv_you: "나", inv_more_n: "외 %s명", att_yes: "수락", att_no: "거절", att_maybe: "미정", att_none: "아직 답 없음", inv_more: "더 보기", inv_less: "접기", rsvp_accept: "수락", rsvp_maybe: "미정", rsvp_decline: "거절", rsvp_note: "메모 추가", rsvp_did_accepted: "수락했습니다", rsvp_did_tentative: "미정으로 답했습니다", rsvp_did_declined: "거절했습니다", rsvp_change: "변경", rsvp_sending: "답장 보내는 중…", rsvp_sent: "답장을 보냈습니다", rsvp_subj_accepted: "수락: %s", rsvp_subj_tentative: "미정: %s", rsvp_subj_declined: "거절: %s",
     inv_tz_unknown: "시간대 알 수 없음", inv_remove_cal: "캘린더에서 삭제",
     inv_r_accepted: "%s 님이 수락했습니다", inv_r_declined: "%s 님이 거절했습니다", inv_r_tentative: "%s 님이 미정으로 답했습니다",
     inv_r_delegated: "%s 님이 위임했습니다", inv_r_replied: "%s 님이 답장했습니다", inv_counter: "%s 님이 새 시간을 제안했습니다", inv_new_time: "새 시간: %s",
@@ -854,6 +859,7 @@ const MORE_F_INVITES = {
     rr_yearly: "매년", rr_years: "%s년마다", rr_until: "%s까지", rr_count: "%s회",
   },
   "es": {
+    inv_updated: "Actualizada", inv_one: "Una reunión de una serie", inv_was: "Antes: %s", inv_join: "Unirse", inv_you: "Tú", inv_more_n: "+%s", att_yes: "Acepta", att_no: "Rechaza", att_maybe: "Quizá", att_none: "Sin respuesta", inv_more: "Más", inv_less: "Menos", rsvp_accept: "Aceptar", rsvp_maybe: "Quizá", rsvp_decline: "Rechazar", rsvp_note: "Añadir una nota", rsvp_did_accepted: "Has aceptado", rsvp_did_tentative: "Has respondido quizá", rsvp_did_declined: "Has rechazado", rsvp_change: "Cambiar", rsvp_sending: "Enviando tu respuesta…", rsvp_sent: "Respuesta enviada", rsvp_subj_accepted: "Aceptado: %s", rsvp_subj_tentative: "Provisional: %s", rsvp_subj_declined: "Rechazado: %s",
     inv_tz_unknown: "zona horaria desconocida", inv_remove_cal: "Quitar del calendario",
     inv_r_accepted: "%s ha aceptado", inv_r_declined: "%s ha rechazado", inv_r_tentative: "%s ha respondido quizá",
     inv_r_delegated: "%s ha delegado", inv_r_replied: "%s ha respondido", inv_counter: "%s ha propuesto otra hora", inv_new_time: "Nueva hora: %s",
@@ -863,6 +869,7 @@ const MORE_F_INVITES = {
     rr_yearly: "Cada año", rr_years: "Cada %s años", rr_until: "hasta el %s", rr_count: "%s veces",
   },
   "fr": {
+    inv_updated: "Mise à jour", inv_one: "Une réunion d’une série", inv_was: "Avant : %s", inv_join: "Rejoindre", inv_you: "Vous", inv_more_n: "+%s", att_yes: "Accepté", att_no: "Refusé", att_maybe: "Peut-être", att_none: "Pas encore de réponse", inv_more: "Plus", inv_less: "Moins", rsvp_accept: "Accepter", rsvp_maybe: "Peut-être", rsvp_decline: "Refuser", rsvp_note: "Ajouter un mot", rsvp_did_accepted: "Vous avez accepté", rsvp_did_tentative: "Vous avez répondu peut-être", rsvp_did_declined: "Vous avez refusé", rsvp_change: "Modifier", rsvp_sending: "Envoi de votre réponse…", rsvp_sent: "Réponse envoyée", rsvp_subj_accepted: "Accepté : %s", rsvp_subj_tentative: "Provisoire : %s", rsvp_subj_declined: "Refusé : %s",
     inv_tz_unknown: "fuseau horaire inconnu", inv_remove_cal: "Retirer du calendrier",
     inv_r_accepted: "%s a accepté", inv_r_declined: "%s a refusé", inv_r_tentative: "%s a répondu peut-être",
     inv_r_delegated: "%s a délégué", inv_r_replied: "%s a répondu", inv_counter: "%s a proposé un autre horaire", inv_new_time: "Nouvel horaire : %s",
@@ -872,6 +879,7 @@ const MORE_F_INVITES = {
     rr_yearly: "Chaque année", rr_years: "Tous les %s ans", rr_until: "jusqu’au %s", rr_count: "%s fois",
   },
   "de": {
+    inv_updated: "Aktualisiert", inv_one: "Ein Termin einer Serie", inv_was: "Vorher: %s", inv_join: "Teilnehmen", inv_you: "Sie", inv_more_n: "+%s", att_yes: "Zugesagt", att_no: "Abgesagt", att_maybe: "Vielleicht", att_none: "Noch keine Antwort", inv_more: "Mehr", inv_less: "Weniger", rsvp_accept: "Zusagen", rsvp_maybe: "Vielleicht", rsvp_decline: "Absagen", rsvp_note: "Notiz hinzufügen", rsvp_did_accepted: "Sie haben zugesagt", rsvp_did_tentative: "Sie haben mit Vielleicht geantwortet", rsvp_did_declined: "Sie haben abgesagt", rsvp_change: "Ändern", rsvp_sending: "Antwort wird gesendet…", rsvp_sent: "Antwort gesendet", rsvp_subj_accepted: "Zugesagt: %s", rsvp_subj_tentative: "Mit Vorbehalt: %s", rsvp_subj_declined: "Abgelehnt: %s",
     inv_tz_unknown: "Zeitzone unbekannt", inv_remove_cal: "Aus dem Kalender entfernen",
     inv_r_accepted: "%s hat zugesagt", inv_r_declined: "%s hat abgesagt", inv_r_tentative: "%s hat mit Vielleicht geantwortet",
     inv_r_delegated: "%s hat delegiert", inv_r_replied: "%s hat geantwortet", inv_counter: "%s hat eine neue Zeit vorgeschlagen", inv_new_time: "Neue Zeit: %s",
