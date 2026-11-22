@@ -19,6 +19,8 @@ if (location.hash) history.replaceState(null, "", location.pathname);
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? "⌘" : "Ctrl+";
+// the app's own shortcuts: Cmd on a Mac (its Ctrl keys stay the system's text keys), Ctrl elsewhere
+const isMod = K.modOf(MAC);
 
 // language: a saved choice, or the system's when it is one of ours
 let LANG = "en", LOCALE = undefined, TZ = undefined, STR = LANGS.en;
@@ -524,11 +526,12 @@ function folderMenu(anchor, f) {
   ]);
 }
 
+const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
 function accountMenu() {
   menu($("#account"), [
     { note: S.boot.demo ? t("demo") : S.boot.user },
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
-    { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
+    { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
     "-",
@@ -805,14 +808,14 @@ function targets() {
 }
 const rowOf = (id) => S.rows.find((x) => x.id === id) || S.thread?.rows.find((x) => x.id === id);
 async function pickRow(id, e) {
-  if (!(e.metaKey || e.ctrlKey || e.shiftKey)) return selectRow(id);
+  if (!(isMod(e) || e.shiftKey)) return selectRow(id);
   if (S.compose && !(await leaveCompose())) return;
   if (e.shiftKey && (S.anchor || S.sel)) {
     const ids = S.rows.map((x) => x.id);
     let a = ids.indexOf(S.anchor || S.sel), b = ids.indexOf(id);
     if (a < 0) a = b;
     const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
-    S.multi = new Set(e.metaKey || e.ctrlKey ? [...S.multi, ...range] : range);
+    S.multi = new Set(isMod(e) ? [...S.multi, ...range] : range);
   } else {
     if (!S.multi.size && S.sel) S.multi.add(S.sel);
     if (S.multi.has(id)) S.multi.delete(id); else S.multi.add(id);
@@ -1723,7 +1726,7 @@ function renderCompose() {
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
   ed.addEventListener("keydown", (e) => {
-    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    const mod = isMod(e), k = e.key.toLowerCase();
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
     else if (k === "b" || k === "i" || k === "u") { e.preventDefault(); edCmd({ b: "bold", i: "italic", u: "underline" }[k]); }
@@ -2512,7 +2515,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -2533,7 +2536,9 @@ function typing(e) {
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
 }
 function onKey(e) {
-  const mod = e.metaKey || e.ctrlKey;
+  const mod = isMod(e);
+  // Sync now; the web view would otherwise reload the whole page and drop what is open, a compose too
+  if ((mod && !e.altKey && e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow(); return; }
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }

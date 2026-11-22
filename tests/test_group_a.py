@@ -103,3 +103,19 @@ class Kit(unittest.TestCase):
                          "color: red")
         self.assertEqual(js('K.cleanStyle("background-image: url(data:image/png;base64,AA;); width: 2px")'),
                          "background-image: url(data:image/png;base64,AA;); width: 2px")
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class Keys(unittest.TestCase):
+    def test_mod_is_cmd_on_mac_and_ctrl_elsewhere(self):
+        got = js('[true, false].map((mac) => [{ metaKey: true }, { ctrlKey: true }, { metaKey: true, ctrlKey: true }]'
+                 '.map((e) => K.modOf(mac)(e)))')
+        self.assertEqual(got, [[True, False, False], [False, True, False]])
+
+    def test_sync_shortcut_is_wired(self):
+        with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow()', src)
+        self.assertIn('[MOD + "R", "sync_now"]', src)
+        # no shortcut takes Ctrl on a Mac any more
+        self.assertNotIn("const mod = e.metaKey || e.ctrlKey", src)
