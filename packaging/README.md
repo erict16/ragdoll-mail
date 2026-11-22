@@ -2,13 +2,14 @@
 
 Files for installing Ragdoll Mail with a package manager. Nothing here is published by itself.
 
-After each release (the build workflow adds `SHA256SUMS.txt` to it):
+After each release, once the build has put both files on it:
 
 ```bash
 python3 packaging/bump.py
 ```
 
-This points the cask, the formula and the winget files at the version in `pyproject.toml`.
+This points the cask, the formula and the winget files at the version in `pyproject.toml`. It takes each file's
+SHA-256 from the GitHub API (every release file has a digest there) and only downloads a file when no digest is given.
 
 ## Homebrew (Mac)
 

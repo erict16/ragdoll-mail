@@ -4,10 +4,10 @@
     python3 packaging/bump.py            # the version in pyproject.toml
     python3 packaging/bump.py 0.10.0
 
-It reads SHA256SUMS.txt from the GitHub release (the build workflow adds it). For an older
-release without that file it downloads the two files and hashes them itself.
+It takes each file's SHA-256 from the release on GitHub (the API gives every asset a digest).
+When the API has none, it downloads the file and hashes it itself.
 """
-import hashlib, os, re, sys, urllib.request
+import hashlib, json, os, re, sys, urllib.request
 
 REPO = "erict16/ragdoll-mail"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,11 +23,15 @@ def get(url):
 
 def sums(version):
     base = "https://github.com/%s/releases/download/v%s/" % (REPO, version)
+    found = {}
     try:
-        text = get(base + "SHA256SUMS.txt").decode()
-        found = dict(reversed(line.split()) for line in text.splitlines() if line.strip())
-    except Exception:
-        found = {}
+        rel = json.loads(get("https://api.github.com/repos/%s/releases/tags/v%s" % (REPO, version)))
+        for asset in rel.get("assets", []):
+            algo, _, digest = (asset.get("digest") or "").partition(":")
+            if algo == "sha256" and re.fullmatch(r"[0-9a-f]{64}", digest):
+                found[asset["name"]] = digest
+    except Exception as e:
+        print("no digests from the GitHub API (%s)" % e, file=sys.stderr)
     for name in FILES.values():
         if name not in found:
             print("hashing", name, "...", file=sys.stderr)
