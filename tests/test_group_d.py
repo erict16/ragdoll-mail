@@ -197,5 +197,65 @@ class Watchdog(OwnBackend):
         self.assertIsNone(b.sync["error"])
 
 
+class Wake(OwnBackend):
+    """#56: after sleep the kept connections are dead; the app connects again and looks for mail at once."""
+
+    def test_time_jump_is_a_wake(self):
+        b = self.b
+        b.m, b.sync_m, b.pre_m = Works(), Works(), Works()
+        with contextlib.redirect_stderr(self.err):
+            b.watch_tick(mono=100, wall=1000)
+            b.watch_tick(mono=102, wall=1002)          # an ordinary look
+            self.assertFalse(b.wake.is_set() or b.woke_at)
+            b.watch_tick(mono=104, wall=1900)          # macOS: the wall clock ran on in sleep
+        self.assertTrue(b.wake.is_set())
+        self.assertTrue(all(m.sock.down.is_set() for m in (b.m, b.sync_m, b.pre_m)))
+
+    def test_long_gap_is_a_wake_too(self):
+        b = self.b
+        b.sync_m = Works()
+        with contextlib.redirect_stderr(self.err):
+            b.watch_tick(mono=100, wall=1000)
+            b.watch_tick(mono=700, wall=1600)          # Windows: both clocks ran, the app did not
+        self.assertTrue(b.wake.is_set() and b.sync_m.sock.down.is_set())
+
+    def test_idle_connection_is_asked_briefly(self):
+        class Dead(Works):
+            def noop(self):
+                raise socket.timeout("timed out")
+        live, dead = Works(), Dead()
+        self.assertTrue(A.still_there(dead, time.time(), 120))      # used a moment ago: not asked
+        self.assertTrue(A.still_there(live, 0, 120))
+        self.assertEqual(live.sock.timeouts, [6, 120])
+        self.assertFalse(A.still_there(dead, 0, 120))
+        self.assertEqual(dead.sock.timeouts[-1], 120)
+
+    def test_sync_drops_a_dead_kept_connection(self):
+        b = self.b
+
+        class Dead(Works):
+            def list(self):
+                raise AssertionError("the dead connection was used")
+
+            def noop(self):
+                raise imaplib.IMAP4.abort("EOF")
+        b.sync_m, b.sync_used = Dead(), 0
+        fresh = Works()
+        self.patch(A.R, "imap", lambda: fresh)
+        self.patch(A.R, "sync_headers", lambda *a, **kw: 0)
+        self.patch(A.R, "sync_bodies", lambda *a, **kw: 0)
+        b.note_new = lambda *a: None
+        real = b.note_folders
+
+        def note_folders(m, c):
+            real(m, c)
+            b.stopping.set()
+        b.note_folders = note_folders
+        b.wake.set()
+        b.sync_loop()
+        self.assertTrue(fresh.listed)
+        self.assertIsNone(b.sync["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -141,6 +141,25 @@ def cut(m):
             sock.shutdown(socket.SHUT_RDWR)
 
 
+IDLE_CHECK = 60     # seconds a kept connection may sit unused before it is asked whether it is still there
+
+
+def still_there(m, used, timeout):
+    """After sleep or a network change a kept connection is dead, and its first command would wait
+    out the whole timeout: past IDLE_CHECK a NOOP with a short wait says whether it lives (#56)."""
+    if time.time() - used <= IDLE_CHECK:
+        return True
+    try:
+        m.sock.settimeout(6)
+        m.noop()
+        return True
+    except Exception:           # noqa: BLE001 - whatever it is, the connection is not usable
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(timeout)
+
+
 def configured():
     return bool(R.CFG.user and R.CFG.imap.get("host") and R.CFG.smtp.get("host"))
 
@@ -773,6 +792,9 @@ class Backend:
         self.pre_m = None                       # the head start's own connection
         self.pass_at = None                     # when the sync pass under way began (time.monotonic)
         self.pass_cut = False                   # the watchdog has cut that pass's connection
+        self.sync_used = self.pre_used = 0      # when those connections last answered
+        self.clock = None                       # (time.time(), time.monotonic()) at the watchdog's last look
+        self.woke_at = None                     # when the computer last woke from sleep
         self.watch_thread = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
@@ -1014,6 +1036,9 @@ class Backend:
             while self.fg > 0 and not self.stopping.is_set():   # a mail is being opened: stay out of its way
                 time.sleep(0.1)
             try:
+                if self.pre_m is not None and not still_there(self.pre_m, self.pre_used, 60):
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
                 if self.pre_m is None:
                     self.pre_m = R.imap()
                     with contextlib.suppress(Exception):
@@ -1025,6 +1050,7 @@ class Backend:
                     R.cache_put(R.light_path(*k), raw)
                 elif size <= self.PRE_MAX:
                     R.cache_put(path, R.fetch_raw(m, k[0], k[2]))
+                self.pre_used = time.time()
             except SystemExit:
                 pass                            # moved or deleted since
             except Exception:                   # noqa: BLE001 - only a head start; opening the mail fetches it
@@ -1128,6 +1154,7 @@ class Backend:
 
     SYNC_STUCK = 300    # seconds a sync pass may take before its connection is cut and made again
     WATCH_EVERY = 2     # seconds between the watchdog's looks
+    WAKE_GAP = 20       # seconds the clock may jump between two looks before it counts as a wake from sleep
 
     def watch_loop(self):
         while not self.stopping.wait(self.WATCH_EVERY):
@@ -1136,14 +1163,31 @@ class Backend:
             except Exception:           # noqa: BLE001 - the watchdog must live on
                 traceback.print_exc(file=sys.stderr)
 
-    def watch_tick(self, mono=None):
+    def watch_tick(self, mono=None, wall=None):
         mono = time.monotonic() if mono is None else mono
+        wall = time.time() if wall is None else wall
+        last, self.clock = self.clock, (wall, mono)
+        if last is not None:
+            # macOS stops the monotonic clock in sleep, so the wall clock runs ahead of it; Windows
+            # keeps both running, so only the long gap between two looks shows it
+            dw, dm = wall - last[0], mono - last[1]
+            if dw - dm > self.WAKE_GAP or dm > self.WATCH_EVERY + self.WAKE_GAP:
+                self.woke()
         if self.pass_at is not None and not self.pass_cut and mono - self.pass_at > self.SYNC_STUCK:
             # a read that waits on a connection that died while it waited: end it, so the pass
             # connects again (or fails and says so) instead of hanging for good
             self.pass_cut = True
             print("a sync pass took over %d s: its connection was cut" % self.SYNC_STUCK, file=sys.stderr)
             cut(self.sync_m)
+
+    def woke(self):
+        """The computer woke (or the app was stopped a long while): every kept connection is dead.
+        Cut them all, so nobody waits out a timeout on one, and look for new mail now (#56)."""
+        self.woke_at = time.time()
+        print("woke from sleep: connecting again", file=sys.stderr)
+        for m in (self.m, self.sync_m, self.pre_m):
+            cut(m)
+        self.wake.set()
 
     def sync_loop(self):
         c = None
@@ -1163,6 +1207,9 @@ class Backend:
                     if got:
                         for attempt in (0, 1):
                             try:
+                                if self.sync_m is not None and not still_there(self.sync_m, self.sync_used, 120):
+                                    m, self.sync_m = self.sync_m, None
+                                    R.quit_imap(m, quick=True)
                                 if self.sync_m is None:
                                     self.sync_m = R.imap()
                                     with contextlib.suppress(Exception):
@@ -1185,6 +1232,7 @@ class Backend:
                                         self.note_new(c)
                                 if extra:
                                     self.extra_at = time.time()
+                                self.sync_used = time.time()
                                 break
                             except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
                                 m, self.sync_m = self.sync_m, None
