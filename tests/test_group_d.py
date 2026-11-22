@@ -1,0 +1,201 @@
+"""Offline tests of sync, connections, errors, settings and prefs (0.11 group D)."""
+import contextlib, imaplib, io, json, os, socket, sys, threading, time, unittest, unittest.mock
+
+sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import ragdoll_app as A  # noqa: E402
+from test_app import FakeServer, OwnBackend  # noqa: E402
+
+R = A.R
+
+
+class Sock:
+    """A socket that records its timeouts; shutdown() ends whatever waits on it."""
+    def __init__(self):
+        self.timeouts, self.down = [], threading.Event()
+
+    def settimeout(self, t):
+        self.timeouts.append(t)
+
+    def gettimeout(self):
+        return self.timeouts[-1] if self.timeouts else None
+
+    def shutdown(self, how):
+        self.down.set()
+
+
+class Hangs(FakeServer):
+    """A connection that died while the laptop slept: LIST waits until its socket is shut down."""
+    def __init__(self):
+        super().__init__()
+        self.sock = Sock()
+        self.listed = False
+
+    def list(self):
+        if not self.sock.down.wait(5):
+            raise AssertionError("nobody cut the dead connection")
+        raise imaplib.IMAP4.abort("socket error: EOF")
+
+    def noop(self):
+        return "OK", [b""]
+
+
+class Works(FakeServer):
+    def __init__(self):
+        super().__init__()
+        self.sock = Sock()
+        self.listed = False
+
+    def list(self):
+        self.listed = True
+        return "OK", [b'(\\HasNoChildren) "/" "INBOX"']
+
+    def noop(self):
+        return "OK", [b""]
+
+
+def hung_server(answer_login=True):
+    """A local server that greets and signs in, then never answers again. Returns its port."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def run():
+        conn, _ = srv.accept()
+        conn.sendall(b"* OK ready\r\n")
+        buf = b""
+        while True:
+            try:
+                data = conn.recv(4096)
+            except OSError:
+                break
+            if not data:
+                break
+            buf += data
+            while b"\r\n" in buf:
+                line, buf = buf.split(b"\r\n", 1)
+                tag, _, rest = line.partition(b" ")
+                cmd = rest.split(b" ")[0].upper()
+                if cmd == b"CAPABILITY":
+                    conn.sendall(b"* CAPABILITY IMAP4rev1\r\n" + tag + b" OK done\r\n")
+                elif cmd == b"LOGIN" and answer_login:
+                    conn.sendall(tag + b" OK signed in\r\n")
+                # anything else: silence, like a connection that died during sleep
+        conn.close()
+        srv.close()
+    threading.Thread(target=run, daemon=True).start()
+    return srv.getsockname()[1]
+
+
+class Timeouts(unittest.TestCase):
+    """#40: no read from the server waits for good."""
+
+    def setUp(self):
+        self.cfg = R.CFG
+        R.CFG = R.Cfg(dict(R.DEFAULTS, user="me@example.com", imap={"host": "127.0.0.1", "port": 993}))
+        self.addCleanup(setattr, R, "CFG", self.cfg)
+        self.addCleanup(setattr, R, "password", R.password)
+        R.password = lambda: "pw"
+
+    def test_a_connection_keeps_a_read_timeout_after_login(self):
+        made = []
+
+        class Fake:
+            def __init__(self, host, port, timeout=None):
+                self.sock, self.capabilities = Sock(), ()
+                made.append(self)
+
+            def login(self, user, pw):
+                pass
+
+            def capability(self):
+                return "OK", [b"IMAP4rev1"]
+        with unittest.mock.patch.object(R.imaplib, "IMAP4_SSL", Fake):
+            R.imap()
+        self.assertEqual(made[0].sock.timeouts, [R.IMAP_TIMEOUT])
+        self.assertTrue(0 < R.IMAP_TIMEOUT <= 120)
+
+    def test_a_dead_connection_gives_up(self):
+        port = hung_server()
+
+        class Plain(imaplib.IMAP4):     # the same reads as IMAP4_SSL, without TLS
+            def __init__(self, host, port_, timeout=None):
+                super().__init__(host, port, timeout=timeout)
+        with unittest.mock.patch.object(R.imaplib, "IMAP4_SSL", Plain), \
+                unittest.mock.patch.object(R, "IMAP_TIMEOUT", 0.3):
+            m = R.imap()
+            t = time.time()
+            with self.assertRaises((socket.timeout, TimeoutError, imaplib.IMAP4.abort)):
+                m.noop()
+            self.assertLess(time.time() - t, 3)
+            m.shutdown()
+
+    def test_patient_waits_longer_then_goes_back(self):
+        m = Works()
+        m.sock.settimeout(60)
+        with R.patient(m):
+            self.assertEqual(m.sock.gettimeout(), R.BIG_WAIT)
+        self.assertEqual(m.sock.gettimeout(), 60)
+        with R.patient(object()):           # no socket: nothing to change
+            pass
+
+    def test_a_failed_session_does_not_wait_on_logout(self):
+        m = Works()
+        with unittest.mock.patch.object(R, "imap", lambda: m), self.assertRaises(OSError):
+            with R.session():
+                raise OSError("gone")
+        self.assertEqual(m.sock.timeouts[-1], 3)
+
+
+class Watchdog(OwnBackend):
+    """#40: a sync pass that hangs on a dead connection is cut off and goes on."""
+
+    def test_stuck_pass_is_cut(self):
+        b = self.b
+        b.sync_m, b.pass_at = Works(), time.monotonic() - b.SYNC_STUCK - 1
+        with contextlib.redirect_stderr(self.err):
+            b.watch_tick()
+        self.assertTrue(b.sync_m.sock.down.is_set())
+        self.assertTrue(b.pass_cut)
+
+    def test_fresh_pass_is_left_alone(self):
+        b = self.b
+        b.sync_m, b.pass_at = Works(), time.monotonic()
+        b.watch_tick()
+        self.assertFalse(b.sync_m.sock.down.is_set())
+
+    def test_sync_goes_on_after_a_hang(self):
+        b = self.b
+        conns = [Hangs(), Works()]
+        self.patch(A.R, "imap", lambda: conns.pop(0))
+        self.patch(A.R, "sync_headers", lambda *a, **kw: 0)
+        self.patch(A.R, "sync_bodies", lambda *a, **kw: 0)
+        b.note_new = lambda *a: None
+        b.SYNC_STUCK = 0.2
+        done = threading.Event()
+        real = b.note_folders
+
+        def note_folders(m, c):
+            real(m, c)
+            done.set()
+            b.stopping.set()
+        b.note_folders = note_folders
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def watch():
+            with contextlib.redirect_stderr(self.err):
+                while not stop.wait(0.05):
+                    b.watch_tick()
+        threading.Thread(target=watch, daemon=True).start()
+        b.wake.set()
+        t = threading.Thread(target=b.sync_loop, daemon=True)
+        t.start()
+        self.assertTrue(done.wait(5))
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertIsNone(b.sync["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

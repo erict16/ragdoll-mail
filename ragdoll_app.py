@@ -132,6 +132,15 @@ def config_path():
     return R.move_old_setup(R.env("CONFIG"))[0]
 
 
+def cut(m):
+    """Shut a connection's socket from another thread: a read that waits on it ends at once, and
+    whoever waited gets an error and connects again (#40, #56)."""
+    sock = getattr(m, "sock", None)
+    if sock is not None:
+        with contextlib.suppress(Exception):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
 def configured():
     return bool(R.CFG.user and R.CFG.imap.get("host") and R.CFG.smtp.get("host"))
 
@@ -760,6 +769,11 @@ class Backend:
         self.m_used = 0
         self.rev = 1
         self.sync = {"running": False, "error": None, "last": None}
+        self.sync_m = None                      # the sync's own connection
+        self.pre_m = None                       # the head start's own connection
+        self.pass_at = None                     # when the sync pass under way began (time.monotonic)
+        self.pass_cut = False                   # the watchdog has cut that pass's connection
+        self.watch_thread = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
         self.contacts = (0, {})
@@ -984,16 +998,14 @@ class Backend:
         self.pre_wake.set()
 
     def prefetch_loop(self):
-        m = None
         while not self.stopping.is_set():
             try:
                 k = self.pre.popleft()
             except IndexError:
                 self.pre_wake.clear()
-                if not self.pre_wake.wait(90) and m is not None:    # idle: let the connection go
-                    with contextlib.suppress(Exception):
-                        m.logout()
-                    m = None
+                if not self.pre_wake.wait(90) and self.pre_m is not None:    # idle: let the connection go
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
                 continue
             k, size = k[:3], k[3]
             path = R.cache_path(*k)
@@ -1002,10 +1014,11 @@ class Backend:
             while self.fg > 0 and not self.stopping.is_set():   # a mail is being opened: stay out of its way
                 time.sleep(0.1)
             try:
-                if m is None:
-                    m = R.imap()
+                if self.pre_m is None:
+                    self.pre_m = R.imap()
                     with contextlib.suppress(Exception):
-                        m.sock.settimeout(60)
+                        self.pre_m.sock.settimeout(60)
+                m = self.pre_m
                 self.pre_now = k
                 raw = R.fetch_light(m, k[0], k[2]) if size > R.LIGHT_MIN else None
                 if raw:
@@ -1016,16 +1029,14 @@ class Backend:
                 pass                            # moved or deleted since
             except Exception:                   # noqa: BLE001 - only a head start; opening the mail fetches it
                 self.pre_now = None
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                m, self.pre_m = self.pre_m, None
+                R.quit_imap(m, quick=True)
                 self.pre.clear()
                 time.sleep(5)
             finally:
                 self.pre_now = None
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.pre_m = self.pre_m, None
+        R.quit_imap(m, quick=True)
 
     def prune_cache(self, days=90):
         root = os.path.join(R.CFG.home, "cache")
@@ -1108,10 +1119,34 @@ class Backend:
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.sync_loop, daemon=True)
             self.thread.start()
+        if self.watch_thread is None or not self.watch_thread.is_alive():
+            self.watch_thread = threading.Thread(target=self.watch_loop, daemon=True)
+            self.watch_thread.start()
         self.wake.set()
 
+    # ---- the watchdog: a pass that hangs is cut off, so the sync never waits for good (#40)
+
+    SYNC_STUCK = 300    # seconds a sync pass may take before its connection is cut and made again
+    WATCH_EVERY = 2     # seconds between the watchdog's looks
+
+    def watch_loop(self):
+        while not self.stopping.wait(self.WATCH_EVERY):
+            try:
+                self.watch_tick()
+            except Exception:           # noqa: BLE001 - the watchdog must live on
+                traceback.print_exc(file=sys.stderr)
+
+    def watch_tick(self, mono=None):
+        mono = time.monotonic() if mono is None else mono
+        if self.pass_at is not None and not self.pass_cut and mono - self.pass_at > self.SYNC_STUCK:
+            # a read that waits on a connection that died while it waited: end it, so the pass
+            # connects again (or fails and says so) instead of hanging for good
+            self.pass_cut = True
+            print("a sync pass took over %d s: its connection was cut" % self.SYNC_STUCK, file=sys.stderr)
+            cut(self.sync_m)
+
     def sync_loop(self):
-        c, m = None, None
+        c = None
         while not self.stopping.is_set():
             self.wake.wait(60)
             self.wake.clear()
@@ -1120,6 +1155,7 @@ class Backend:
             if not configured():
                 continue
             self.sync["running"] = True
+            self.pass_at, self.pass_cut = time.monotonic(), False
             extra = False
             try:
                 c = c or R.db()
@@ -1127,10 +1163,11 @@ class Backend:
                     if got:
                         for attempt in (0, 1):
                             try:
-                                if m is None:
-                                    m = R.imap()
+                                if self.sync_m is None:
+                                    self.sync_m = R.imap()
                                     with contextlib.suppress(Exception):
-                                        m.sock.settimeout(120)
+                                        self.sync_m.sock.settimeout(120)
+                                m = self.sync_m
                                 self.note_folders(m, c)
                                 todo = self.sync_folders()
                                 if self.extra_now or time.time() - self.extra_at > 300:
@@ -1149,10 +1186,9 @@ class Backend:
                                 if extra:
                                     self.extra_at = time.time()
                                 break
-                            except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout):
-                                with contextlib.suppress(Exception):
-                                    m.logout()
-                                m = None
+                            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                                m, self.sync_m = self.sync_m, None
+                                R.quit_imap(m, quick=True)
                                 if attempt:
                                     raise
                         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
@@ -1166,16 +1202,15 @@ class Backend:
                             threading.Timer(3, self.wake.set).start()     # keep going until all are in
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
                 self.sync["error"] = friendly(e)
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
             finally:
                 self.sync["running"] = False
+                self.pass_at = None
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.sync_m = self.sync_m, None
+        R.quit_imap(m, quick=True)
 
     def look(self):
         """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
@@ -2632,6 +2667,8 @@ class Backend:
         self.sched_wake.set()
         self.pre_wake.set()
         self.drop()
+        for m in (self.sync_m, self.pre_m):
+            cut(m)
 
 
 def ids_in(a):

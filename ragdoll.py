@@ -442,13 +442,20 @@ def q(folder):
     return '"' + mutf7(folder).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def imap():
+# Seconds one read from the server may wait. It counts from the last byte that came in, so a big
+# mail that keeps arriving never runs out of it; a connection that died during sleep or a Wi-Fi
+# change does, instead of holding the sync (and its file lock) for good (#40).
+IMAP_TIMEOUT = 60
+BIG_WAIT = 180      # the wait before the first byte of a big mail or file, which the server builds first
+
+
+def imap(timeout=None):
     need_account()
     # a server that does not answer must not hold the caller (the app's one connection) for minutes
     m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], timeout=15)
     m.login(CFG.user, password())
     with contextlib.suppress(Exception):
-        m.sock.settimeout(None)         # signing in is quick, a big mail is not: reads wait as before
+        m.sock.settimeout(timeout or IMAP_TIMEOUT)
     try:        # imaplib keeps the pre-login list; MOVE and UIDPLUS often appear only after login
         typ, data = m.capability()
         if typ == "OK" and data and data[0]:
@@ -463,15 +470,42 @@ def has_cap(m, name):
 
 
 @contextlib.contextmanager
-def session():
-    m = imap()
+def patient(m, secs=None):
+    """A longer read timeout for one known-big answer; the connection's own one after it."""
+    sock = getattr(m, "sock", None)
+    try:
+        old = sock.gettimeout()
+        sock.settimeout(max(old or 0, secs or BIG_WAIT))
+    except Exception:
+        yield m
+        return
     try:
         yield m
     finally:
-        try:
-            m.logout()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            sock.settimeout(old)
+
+
+def quit_imap(m, quick=False):
+    """LOGOUT. quick: the connection may be dead, so LOGOUT must not wait out the whole timeout."""
+    if m is None:
+        return
+    if quick:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(3)
+    with contextlib.suppress(Exception):
+        m.logout()
+
+
+@contextlib.contextmanager
+def session():
+    m = imap()
+    ok = False
+    try:
+        yield m
+        ok = True
+    finally:
+        quit_imap(m, quick=not ok)
 
 
 def select(m, folder, readonly=True):
@@ -556,7 +590,8 @@ def fetch_one(m, uid, items):
 def fetch_raw(m, folder, uid):
     use(m, folder)
     for again in (False, True):
-        typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        with patient(m):
+            typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
         for item in data:
             if isinstance(item, tuple):
                 return item[1]
@@ -736,7 +771,8 @@ def fetch_part_raw(m, folder, uid, sec):
     if not SECTION_RE.fullmatch(str(sec)):      # it goes into the IMAP command as it is
         die("bad part number %r" % (sec,))
     use(m, folder)
-    got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
+    with patient(m):
+        got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
     mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
     if not isinstance(mime, bytes) or not isinstance(body, bytes):
         die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
