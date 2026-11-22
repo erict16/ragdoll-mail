@@ -704,20 +704,36 @@ for (const [k, v] of Object.entries(MORE_A_COMPOSE)) Object.assign(LANGS[k], v);
 // 0.11 group B_SEND: new strings for this group only
 const MORE_B_SEND = {
   "en": {
+    att_program: "%s is a program, so it was not opened. Programs from mail can harm your computer.",
+    show_in_folder: "Show in folder", program_file: "Program",
   },
   "zh-Hans": {
+    att_program: "%s 是程序文件，没有打开。邮件里的程序可能会损害电脑。",
+    show_in_folder: "在文件夹中显示", program_file: "程序",
   },
   "zh-Hant": {
+    att_program: "%s 是程式檔，沒有開啟。郵件裡的程式可能會損害電腦。",
+    show_in_folder: "在資料夾中顯示", program_file: "程式",
   },
   "ja": {
+    att_program: "%s はプログラムのため開きませんでした。メールで届いたプログラムはパソコンに害を与えることがあります。",
+    show_in_folder: "フォルダに表示", program_file: "プログラム",
   },
   "ko": {
+    att_program: "%s 파일은 프로그램이라 열지 않았습니다. 메일로 받은 프로그램은 컴퓨터에 해를 줄 수 있습니다.",
+    show_in_folder: "폴더에서 보기", program_file: "프로그램",
   },
   "es": {
+    att_program: "%s es un programa, así que no se abrió. Los programas recibidos por correo pueden dañar tu equipo.",
+    show_in_folder: "Mostrar en la carpeta", program_file: "Programa",
   },
   "fr": {
+    att_program: "%s est un programme : il n'a pas été ouvert. Un programme reçu par e-mail peut endommager votre ordinateur.",
+    show_in_folder: "Afficher dans le dossier", program_file: "Programme",
   },
   "de": {
+    att_program: "%s ist ein Programm und wurde nicht geöffnet. Programme aus Mails können Ihrem Computer schaden.",
+    show_in_folder: "Im Ordner zeigen", program_file: "Programm",
   },
 };
 for (const [k, v] of Object.entries(MORE_B_SEND)) Object.assign(LANGS[k], v);

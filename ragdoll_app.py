@@ -163,6 +163,8 @@ def snippet(body):
 
 
 def open_path(path, reveal=False):
+    if not reveal and R.is_program(path):
+        fail("%s is a program, so it was not opened." % os.path.basename(path))
     if sys.platform == "darwin":
         # waits only until macOS has handed the file to an app, so a file no app opens says so
         try:
@@ -290,7 +292,18 @@ def part_info(k, p, light=False):
         size = int(p["X-Ragdoll-Size"]) if left_out(p, light) and p["X-Ragdoll-Size"] else len(R.part_bytes(p))
     except Exception:
         size = 0
-    return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    out = {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    if R.is_program(disk_name(p)):
+        out["program"] = True       # opening it would run it: the page offers only save and show
+    return out
+
+
+def disk_name(p):
+    """The name a mail's file gets on disk."""
+    name = R.safe_name(R.fname(p) or "attachment")
+    if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
+        name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the system knows which app
+    return name
 
 
 
@@ -1940,10 +1953,8 @@ class Backend:
         its own to open it from. Returns its path. Opening the same file again opens the copy made the
         first time: a second copy of the same name would not open in Excel ("a workbook with the same
         name is already open"), and changes made in the first copy stay."""
-        name = R.safe_name(R.fname(p) or "attachment")
+        name = disk_name(p)
         data = R.part_bytes(p)
-        if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
-            name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the Mac knows which app
         if save:
             path = R.unique_path(downloads_dir(), name, set())
             n = 2
@@ -1956,12 +1967,14 @@ class Backend:
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, name)
             if os.path.exists(path):
+                R.mark_downloaded(path)
                 self.made.add(path)
                 return path
         tmp = path + ".part"
         with open(tmp, "wb") as f:      # the app that opens it never sees half a file
             f.write(data)
         os.replace(tmp, path)
+        R.mark_downloaded(path)
         self.made.add(path)
         return path
 
@@ -1974,12 +1987,18 @@ class Backend:
             k = next((j for j, p in enumerate(parts) if (R.fname(p) or "attachment") == name), -1)
         if not 0 <= k < len(parts):
             fail("That attachment is not in the mail any more.")
-        save = a.get("action") == "save"
+        action = a.get("action")
+        save = action == "save"
+        if action in (None, "open") and R.is_program(disk_name(parts[k])):
+            # a program runs when it is opened: say so, and let the page offer save and show in folder
+            return {"program": True, "name": disk_name(parts[k])}
         path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
-        if a.get("action") == "drag":
+        if action == "drag":
             # the file under its own name in the app's open folder; Finder copies it where it is dropped
             return {"path": path, "name": os.path.basename(path), "dragging": drag_out(path)}
-        if not save:
+        if action == "show":
+            open_path(path, reveal=True)
+        elif not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
 
@@ -2020,6 +2039,7 @@ class Backend:
             path += ".ics"
         with open(path, "wb") as f:
             f.write(data)
+        R.mark_downloaded(path)
         self.made.add(path)
         if not self.demo:
             open_path(path)

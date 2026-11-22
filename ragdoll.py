@@ -1851,6 +1851,48 @@ def safe_name(n, max_bytes=200):
     return n
 
 
+# Files that run code when opened (Windows, macOS, Linux). The app never opens one of these from a mail:
+# it only saves it or shows it in its folder.
+PROGRAM_EXTS = frozenset("""
+    exe com scr pif cpl msi msp mst msc msix msixbundle appx appxbundle appinstaller application appref-ms
+    bat cmd ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 vb vbe vbs js jse ws wsc wsf wsh hta jar jnlp
+    lnk url scf inf reg gadget chm hlp diagcab library-ms search-ms searchconnector-ms settingcontent-ms
+    xbap xll iso img vhd vhdx py pyw pyc pyz pyzw pl rb
+    app command terminal tool pkg mpkg workflow action scpt scptd applescript osax prefpane kext
+    mobileconfig fileloc inetloc webloc
+    sh bash zsh csh ksh fish run bin desktop
+""".split())
+
+
+def is_program(name):
+    """True when opening a file of this name would run it. Windows ignores dots and spaces at the end
+    of a name, so "invoice.exe." counts too."""
+    n = (name or "").strip().rstrip(". ").lower()
+    return "." in n and n.rsplit(".", 1)[1] in PROGRAM_EXTS
+
+
+ZONE_ID = "[ZoneTransfer]\r\nZoneId=3\r\n"     # Windows: "this file came from the internet"
+
+
+def mark_downloaded(path):
+    """Mark a file written from a mail as downloaded, as a browser does: Windows' Mark-of-the-Web
+    (Zone.Identifier, so SmartScreen and Office Protected View step in) and the macOS quarantine flag
+    (so Gatekeeper asks before anything in it runs). Best effort: some disks cannot hold the mark."""
+    try:
+        if sys.platform == "win32":
+            with open(path + ":Zone.Identifier", "w", encoding="ascii", newline="") as f:
+                f.write(ZONE_ID)
+        elif sys.platform == "darwin":
+            import ctypes
+            libc = ctypes.CDLL("/usr/lib/libc.dylib", use_errno=True)
+            libc.setxattr.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                                      ctypes.c_uint32, ctypes.c_int)
+            v = ("0081;%08x;Ragdoll Mail;" % int(time.time())).encode()
+            libc.setxattr(os.fsencode(path), b"com.apple.quarantine", v, len(v), 0, 0)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
 def unique_path(folder, name, used):
     """folder/name, or folder/name (2).ext when this run already wrote that name."""
     stem, ext = os.path.splitext(name)
@@ -1879,6 +1921,7 @@ def cmd_attach(a):
         path = unique_path(out, safe_name(name), used)
         with open(path, "wb") as f:
             f.write(part_bytes(p))
+        mark_downloaded(path)
         print("saved %s (%d KB)" % (os.path.abspath(path), os.path.getsize(path) // 1024))
         n += 1
     if not n:

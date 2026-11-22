@@ -61,6 +61,7 @@ const MSGS = [
   [/^the subject is empty/, "p_no_subject"], [/^garbled characters \(.\) in: (.*)$/, "p_garbled"],
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
+  [/^(.*) is a program, so it was not opened\./, "att_program"],
 ];
 function tr(msg) {
   msg = String(msg ?? "");
@@ -1386,7 +1387,11 @@ function attNode(a, id) {
   const open = async () => {
     if (node.classList.contains("busy")) return;
     node.classList.add("busy");
-    try { await api("attachment", { id, i: a.i, name: a.name, action: "open" }); } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
+    try {
+      const r = await api("attachment", { id, i: a.i, name: a.name, action: "open" });
+      // a program would run if opened: it is never opened, its folder is offered instead
+      if (r.program) toast(t("att_program", r.name), { error: true, ms: 10000, action: { label: t("show_in_folder"), run: () => api("attachment", { id, i: a.i, name: a.name, action: "show" }).catch(fail) } });
+    } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
   };
   const save = async (e) => {
     e.stopPropagation();
@@ -1398,10 +1403,12 @@ function attNode(a, id) {
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
   let dragged = false;
-  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
+  const node = el("div", { class: "att" + (a.program ? " att-program" : ""), role: "button", tabindex: "0", title: a.name,
     onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
-    el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
+    el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name),
+      a.program ? el("div", { class: "att-size att-warn", html: icon("triangle-alert", "small") + esc(t("program_file") + " · " + size(a.size)) })
+        : el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
   if (MAC && S.boot.window) {
