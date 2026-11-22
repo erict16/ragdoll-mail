@@ -474,5 +474,57 @@ class GoneFolders(OwnBackend):
         self.assertEqual([f for f in b.body_folders() if f not in ("INBOX", "Sent Messages")], [])
 
 
+class OwnFolders(OwnBackend):
+    """#39: the owner's own folders are looked at on every pass; synced when their STATUS changed."""
+
+    class Server(Listed):
+        def __init__(self, names):
+            super().__init__(names)
+            self.st = {n: [3, 10, 1, 7] for n in names}
+
+        def status(self, name, what):
+            n = R.mutf7_decode(name.strip('"'))
+            if n not in self.st:
+                return "NO", [b"no"]
+            v = self.st[n]
+            return "OK", [b'"x" (MESSAGES %d UIDNEXT %d UNSEEN %d UIDVALIDITY %d)' % tuple(v)]
+
+    def setUp(self):
+        super().setUp()
+        self.synced = []
+        self.patch(A.R, "sync_headers", lambda m, c, f, **kw: self.synced.append(f) or 0)
+        self.b.note_new = lambda c: None
+        self.server = self.Server(["INBOX", "Sent Messages", "Drafts", "Junk", "华明印尼", "Projects"])
+        self.patch(A.R.CFG, "sync_folders", ["INBOX", "Sent Messages", "Drafts"])
+        self.b.others = lambda: [("华明印尼", "华明印尼", 0), ("Projects", "Projects", 0)]
+
+    def run_pass(self):
+        self.synced = []
+        with self.b.dblock:
+            self.b.sync_pass(self.server, self.b.c)
+        return [f for f in self.synced if f in ("Junk", "华明印尼", "Projects")]
+
+    def test_only_a_changed_folder_is_synced_between_full_passes(self):
+        self.assertEqual(sorted(self.run_pass()), sorted(["Junk", "华明印尼", "Projects"]))     # the first pass: all
+        self.assertEqual(self.run_pass(), [])                                   # nothing changed
+        self.server.st["华明印尼"][1] = 11                                      # a server rule filed new mail
+        self.assertEqual(self.run_pass(), ["华明印尼"])
+        self.assertEqual(self.run_pass(), [])
+        self.server.st["Projects"][2] = 0                                       # read on the phone
+        self.assertEqual(self.run_pass(), ["Projects"])
+        self.b.extra_at = time.time() - self.b.EXTRA_EVERY - 1                  # now and then: all again
+        self.assertEqual(len(self.run_pass()), 3)
+
+    def test_folder_without_status_is_synced_as_before(self):
+        self.run_pass()
+        del self.server.st["Projects"]
+        self.assertEqual(self.run_pass(), ["Projects"])
+
+    def test_status_parsing(self):
+        self.assertEqual(A.folder_status(self.server, "华明印尼"), (3, 10, 1, 7))
+        self.assertIsNone(A.folder_status(self.server, "nowhere"))
+        self.assertIsNone(A.folder_status(FakeServer(), "INBOX"))               # no STATUS at all
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -813,6 +813,7 @@ class Backend:
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
         self.extra_now = False
+        self.folder_status = {}                 # folder -> its STATUS when it was last synced (#39)
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
         self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
@@ -1241,6 +1242,37 @@ class Backend:
             cut(m)
         self.wake.set()
 
+    EXTRA_EVERY = 300   # seconds between full syncs of Junk and the owner's folders; in between, only changed ones
+
+    def sync_pass(self, m, c):
+        """One look at the server: the folder list, then the sync folders, then each of the owner's
+        folders (and Junk) whose STATUS changed since it was last synced (#39), or all of them now and then."""
+        self.note_folders(m, c)
+        todo = self.sync_folders()
+        extras = self.extra_folders()
+        if self.server_folders:
+            extras = [f for f in extras if f in self.server_folders]
+        full = self.extra_now or time.time() - self.extra_at > self.EXTRA_EVERY
+        self.extra_now = False
+        now = {}
+        for f in extras:
+            now[f] = folder_status(m, f)
+            if full or now[f] is None or now[f] != self.folder_status.get(f):
+                todo.append(f)
+        for f in todo:
+            try:
+                R.sync_headers(m, c, f, held=self.held)
+            except LookupError:
+                if f in self.sync_folders():
+                    raise
+                continue        # one of the owner's folders, renamed or deleted a moment ago
+            if f in now:
+                self.folder_status[f] = now[f]
+            if f == (R.CFG.folders.get("inbox") or "INBOX"):
+                self.note_new(c)
+        if full:
+            self.extra_at = time.time()
+
     def sync_loop(self):
         c = None
         while not self.stopping.is_set():
@@ -1252,7 +1284,6 @@ class Backend:
                 continue
             self.sync["running"] = True
             self.pass_at, self.pass_cut = time.monotonic(), False
-            extra = False
             try:
                 c = c or R.db()
                 with R.file_lock("headers", wait=False) as got:
@@ -1266,24 +1297,7 @@ class Backend:
                                     self.sync_m = R.imap()
                                     with contextlib.suppress(Exception):
                                         self.sync_m.sock.settimeout(120)
-                                m = self.sync_m
-                                self.note_folders(m, c)
-                                todo = self.sync_folders()
-                                if self.extra_now or time.time() - self.extra_at > 300:
-                                    self.extra_now = False
-                                    todo = todo + self.extra_folders()
-                                    extra = True
-                                for f in todo:
-                                    try:
-                                        R.sync_headers(m, c, f, held=self.held)
-                                    except LookupError:
-                                        if f in self.sync_folders():
-                                            raise
-                                        continue        # one of the owner's folders, renamed or deleted a moment ago
-                                    if f == (R.CFG.folders.get("inbox") or "INBOX"):
-                                        self.note_new(c)
-                                if extra:
-                                    self.extra_at = time.time()
+                                self.sync_pass(self.sync_m, c)
                                 self.sync_used = time.time()
                                 break
                             except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
@@ -2927,6 +2941,26 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
                    R.hdr(msg, "To") + " " + R.hdr(msg, "Cc"), " | ".join(names), body))
     c.commit()
+
+
+STATUS_RE = re.compile(rb"\b(MESSAGES|UIDNEXT|UNSEEN|UIDVALIDITY) (\d+)")
+
+
+def folder_status(m, folder):
+    """(messages, uidnext, unseen, uidvalidity) from STATUS: cheap, and it changes when mail comes,
+    goes or is read elsewhere. None when the server does not say: the folder is then synced."""
+    try:
+        typ, data = m.status(R.q(folder), "(MESSAGES UIDNEXT UNSEEN UIDVALIDITY)")
+    except (imaplib.IMAP4.abort, OSError):
+        raise                                   # the connection: the pass connects again
+    except Exception:                           # noqa: BLE001 - a server without STATUS for it
+        return None
+    if typ != "OK":
+        return None
+    got = dict(STATUS_RE.findall(b" ".join(x for x in data if isinstance(x, bytes))))
+    if not got:
+        return None
+    return tuple(int(got.get(k, -1)) for k in (b"MESSAGES", b"UIDNEXT", b"UNSEEN", b"UIDVALIDITY"))
 
 
 def drop_gone_folders(c, names):
