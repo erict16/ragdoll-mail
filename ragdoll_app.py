@@ -15,6 +15,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import html as htmlmod
+import html.parser as htmlparser
 import imaplib
 import json
 import locale
@@ -234,6 +235,131 @@ def page_html(html, cids):
     html = re.sub(r"(?i)cid:(<?)([^\"'\s>)]+)", lambda mo: cids.get(urllib.parse.unquote(mo.group(2)).strip("<>"),
                                                                   "data:,"), html)
     return styles + html
+
+
+# A draft's HTML goes into the editor in the app's own window (not the sandboxed reading frame): only
+# plain content tags and attributes pass, rebuilt from the parse so nothing the parser read differently
+# survives. The page cleans it once more with the same lists (app/compose-kit.js).
+EDITOR_DROP = {"script", "style", "meta", "link", "title", "base", "head", "iframe", "frame", "frameset", "object",
+               "embed", "applet", "form", "input", "button", "select", "option", "textarea", "svg", "math", "video",
+               "audio", "source", "track", "canvas", "template", "noscript", "portal", "dialog", "marquee", "param",
+               "xml"}
+EDITOR_KEEP = set("a abbr address article aside b bdi bdo big blockquote br caption center cite code col colgroup dd "
+                  "del dfn div dl dt em figcaption figure font footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li "
+                  "main mark nav ol p pre q s samp section small span strike strong sub sup table tbody td tfoot th "
+                  "thead tr tt u ul var wbr".split())
+EDITOR_VOID = {"br", "hr", "img", "col", "wbr", "meta", "link", "base", "input", "source", "track", "param", "embed"}
+EDITOR_ATTRS = {"href", "src", "alt", "title", "colspan", "rowspan", "width", "height", "style", "align", "valign",
+                "border", "cellpadding", "cellspacing", "bgcolor", "color", "face", "size", "dir", "start", "type",
+                "data-rd-body"}
+EDITOR_ATTR_ON = {"href": {"a"}, "src": {"img"}, "start": {"ol"}, "type": {"ol", "ul", "li"}, "data-rd-body": {"div"},
+                  "face": {"font"}, "size": {"font"}, "color": {"font"}}
+EDITOR_BAD_PROPS = {"position", "z-index", "behavior", "-moz-binding", "-webkit-user-modify", "user-modify",
+                    "content", "inset"}
+
+
+def safe_url(v, attr):
+    s = re.sub(r"[\x00-\x20\x7f-\x9f]", "", v or "").lower()
+    if attr == "src":
+        return bool(re.match(r"(https?:|cid:|data:image/(png|jpe?g|gif|webp|bmp)[;,])", s))
+    return bool(re.match(r"(https?:|mailto:|tel:|#)", s))
+
+
+def clean_style(style):
+    out, cur, depth, quote = [], "", 0, ""
+    for ch in (style or "") + ";":
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == ";" and not depth and not quote:
+            prop, _, val = cur.partition(":")
+            prop, val = prop.strip().lower(), val.strip()
+            cur = ""
+            if not prop or not val or prop in EDITOR_BAD_PROPS:
+                continue
+            if re.search(r"(?i)expression\s*\(|javascript:|vbscript:|-moz-binding|@import", val):
+                continue
+            if re.search(r"(?i)url\s*\(", val) and not re.search(
+                    r"(?i)url\s*\(\s*[\"']?\s*(https?:|data:image/(png|jpe?g|gif|webp|bmp)[;,]|cid:)", val):
+                continue
+            out.append("%s: %s" % (prop, val))
+        else:
+            cur += ch
+    return "; ".join(out)
+
+
+class _EditorHTML(htmlparser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.skip, self.open = [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        if self.skip:
+            if tag == self.skip[-1] and tag not in EDITOR_VOID:
+                self.skip.append(tag)
+            return
+        if tag in EDITOR_DROP:
+            if tag not in EDITOR_VOID:
+                self.skip.append(tag)
+            return
+        if tag not in EDITOR_KEEP:
+            return
+        kept = []
+        for k, v in attrs:
+            k = (k or "").lower()
+            v = v or ""
+            if k not in EDITOR_ATTRS or (k in EDITOR_ATTR_ON and tag not in EDITOR_ATTR_ON[k]):
+                continue
+            if k in ("href", "src") and not safe_url(v, k):
+                continue
+            if k == "style":
+                v = clean_style(v)
+                if not v:
+                    continue
+            kept.append(' %s="%s"' % (k, htmlmod.escape(v, quote=True)))
+        if tag == "img" and not any(x.startswith(' src="') for x in kept):
+            return
+        self.out.append("<%s%s>" % (tag, "".join(kept)))
+        if tag not in EDITOR_VOID:
+            self.open.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in EDITOR_VOID and self.open and self.open[-1] == tag:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self.skip:
+            if tag == self.skip[-1]:
+                self.skip.pop()
+            return
+        if tag in EDITOR_VOID or tag not in self.open:
+            return
+        while self.open:
+            t = self.open.pop()
+            self.out.append("</%s>" % t)
+            if t == tag:
+                break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(htmlmod.escape(data, quote=False))
+
+    def result(self):
+        self.close()
+        return "".join(self.out) + "".join("</%s>" % t for t in reversed(self.open))
+
+
+def editor_html(html):
+    """A draft's HTML made safe for the compose editor (see EDITOR_KEEP)."""
+    p = _EditorHTML()
+    p.feed(html or "")
+    return p.result()
 
 
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
@@ -2120,6 +2246,7 @@ class Backend:
             state = self.compose_state(R.hdr(msg, "Message-ID"))
             if state:
                 out.update(state)
+                out["html"] = editor_html(state.get("html") or "")
                 out["replace"] = a["id"]
                 out["signature"] = self.signature()
                 if state.get("orig"):
@@ -2131,7 +2258,8 @@ class Backend:
             plain, html = R.bodies(msg)
             out.update({"to": people_json(R.hdr(msg, "To")), "cc": people_json(R.hdr(msg, "Cc")),
                         "bcc": people_json(R.hdr(msg, "Bcc")), "subject": R.hdr(msg, "Subject"),
-                        "html": page_html(html, cid_map(msg)) if html.strip() else R.text_to_html(plain),
+                        "html": editor_html(page_html(html, cid_map(msg))) if html.strip()
+                        else R.text_to_html(plain),
                         "use_signature": False, "irt": R.hdr(msg, "In-Reply-To").strip(),
                         "refs": R.hdr(msg, "References").strip(), "fwd": R.hdr(msg, R.FWD_HEADER).strip(),
                         "atts": [self.keep_file(R.fname(p) or "attachment", R.part_bytes(p))

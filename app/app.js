@@ -3,6 +3,7 @@ import { ICONS } from "./icons.js";
 import { REMIX } from "./icons-remix.js";
 import { FILE_ICONS, FILE_EXT } from "./fileicons.js";
 import { LANGS, LANG_NAMES } from "./i18n.js";
+import * as K from "./compose-kit.js";
 
 // ---------------------------------------------------------------- basics
 
@@ -1694,6 +1695,8 @@ async function openCompose(opts) {
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;
+  // a draft made elsewhere carries the mail's own HTML: only plain content goes into the editor
+  c.html = cleanHTML(c.html || "");
   // a draft we wrote before comes back inside our own font wrapper: take it off
   if (c.html) {
     const d = el("div", { html: c.html });
@@ -1716,7 +1719,7 @@ function renderCompose() {
   subj.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ed.focus(); } });
   const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
     style: `font-family:${mailFont()};font-size:${mailSize()}px` });
-  ed.innerHTML = c.html || "";
+  ed.innerHTML = cleanHTML(c.html || "");
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
   ed.addEventListener("keydown", (e) => {
@@ -2014,19 +2017,12 @@ function onPaste(e) {
   }
 }
 
-function cleanHTML(html) {
+// HTML for the editor, which sits in the app's own window: an allow-list of plain content (compose-kit.js).
+// DOMParser's document runs nothing and loads nothing while it is cleaned.
+function cleanHTML(html, opts = {}) {
+  if (!html) return "";
   const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script,style,meta,link,title,iframe,object,embed,form,input,button,select,textarea,svg,video,audio").forEach((n) => n.remove());
-  const keep = { href: 1, src: 1, alt: 1, colspan: 1, rowspan: 1, width: 1, height: 1, style: 1, align: 1, valign: 1 };
-  for (const n of doc.body.querySelectorAll("*")) {
-    for (const a of [...n.attributes]) {
-      const k = a.name.toLowerCase();
-      if (!keep[k]) n.removeAttribute(a.name);
-      else if ((k === "href" || k === "src") && /^\s*(javascript|vbscript|data:text)/i.test(a.value)) n.removeAttribute(a.name);
-      else if (k === "style") n.setAttribute("style", a.value.replace(/(position|z-index|behavior|expression)\s*:[^;]*;?/gi, ""));
-    }
-  }
-  return doc.body.innerHTML;
+  return K.sanitizeBody(doc.body, opts).innerHTML;
 }
 
 function composeState() {
@@ -2294,7 +2290,7 @@ async function openSettings() {
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
-      sigEd.innerHTML = v.signature || "";
+      sigEd.innerHTML = cleanHTML(v.signature || "");
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
     } else if (tab === "sending") {
