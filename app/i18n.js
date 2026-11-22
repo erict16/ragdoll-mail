@@ -679,3 +679,151 @@ const MORE9 = {
     unsub_done: "%s abbestellt", all_day: "Ganztägig", invite: "Einladung", inv_cancelled: "Abgesagt", inv_from: "Von %s", add_cal: "Zum Kalender hinzufügen" },
 };
 for (const [k, v] of Object.entries(MORE9)) Object.assign(LANGS[k], v);
+
+// 0.11 group A_COMPOSE: new strings for this group only
+const MORE_A_COMPOSE = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_A_COMPOSE)) Object.assign(LANGS[k], v);
+
+// 0.11 group B_SEND: new strings for this group only
+const MORE_B_SEND = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_B_SEND)) Object.assign(LANGS[k], v);
+
+// 0.11 group C1_LIST: new strings for this group only
+const MORE_C1_LIST = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_C1_LIST)) Object.assign(LANGS[k], v);
+
+// 0.11 group C2_READ: new strings for this group only
+const MORE_C2_READ = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_C2_READ)) Object.assign(LANGS[k], v);
+
+// 0.11 group D_SYNC: new strings for this group only
+const MORE_D_SYNC = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_D_SYNC)) Object.assign(LANGS[k], v);
+
+// 0.11 group E_FOLDERS: new strings for this group only
+const MORE_E_FOLDERS = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_E_FOLDERS)) Object.assign(LANGS[k], v);
+
+// 0.11 group F_INVITES: new strings for this group only
+const MORE_F_INVITES = {
+  "en": {
+  },
+  "zh-Hans": {
+  },
+  "zh-Hant": {
+  },
+  "ja": {
+  },
+  "ko": {
+  },
+  "es": {
+  },
+  "fr": {
+  },
+  "de": {
+  },
+};
+for (const [k, v] of Object.entries(MORE_F_INVITES)) Object.assign(LANGS[k], v);
+
