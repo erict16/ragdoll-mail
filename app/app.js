@@ -1430,7 +1430,61 @@ function attNode(a, id) {
 const FRAME_FONT = getComputedStyle(document.documentElement).getPropertyValue("--font");
 const QUOTE_SEL = ".gmail_quote, .gmail_extra, #divRplyFwdMsg, blockquote[type=cite], .rd-quote, #appendonsend, .yahoo_quoted, " +
   "#mail-editor-reference-message-container, .moz-cite-prefix, #isForwardContent, #origbody, .protonmail_quote, div[id^=reply-intro]";
-const QUOTE_TEXT = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件)|发件人[:：]|寄件者[:：]|From:\s|Von:\s|De\s?:\s|Từ:\s|在\s?.{3,80}写道[:：]|On .{5,160} wrote:)/i;
+// Quoted history in a mail without known quote markup, line by line (ragdoll.py quote_line has the same rules).
+// A separator line or "On ... wrote:" always starts it. A "From:" line starts it only as the head of a real header
+// block: a separator line just above it, or the next lines carry Sent:, or Subject: with Date:/To:/Cc:, or Date: and
+// To: under a From: with an address. A mail's own "From: Shanghai / To: Singapore" is text, not history.
+const QUOTE_SEP = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件|轉寄郵件|Ursprüngliche Nachricht|Message d'origine|Mensaje original)|On .{5,160} wrote:|在\s?.{3,80}写道[:：])/i;
+const QUOTE_FROM = /^\s*\*?(From|发件人|寄件者|寄件人|Von|De|Từ|差出人|보낸 사람)\*?\s*[:：]/i;
+const QUOTE_HEAD = /^\s*\*?(?:(?<sent>Sent|发送时间|發送時間|寄件日期|Gesendet|Envoyé|Enviado|送信日時|보낸 날짜|Gửi lúc)|(?<date>Date|日期|时间|時間|Datum|Fecha|Ngày|日付|날짜)|(?<to>To|收件人|收件者|An|À|Para|Đến|宛先|받는 사람)|(?<cc>Cc|抄送|副本|Kopie|Copie)|(?<subject>Subject|主题|主題|主旨|Betreff|Objet|Asunto|Chủ đề|件名|제목))\*?\s*[:：]/i;
+const QUOTE_LINE = /^\s*([-_=*]\s*){5,}$/;
+function quoteLine(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (QUOTE_SEP.test(line)) return i;
+    if (!QUOTE_FROM.test(line)) continue;
+    let above = -1;
+    for (let k = i - 1; k >= 0 && k >= i - 2; k--) if (lines[k].trim()) { above = k; break; }
+    if (above >= 0 && QUOTE_LINE.test(lines[above])) return above;
+    const keys = new Set();
+    for (const l of lines.slice(i + 1, i + 8)) {
+      if (!l.trim() || QUOTE_FROM.test(l)) break;     // the block ends at an empty line or the next block
+      const m = l.match(QUOTE_HEAD);
+      if (m) keys.add(Object.keys(m.groups).find((g) => m.groups[g] !== undefined));
+    }
+    if (keys.has("sent") || (keys.has("subject") && (keys.has("date") || keys.has("to") || keys.has("cc"))) ||
+        (keys.has("date") && keys.has("to") && line.includes("@"))) return i;
+  }
+  return -1;
+}
+// a mail's text as the lines a reader sees, each with the first node on it: a block or a <br> ends a line,
+// an <hr> is a separator line; source line breaks count only where the text keeps them (plain text, <pre>)
+const LINE_BLOCK = /^(P|DIV|TR|LI|UL|OL|DL|DT|DD|TABLE|TBODY|THEAD|H[1-6]|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|PRE|CENTER)$/;
+function textLines(root) {
+  const lines = [{ text: "", node: null }];
+  const cut = () => { const l = lines[lines.length - 1]; if (l.text || l.node) lines.push({ text: "", node: null }); };
+  const add = (text, node) => { const l = lines[lines.length - 1]; if (!l.node && text.trim()) l.node = node; l.text += text; };
+  const walk = (n, pre) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        if (!pre) { add(c.nodeValue.replace(/\s+/g, " "), c); continue; }
+        c.nodeValue.split("\n").forEach((part, k) => { if (k) cut(); add(part, c); });
+      } else if (c.nodeType === 1) {
+        const tag = c.tagName;
+        if (tag === "BR") { cut(); continue; }
+        if (tag === "HR") { cut(); add("-----", c); cut(); continue; }
+        if (/^(STYLE|SCRIPT|TITLE|HEAD|TEMPLATE)$/.test(tag)) continue;
+        const block = LINE_BLOCK.test(tag);
+        if (block) cut();
+        walk(c, pre || tag === "PRE" || c.classList.contains("rd-plain"));
+        if (block) cut();
+        else if (tag === "TD" || tag === "TH") add(" ", null);
+      }
+    }
+  };
+  walk(root, false);
+  return lines;
+}
 const frames = new Set();
 // WebKit (the Mac app) runs no listener inside a sandboxed frame that lacks allow-scripts, not even one this page
 // attaches: a click on a link or a picture did nothing there. The mail's own scripts stay off either way: the
@@ -1636,13 +1690,12 @@ function collapseQuote(st) {
   const d = st.frame.contentDocument, root = d.querySelector(".rd-root") || d.body;
   let q = root.querySelector(QUOTE_SEL);
   if (!q) {
-    const w = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let n = w.nextNode(); n; n = w.nextNode()) {
-      if (QUOTE_TEXT.test(n.nodeValue)) {
-        q = n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
-        break;
-      }
-    }
+    const lines = textLines(root), at = quoteLine(lines.map((l) => l.text));
+    const n = at >= 0 && lines.slice(at).find((l) => l.node)?.node;
+    if (n) q = n.nodeType === 1 && n.tagName === "HR" ? n : n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
+    // the box the header block opens (Outlook's line above it) goes with it
+    const first = (x) => { let p = x.previousSibling; while (p && !p.textContent.trim() && !p.querySelector?.("img")) p = p.previousSibling; return !p; };
+    while (q && q.parentElement && q.parentElement !== root && first(q)) q = q.parentElement;
   }
   if (!q || q === root) return;
   const r = d.createRange();

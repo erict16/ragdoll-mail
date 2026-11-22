@@ -250,10 +250,11 @@ def linkify(escaped):
 
 def plain_html(text):
     text = (text or "").replace("\r\n", "\n").strip("\n")
-    mo = R.QUOTE_RE.search(text)
-    if not mo:
+    at = R.quote_start(text)
+    if at < 0:
         mo = re.search(r"(?m)^(>.*\n?){2,}\Z", text)
-    main, quoted = (text[:mo.start()], text[mo.start():]) if mo and mo.start() > 0 else (text, "")
+        at = mo.start() if mo else -1
+    main, quoted = (text[:at], text[at:]) if at > 0 else (text, "")
     out = '<div class="rd-plain">%s</div>' % linkify(htmlmod.escape(main.rstrip()))
     if quoted.strip():
         out += '<div class="rd-plain rd-quote">%s</div>' % linkify(htmlmod.escape(quoted.strip()))
