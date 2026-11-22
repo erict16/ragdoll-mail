@@ -2572,6 +2572,9 @@ function onKey(e) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
     if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
     if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeCompose(); return; }
+    // the mailbox's single keys (Backspace, R, J...) never act while a mail is being written, even when
+    // focus fell to the page after a click on a button
+    return;
   }
   if (mod && e.key.toLowerCase() === "a" && !typing(e) && !S.compose) { e.preventDefault(); selectAll(); return; }
   if (typing(e) || mod || e.altKey) return;

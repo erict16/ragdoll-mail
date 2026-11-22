@@ -134,3 +134,11 @@ class Keys(unittest.TestCase):
             near = src[at:at + 160]
             self.assertTrue("K.isIME(e)" in near or "onKey" in near, near)
         self.assertIn("if (K.isIME(e)) return;", src[src.index("function onKey(e)"):][:200])
+
+    def test_single_keys_stop_at_an_open_compose(self):
+        with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+            src = f.read()
+        body = src[src.index("function onKey(e)"):]
+        block = body[body.index("if (S.compose) {"):]
+        block = block[:block.index("\n  }\n")]
+        self.assertTrue(block.rstrip().endswith("return;"), block)
