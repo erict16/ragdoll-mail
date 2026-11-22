@@ -2134,12 +2134,15 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
                 mt, st = p.get_content_type().split("/", 1)
                 msg.add_attachment(part_bytes(p), mt, st, filename=one_line(fname(p)))
     for f in attach:
-        ctype = mimetypes.guess_type(f)[0] or "application/octet-stream"
+        # a path, or (path, the file's own name): the name on disk may be a safe stand-in for it
+        f, name = f if isinstance(f, tuple) else (f, os.path.basename(f))
+        name = one_line(name or "").strip() or os.path.basename(f)
+        ctype = mimetypes.guess_type(name)[0] or mimetypes.guess_type(f)[0] or "application/octet-stream"
         if ctype.startswith("message/"):     # a .eml file: add_attachment wants a Message object for these
             ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
-            msg.add_attachment(fh.read(), mt, st, filename=one_line(os.path.basename(f)))
+            msg.add_attachment(fh.read(), mt, st, filename=name)
     return msg
 
 

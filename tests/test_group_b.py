@@ -192,5 +192,43 @@ class PlainText(unittest.TestCase):
         self.assertIn("Hi Tom,\nThanks\n1. PO\n2. Drawing", msg.get_body(("plain",)).get_content())
 
 
+def compose(b, **kw):
+    a = {"mode": "new", "to": [{"name": "", "addr": "pat@example.com"}], "subject": "Hello",
+         "html": "<div>Hello Pat</div>", "atts": []}
+    a.update(kw)
+    return a
+
+
+class AttachmentNames(DemoBackend):
+    NAMES = ("PO#123: 最终版?.pdf", '合同"A"<草稿>.docx', "很长的文件名" * 20 + ".xlsx")
+
+    def test_upload_keeps_the_real_name_for_the_mail(self):
+        atts = [self.b.upload(n, b"data %d" % k) for k, n in enumerate(self.NAMES)]
+        self.assertEqual([x["name"] for x in atts], list(self.NAMES))
+        for x in atts:     # on disk: a safe name, short enough for any file system
+            base = os.path.basename(x["path"])
+            self.assertNotRegex(base, r'[:?"<>]')
+            self.assertLessEqual(len(base.encode()), 200)
+        msg = self.b.build(compose(self.b, atts=atts))
+        self.assertEqual([p.get_filename() for p in msg.iter_attachments()], list(self.NAMES))
+        again = msg_of(msg.as_bytes(policy=R.OUT_POLICY))       # as the other side reads it
+        self.assertEqual([R.fname(p) for p in R.attachments(again)], list(self.NAMES))
+
+    def test_forward_keeps_the_original_names(self):
+        i = self.add_mail(with_file(self.NAMES[0], b"%PDF-1.4", "application/pdf"))
+        c = self.b.api_compose({"mode": "forward", "id": i})
+        self.assertEqual([x["name"] for x in c["atts"]], [self.NAMES[0]])
+        msg = self.b.build(compose(self.b, mode="forward", orig=i, atts=c["atts"]))
+        self.assertEqual([p.get_filename() for p in msg.iter_attachments()], [self.NAMES[0]])
+
+    def test_a_name_never_breaks_the_header(self):
+        x = self.b.upload("a\r\nBcc: evil@x.com\x00.pdf", b"x")
+        self.assertEqual(x["name"], "a Bcc: evil@x.com .pdf")
+        msg = self.b.build(compose(self.b, atts=[dict(x, name="b\nX-Evil: 1.pdf")]))
+        raw = msg.as_bytes(policy=R.OUT_POLICY)
+        self.assertNotIn(b"\nX-Evil", raw)
+        self.assertNotIn(b"\nBcc", raw)
+
+
 if __name__ == "__main__":
     unittest.main()

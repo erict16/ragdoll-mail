@@ -298,6 +298,11 @@ def part_info(k, p, light=False):
     return out
 
 
+def mail_name(name):
+    """A file's own name as a mail gives it: whole, only without control characters or line breaks."""
+    return R.nfc(re.sub(r"[\x00-\x1f\x7f]+", " ", name or "")).strip()[:1000] or "attachment"
+
+
 def disk_name(p):
     """The name a mail's file gets on disk."""
     name = R.safe_name(R.fname(p) or "attachment")
@@ -2112,10 +2117,13 @@ class Backend:
         return d
 
     def keep_file(self, name, data):
+        """The file kept for a compose. On disk it has a safe name; "name" is its own, whole name, the one
+        the mail gives it ("PO#123: 最终版?.pdf" stays so)."""
+        name = mail_name(name)
         path = os.path.join(self.upload_dir(), R.safe_name(name))
         with open(path, "wb") as f:
             f.write(data)
-        return {"path": path, "name": os.path.basename(path), "size": len(data)}
+        return {"path": path, "name": name, "size": len(data)}
 
     def api_compose(self, a):
         mode = a.get("mode") or "new"
@@ -2188,7 +2196,7 @@ class Backend:
             p = os.path.realpath(x["path"])
             if not p.startswith(root + os.sep) or not os.path.isfile(p):
                 fail("An attachment is missing: %s" % x.get("name", ""))
-            atts.append(p)
+            atts.append((p, mail_name(x.get("name") if isinstance(x.get("name"), str) else "") or os.path.basename(p)))
         body, images = data_images(a.get("html") or "")
         sig = self.signature() if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
