@@ -475,7 +475,7 @@ function nameSheet(title, value, run) {
     try { await run(name); closeLayer(); } catch (e) { fail(e); input.focus(); }
     busy = false;
   };
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, title), el("div", { class: "form" }, input),
     el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("ok")))));
@@ -1083,21 +1083,38 @@ $("#search-btn").addEventListener("click", openSearch);
 $("#search").placeholder = t("search");
 $("#search-clear").innerHTML = icon("x");
 $("#search-clear").addEventListener("click", () => { $("#search").value = ""; onSearch(true); $("#search").focus(); });
-$("#search").addEventListener("input", () => onSearch());
-$("#search").addEventListener("keydown", (e) => {
+// while an input method still has letters open ("bao jia" before it becomes 报价) nothing is searched;
+// the search runs when the words are picked
+$("#search").addEventListener("input", (e) => { if (e.isComposing) syncSearchUI(); else onSearch(); });
+$("#search").addEventListener("compositionend", () => onSearch());
+$("#search").addEventListener("keydown", async (e) => {
+  if (K.isIME(e)) return;
   if (e.key === "Escape") { e.preventDefault(); $("#search").value = ""; onSearch(true); $("#search").blur(); $("#rows").focus(); }
-  if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); $("#rows").focus(); if (S.rows.length) selectRow(S.rows[0].id); }
+  if (e.key === "ArrowDown" || e.key === "Enter") {
+    e.preventDefault();
+    // the words typed may not have been searched yet: wait for their results, never open the list before
+    const q = $("#search").value.trim();
+    await runSearch();
+    if (S.query !== q || $("#search").value.trim() !== q) return;
+    $("#rows").focus();
+    if (S.rows.length) selectRow(S.rows[0].id);
+  }
 });
+let searchRun = null;         // the search on its way: [query, promise]
+function runSearch() {
+  clearTimeout(searchTimer);
+  const q = $("#search").value.trim();
+  if (q === S.query) return searchRun && searchRun[0] === q ? searchRun[1] : Promise.resolve();
+  S.query = q;
+  renderNav();
+  const job = [q, loadList().finally(() => { if (searchRun === job) searchRun = null; })];
+  searchRun = job;
+  return job[1];
+}
 function onSearch(now = false) {
   syncSearchUI();
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q = $("#search").value.trim();
-    if (q === S.query) return;
-    S.query = q;
-    renderNav();
-    loadList();
-  }, now ? 0 : 220);
+  searchTimer = setTimeout(runSearch, now ? 0 : 220);
 }
 
 // ---------------------------------------------------------------- reader
@@ -1403,7 +1420,7 @@ function attNode(a, id) {
   };
   let dragged = false;
   const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
-    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter" && !K.isIME(e)) open(); } },
     el("div", fileTile(a.name)),
     el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
@@ -1719,13 +1736,14 @@ function renderCompose() {
   if (c.showBcc) box.append(addrField("bcc", t("bcc")));
   const subj = el("input", { class: "subject-input", type: "text", placeholder: t("subject"), value: c.subject, spellcheck: "true" });
   subj.addEventListener("input", () => { c.subject = subj.value; touched(); });
-  subj.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ed.focus(); } });
+  subj.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); ed.focus(); } });
   const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
     style: `font-family:${mailFont()};font-size:${mailSize()}px` });
   ed.innerHTML = cleanHTML(c.html || "");
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
   ed.addEventListener("keydown", (e) => {
+    if (K.isIME(e)) return;
     const mod = isMod(e), k = e.key.toLowerCase();
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
@@ -1860,7 +1878,7 @@ function linkSheet() {
     else document.execCommand("insertHTML", false, `<a href="${esc(href)}">${esc(words)}</a>`);
     edChanged();
   };
-  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, t("link")), el("div", { class: "form" },
     el("label", {}, el("span", { class: "lab" }, t("link_url")), url),
     el("label", {}, el("span", { class: "lab" }, t("link")), label)),
@@ -1923,8 +1941,10 @@ function addrField(key, label, first = false) {
       el("span", { class: "n" }, p.name || p.addr), p.name ? el("span", { class: "a" }, p.addr) : null)));
     chips.append(sug);
   };
-  input.addEventListener("input", () => { clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); if (/[,;]\s*$/.test(input.value)) commit(); });
+  input.addEventListener("input", (e) => { clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); if (!e.isComposing && /[,;]\s*$/.test(input.value)) commit(); });
+  input.addEventListener("compositionend", () => { if (/[,;]\s*$/.test(input.value)) commit(); });
   input.addEventListener("keydown", (e) => {
+    if (K.isIME(e)) return;
     if (sug && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       sugOn = (sugOn + (e.key === "ArrowDown" ? 1 : -1) + sugItems.length) % sugItems.length;
@@ -2218,7 +2238,7 @@ function pickTimeSheet() {
     el("div", { class: "sheet-acts" },
       el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("schedule")))));
-  box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   date.focus();
 }
 
@@ -2474,7 +2494,7 @@ function showSetup() {
     if (err) f.append(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
     const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
-    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
+    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e) && e.target.tagName === "INPUT") signIn(); });
     const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
       PREFS.lang = val; api("prefs", { lang: val }).catch(() => {}); setLocale(PREFS); draw();
     });
@@ -2536,6 +2556,7 @@ function typing(e) {
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
 }
 function onKey(e) {
+  if (K.isIME(e)) return;             // Esc, Enter and Backspace belong to the input method's candidate
   const mod = isMod(e);
   // Sync now; the web view would otherwise reload the whole page and drop what is open, a compose too
   if ((mod && !e.altKey && e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow(); return; }

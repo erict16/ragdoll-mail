@@ -119,3 +119,18 @@ class Keys(unittest.TestCase):
         self.assertIn('[MOD + "R", "sync_now"]', src)
         # no shortcut takes Ctrl on a Mac any more
         self.assertNotIn("const mod = e.metaKey || e.ctrlKey", src)
+
+    def test_ime_keys_are_left_alone(self):
+        self.assertEqual(js('[{ isComposing: true }, { keyCode: 229 }, { key: "Enter", keyCode: 13 }, null].map(K.isIME)'),
+                         [True, True, False, False])
+
+    def test_every_key_handler_checks_the_input_method(self):
+        import re
+        with open(os.path.join(os.path.dirname(KIT), "app.js"), encoding="utf-8") as f:
+            src = f.read()
+        spots = [m.start() for m in re.finditer(r'"keydown"|onkeydown:', src)]
+        self.assertGreater(len(spots), 8)
+        for at in spots:
+            near = src[at:at + 160]
+            self.assertTrue("K.isIME(e)" in near or "onKey" in near, near)
+        self.assertIn("if (K.isIME(e)) return;", src[src.index("function onKey(e)"):][:200])
