@@ -2052,7 +2052,7 @@ class Backend:
         return {}
 
     def api_window_theme(self, a):
-        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"))
+        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"), system=a.get("system") is True)
         return {}
 
     def api_contacts(self, a):
@@ -3212,7 +3212,15 @@ def hex_ref(c):
     return r | g << 8 | b << 16
 
 
-def window_theme(dark, bg=None, text=None):
+def mac_appearance(AppKit, dark, system):
+    """The window's appearance: None follows macOS (theme System), else Aqua or DarkAqua is forced. A forced one
+    is all the page sees, so with System it would never hear macOS switch between light and dark."""
+    if system:
+        return None
+    return AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua)
+
+
+def window_theme(dark, bg=None, text=None, system=False):
     """Match the native title bar to the app theme (it can differ from the system's)."""
     w = WINDOW.w
     if w is None:
@@ -3228,8 +3236,7 @@ def window_theme(dark, bg=None, text=None):
             nw = w.native
             if nw is None:
                 return
-            nw.setAppearance_(AppKit.NSAppearance.appearanceNamed_(
-                AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua))
+            nw.setAppearance_(mac_appearance(AppKit, dark, system))
             ref = (bg or "").lstrip("#")
             if re.fullmatch(r"[0-9a-fA-F]{6}", ref):
                 nw.setBackgroundColor_(AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(

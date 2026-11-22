@@ -185,6 +185,8 @@ function syncWindowTheme() {
   const css = getComputedStyle(document.documentElement);
   api("window_theme", {
     dark: document.documentElement.dataset.theme === "dark",
+    // System: the window follows macOS again, so the page hears it switch (darkMQ below)
+    system: S.theme === "system",
     bg: css.getPropertyValue("--bg").trim(),
     text: css.getPropertyValue("--text").trim(),
   }).catch(() => {});

@@ -166,5 +166,35 @@ class ThemeSwitch(unittest.TestCase):
         self.assertIn("::view-transition-old(root)", css)
 
 
+class SystemTheme(unittest.TestCase):
+    """#60: with theme System the window's appearance is left to macOS, so the page hears it switch."""
+
+    class AppKit:
+        NSAppearanceNameAqua, NSAppearanceNameDarkAqua = "aqua", "dark-aqua"
+
+        class NSAppearance:
+            @staticmethod
+            def appearanceNamed_(name):
+                return "appearance:" + name
+
+    def test_system_follows_macos(self):
+        self.assertIsNone(A.mac_appearance(self.AppKit, True, True))
+        self.assertIsNone(A.mac_appearance(self.AppKit, False, True))
+
+    def test_light_and_dark_are_forced(self):
+        self.assertEqual(A.mac_appearance(self.AppKit, True, False), "appearance:dark-aqua")
+        self.assertEqual(A.mac_appearance(self.AppKit, False, False), "appearance:aqua")
+
+    def test_page_says_when_it_is_system(self):
+        js = read("app", "app.js")
+        sync = js[js.index("function syncWindowTheme("):js.index('darkMQ.addEventListener("change"')]
+        self.assertIn('system: S.theme === "system"', sync)
+        self.assertIn('darkMQ.addEventListener("change", () => applyTheme(S.theme))', js)
+
+    def test_window_theme_call_without_a_window(self):
+        backend = A.Backend.__new__(A.Backend)
+        self.assertEqual(backend.api_window_theme({"dark": True, "system": True}), {})
+
+
 if __name__ == "__main__":
     unittest.main()
