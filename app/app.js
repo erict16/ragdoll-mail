@@ -493,6 +493,13 @@ function subtreeOf(list, key) {
   while (j < list.length && (list[j].depth || 0) > (list[i].depth || 0)) j++;
   return list.slice(i, j);
 }
+// "Projects / Acme": the folders a folder is in, for the search in the move menus
+function whereOf(f, list) {
+  const by = new Map(list.map((x) => [x.key, x])), out = [];
+  for (let up = by.get(f.up); up; up = by.get(up.up)) out.unshift(up.label);
+  return out.join(" / ");
+}
+
 // the owner's own folders: make one, rename one, delete an empty one
 function nameSheet(title, value, run) {
   const input = el("input", { type: "text", value, maxlength: "60", dir: "auto", spellcheck: "false", autocomplete: "off", "aria-label": title });
@@ -511,8 +518,8 @@ function nameSheet(title, value, run) {
   requestAnimationFrame(() => { input.focus(); input.select(); });
 }
 // then: what to do with the new folder (the move menu puts the mail in it)
-function newFolder(then) {
-  nameSheet(t("new_folder"), "", async (name) => {
+function newFolder(then, value = "") {
+  nameSheet(t("new_folder"), value, async (name) => {
     const r = await api("folder_new", { name });
     await refreshCounts();
     then?.(r.key);
@@ -526,6 +533,70 @@ function renameFolder(f) {
     if (shown) showMoved(); else loadList({ quiet: true });
   });
 }
+// A menu of folders with a box on top to find one: typing narrows it (Chinese too, once the input method is
+// done), arrows walk it, Enter takes the first one found. entries: "-" or {key, label, depth, icon, run, on (a
+// tick), off (shown, can't be picked), where (the folders it is in), find: false (left out of a search)}.
+// make(name): the "New folder" that ends a search, with the words typed.
+function pickMenu(anchor, entries, { make } = {}) {
+  closeLayer();
+  const input = el("input", { type: "text", spellcheck: "false", autocomplete: "off", dir: "auto", placeholder: t("search"), "aria-label": t("search") });
+  const list = el("div", { class: "pick-list" });
+  const m = el("div", { class: "menu pick", role: "menu" }, el("label", { class: "pick-find", html: icon("search", "small") }, input), list);
+  const item = (x, hint) => el("button", { role: "menuitem", disabled: !!x.off, style: x.depth ? `--depth:${x.depth}` : null,
+    onclick: () => { closeLayer(); x.run(); },
+    html: icon(x.icon || "folder-open") + `<span class="label" dir="auto">${esc(x.label)}</span>` +
+      (x.on ? icon("check", "small on-mark") : hint ? `<span class="grow"></span><span class="hint" dir="auto">${esc(hint)}</span>` : "") });
+  const draw = () => {
+    const q = input.value.trim().toLocaleLowerCase();
+    list.replaceChildren();
+    if (!q) { for (const x of entries) list.append(x === "-" ? el("hr") : item(x)); return; }
+    const seen = new Set();
+    const hits = entries.filter((x) => x !== "-" && x.find !== false && !x.off && !seen.has(x.key) && seen.add(x.key) &&
+      x.label.toLocaleLowerCase().includes(q));
+    for (const x of hits) list.append(item({ ...x, depth: 0 }, x.where));
+    if (!hits.length) list.append(el("div", { class: "menu-note" }, t("no_results")));
+    if (make) list.append(el("hr"), item({ icon: "folder-plus", label: t("new_folder"), run: () => make(input.value.trim()) }));
+  };
+  input.addEventListener("input", draw);
+  // the keys stay in the menu: the page's own shortcuts don't see them (Escape still closes it)
+  m.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return e.stopPropagation();
+    if (e.key === "Escape") return;
+    e.stopPropagation();
+    const items = $$("button:not(:disabled)", list), k = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const d = e.key === "ArrowDown" ? 1 : -1;
+      if (k < 0) items[d > 0 ? 0 : items.length - 1]?.focus();
+      else if (k + d < 0) input.focus();
+      else items[(k + d) % items.length]?.focus();
+    } else if (e.target === input && e.key === "Enter") {
+      e.preventDefault();
+      items[0]?.click();
+    } else if (e.target !== input && (e.key === "Home" || e.key === "End")) {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1]?.focus();
+    } else if (e.target !== input && (e.key === "Backspace" || (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey))) {
+      input.focus();      // typing on an item goes on in the box
+    }
+  });
+  draw();
+  const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
+  $("#layer").append(catcher, m);
+  m.style.width = Math.min(360, Math.max(240, m.offsetWidth)) + "px";      // the menu keeps its width while it narrows
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
+  const top = Math.max(8, Math.min(r.bottom + 6, innerHeight - m.offsetHeight - 8));
+  m.style.top = top + "px";
+  m.style.maxHeight = innerHeight - top - 8 + "px";
+  input.focus();
+}
+
+// the folders mail was moved to last come first in the move menu
+function noteRecent(key) {
+  savePref({ folder_recent: [key, ...(PREFS.folder_recent || []).filter((k) => k !== key)].slice(0, 5) });
+}
+
 // a question before something that can't be taken back, or that moves a lot of mail
 function confirmSheet({ title, text, ok, run, safe = false }) {
   const go = el("button", { class: "btn primary danger", onclick: async () => {
@@ -1097,22 +1168,26 @@ function step(d) {
 }
 
 // "Move to…": the inbox, the server's other folders, and junk
+// where mail can go: Inbox, the owner's folders nested as in the sidebar (the ones used last on top when
+// there are many), Junk, a new folder; a box on top finds one by name
 function moveMenu(anchor, ids) {
   if (!anchor || !ids.length) return;
   const from = new Set(ids.map((i) => rowOf(i)?.folder));
   const here = (key) => from.size === 1 && from.has(key);
-  const items = [];
-  for (const f of S.boot.folders) {
-    if (!(f.key === "inbox" || f.other) || here(f.key)) continue;
-    items.push({ icon: f.other ? "folder-open" : "inbox", label: f.other ? f.key : t("inbox"), run: () => moveMail(ids, f.key) });
-  }
-  if (S.boot.folders.some((f) => f.key === "junk") && !here("junk")) {
-    if (items.length) items.push("-");
-    items.push({ icon: "archive-x", label: t("junk"), run: () => moveMail(ids, "junk") });
-  }
+  const go = (key) => { noteRecent(key); moveMail(ids, key); };
+  const own = ownFolders(), hasJunk = S.boot.folders.some((f) => f.key === "junk");
+  const entry = (key) => key === "inbox" ? { key, label: t("inbox"), icon: "inbox", run: () => go(key) }
+    : { key, label: t("junk"), icon: "archive-x", run: () => go(key) };
+  const tree = [];
+  if (!here("inbox")) tree.push(entry("inbox"));
+  for (const f of own) tree.push({ key: f.key, label: f.label, depth: f.depth, where: whereOf(f, own), off: here(f.key), run: () => go(f.key) });
+  const recent = own.length > 5 ? (PREFS.folder_recent || []).filter((k) => !here(k) && (k === "inbox" || (k === "junk" && hasJunk) || own.some((f) => f.key === k)))
+    .slice(0, 3).map((k) => { const f = own.find((x) => x.key === k); return f ? { key: k, label: f.label, where: whereOf(f, own), run: () => go(k) } : entry(k); }) : [];
+  const items = [...recent, ...(recent.length ? ["-"] : []), ...tree];
+  if (hasJunk && !here("junk")) items.push(...(items.length ? ["-"] : []), entry("junk"));
   if (items.length) items.push("-");
-  items.push({ icon: "folder-plus", label: t("new_folder"), run: () => newFolder((key) => moveMail(ids, key)) });
-  menu(anchor, items);
+  items.push({ key: "@new", icon: "folder-plus", label: t("new_folder"), find: false, run: () => newFolder(go) });
+  pickMenu(anchor, items, { make: (name) => newFolder(go, name) });
 }
 const moveKey = (ids) => moveMenu($('#tools .icon-btn[data-key="V"]:not(:disabled)'), ids);
 

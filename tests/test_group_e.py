@@ -287,5 +287,19 @@ class OnServer(OwnBackend):
         self.assertFalse([c for c in self.srv.calls if c[:2] == ("uid", "EXPUNGE")])
 
 
+class PageCode(unittest.TestCase):
+    """The page's side: checked in its source (the tests have no browser)."""
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.join(os.path.dirname(A.__file__), "app")
+        with open(os.path.join(root, "app.js"), encoding="utf-8") as f:
+            cls.js = f.read()
+        with open(os.path.join(root, "i18n.js"), encoding="utf-8") as f:
+            cls.i18n = f.read()
+
+    def test_move_menu_search_is_ime_safe(self):
+        body = self.js[self.js.index("function pickMenu("):self.js.index("function noteRecent(")]
+        self.assertIn("e.isComposing || e.keyCode === 229", body)
+
 if __name__ == "__main__":
     unittest.main()
