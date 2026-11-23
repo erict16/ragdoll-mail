@@ -535,7 +535,90 @@ function accountMenu() {
   ], { above: true });
 }
 
+// ---- C1 pure: start (no page, no app state: tests/test_group_c1.py runs this part in node)
+// the words of a search, as the server reads them (ragdoll_app.api_search), without its operators (from:, in:,
+// is:unread...): these are what the list and the open mail mark; longest first, so "price list" wins over "price"
+function searchTerms(q) {
+  const strip = (s) => s.replace(/^"+|"+$/g, "");
+  const out = [], seen = new Set();
+  for (const w of String(q || "").match(/[\p{L}\p{N}_]+:"[^"]*"|"[^"]*"|\S+/gu) || []) {
+    const i = w.indexOf(":"), k = i < 0 ? w : w.slice(0, i), v = i < 0 ? "" : strip(w.slice(i + 1));
+    if (v && ["from", "to", "in", "folder"].includes(k.toLowerCase())) continue;
+    if (["is:unread", "has:attachment", "has:file"].includes(w.toLowerCase())) continue;
+    const term = strip(w).trim();
+    if (term && !seen.has(term.toLowerCase())) { seen.add(term.toLowerCase()); out.push(term); }
+  }
+  return out.sort((a, b) => b.length - a.length).slice(0, 30);
+}
+// one pattern for all the words: any case, Chinese and Japanese inside a longer run of text (no word edges),
+// the space in a quoted phrase matches a line break too
+function termsRe(terms) {
+  if (!terms?.length) return null;
+  return new RegExp(terms.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")).join("|"), "giu");
+}
+// [text before, the match] pairs; the last pair holds the rest and an empty match
+function splitHits(text, re) {
+  const out = [];
+  let at = 0;
+  if (re) for (const m of String(text).matchAll(re)) {
+    if (!m[0]) continue;
+    out.push([text.slice(at, m.index), m[0]]);
+    at = m.index + m[0].length;
+  }
+  out.push([String(text).slice(at), ""]);
+  return out;
+}
+const escHit = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// text as HTML with the words marked
+function hlText(text, re) {
+  return splitHits(String(text ?? ""), re).map(([a, m]) => escHit(a) + (m ? `<mark>${escHit(m)}</mark>` : "")).join("");
+}
+// a key pressed inside an open mail: "keep" lets the mail have it (select its text, scroll a wide table sideways),
+// a direction scrolls the reading pane, null hands it on to the app's own keys (J, K, E, R...)
+function frameKey(e) {
+  const mod = e.metaKey || e.ctrlKey, k = e.key;
+  if (mod && ["a", "c"].includes(k.toLowerCase())) return "keep";
+  if (k === "ArrowLeft" || k === "ArrowRight") return "keep";
+  if (k === "ArrowDown") return mod ? "end" : e.altKey ? "page" : "down";
+  if (k === "ArrowUp") return mod ? "home" : e.altKey ? "pageup" : "up";
+  if (k === " " && !mod) return e.shiftKey ? "pageup" : "page";
+  return { PageDown: "page", PageUp: "pageup", Home: "home", End: "end" }[k] || null;
+}
+// the mail to open after moving ids: the one beside the open mail (sel), or beside the moved block when several
+// selected ones moved (sel null); null when the open mail did not move or nothing is left
+function nextAfter(rows, ids, sel) {
+  const gone = new Set(ids), at = (id) => rows.findIndex((x) => x.id === id);
+  let lo, hi;
+  if (sel != null) {
+    if (!gone.has(sel) || (lo = hi = at(sel)) < 0) return null;
+  } else {
+    const ks = ids.map(at).filter((k) => k >= 0);
+    if (!ks.length) return null;
+    lo = Math.min(...ks); hi = Math.max(...ks);
+  }
+  const r = rows.slice(hi + 1).find((x) => !gone.has(x.id)) || rows.slice(0, lo).reverse().find((x) => !gone.has(x.id));
+  return r ? r.id : null;
+}
+// how far to scroll after the list was drawn again so the row under the eye stays where it was: a = {id, off,
+// after} (off: its distance from the top of the view before; after: the rows below it, in case it went), offs: the
+// distances now
+function anchorShift(a, ids, offs) {
+  if (!a) return null;
+  const have = new Set(ids);
+  const id = have.has(a.id) ? a.id : (a.after || []).find((x) => have.has(x));
+  return id == null ? null : offs[id] - a.off;
+}
+// ---- C1 pure: end
+
 // ---------------------------------------------------------------- list
+
+// the searched words, ready to mark (one pattern per search)
+let hitCache = { q: null, re: null };
+function hitRe() {
+  if (hitCache.q !== S.query) hitCache = { q: S.query, re: S.query ? termsRe(searchTerms(S.query)) : null };
+  return hitCache.re;
+}
+const hl = (s) => hlText(s, hitRe());
 
 function rowTemplate(r) {
   const outgoing = r.folder === "sent" || r.folder === "drafts";
@@ -556,11 +639,12 @@ function rowTemplate(r) {
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span>${done}<span class="who" dir="auto">${esc(name)}</span>` +
+  // the selection is not part of the row's text (syncSel marks it), so a row is drawn again only when it changed
+  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span>${done}<span class="who" dir="auto">${hl(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
-    `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
-    `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
+    `<span class="subj" dir="auto">${hl(r.subject || t("no_subject"))}</span>` +
+    `<span class="snip" dir="auto">${hl(r.snippet) || "&nbsp;"}</span>` +
     `<span class="hover-acts">${acts}</span></div>`;
 }
 
@@ -581,20 +665,97 @@ function renderRows() {
     box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query && !filtered ? icon("loader-circle", "big spin") : icon(S.query ? "search" : filtered ? "list-filter" : FOLDER_ICON[S.folder] || "folder-open", "big")}<span>${esc(msg)}</span></div>`;
     return;
   }
-  const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
-  box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
-  if (S.multi.size > 1) syncSel();
-  if (REDUCED.matches) return;
-  if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-  else {
-    growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
-    for (const n of $$(".row", box)) {
-      const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
-      if (!was || !now) continue;
-      if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
-      if (now.s && !was.s) popStar($(".flag-ic", n));
-    }
+  const html = S.rows.map(rowTemplate);
+  const more = S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "";
+  if (!same || !$(".row", box)) {
+    box.innerHTML = html.join("") + more;
+    $$(".row", box).forEach((n, k) => { n._h = html[k]; });
+    syncSel();
+    measureRow(box);
+    if (!REDUCED.matches) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+    return;
   }
+  // the same list again: only the rows that came, went or changed are touched, the others stay as they are
+  // (drawing every row again counted the rows out of sight at a guessed height, and the view jumped)
+  const anchor = takeAnchor(box);
+  const old = new Map($$(".row", box).map((n) => [n.dataset.id, n]));
+  const want = [], added = [], changed = [];
+  S.rows.forEach((r, k) => {
+    const n = old.get(r.id);
+    if (n && n._h === html[k]) { want.push(n); old.delete(r.id); return; }
+    const m = rowNode(html[k]);
+    if (n) { if (n.classList.contains("ctx")) m.classList.add("ctx"); changed.push(m); } else added.push(m);
+    want.push(m);
+  });
+  const drop = [...old.values(), ...$$(":scope > :not(.row)", box)];
+  for (const n of drop) n.remove();
+  let cur = box.firstElementChild;
+  for (const n of want) {
+    if (n === cur) { cur = cur.nextElementSibling; continue; }
+    box.insertBefore(n, cur);
+  }
+  if (more) box.insertAdjacentHTML("beforeend", more);
+  syncSel();
+  keepAnchor(box, anchor);
+  if (REDUCED.matches) return;
+  // a row that came in above the one held would push it while it opens: that one is simply there
+  const at = anchor ? want.findIndex((n) => n.dataset.id === anchor.id) : -1;
+  growRows(added.filter((n) => want.indexOf(n) > at));
+  for (const n of changed) {
+    const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
+    if (!was || !now) continue;
+    if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
+    if (now.s && !was.s) popStar($(".flag-ic", n));
+  }
+}
+const rowTpl = document.createElement("template");
+function rowNode(html) {
+  rowTpl.innerHTML = html;
+  const n = rowTpl.content.firstElementChild;
+  n._h = html;
+  return n;
+}
+// the row the eye is on: the one under the pointer, else the open one when it is in view, else the first in view.
+// At the very top, with the pointer elsewhere, nothing is held: new mail shows at the top.
+function takeAnchor(box) {
+  const nodes = $$(".row", box);
+  if (!nodes.length) return null;
+  const hover = box.matches(":hover") ? nodes.find((n) => n.matches(":hover")) : null;
+  if (!hover && box.scrollTop <= 0) return null;
+  const view = box.getBoundingClientRect();
+  const inView = (n) => { const r = n.getBoundingClientRect(); return r.bottom > view.top && r.top < view.bottom; };
+  const n = hover || nodes.find((x) => x.classList.contains("on") && inView(x)) || nodes[firstInView(box, nodes)];
+  const k = nodes.indexOf(n);
+  return { id: n.dataset.id, off: n.getBoundingClientRect().top - view.top, after: nodes.slice(k + 1, k + 30).map((x) => x.dataset.id) };
+}
+function keepAnchor(box, a) {
+  if (!a) return;
+  const top = box.getBoundingClientRect().top, offs = {};
+  for (const id of [a.id, ...a.after]) {
+    const n = box.querySelector(`:scope > .row[data-id="${CSS.escape(id)}"]`);
+    if (n) offs[id] = n.getBoundingClientRect().top - top;
+  }
+  const d = anchorShift(a, Object.keys(offs), offs);
+  if (d) box.scrollTop += d;
+}
+// a row's real height, so the rows not drawn yet (content-visibility) are counted at their true size
+// the first row in view, by halving: rows are in order
+function firstInView(box, nodes) {
+  const top = box.getBoundingClientRect().top;
+  let lo = 0, hi = nodes.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (nodes[mid].getBoundingClientRect().bottom > top) hi = mid; else lo = mid + 1; }
+  return lo;
+}
+// (the size given is the row's content box: padding and border come on top)
+function measureRow(box) {
+  if (box.style.getPropertyValue("--row-h")) return;
+  const n = $(":scope > .row:not(.leaving)", box);
+  if (!n) return;
+  n.style.contentVisibility = "visible";        // laid out for real, whether in view or not
+  const cs = getComputedStyle(n);
+  const h = n.getBoundingClientRect().height - ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((s, k) => s + parseFloat(cs[k]), 0);
+  n.style.contentVisibility = "";
+  if (h > 20) box.style.setProperty("--row-h", h.toFixed(2) + "px");
 }
 
 // the next page goes after the rows already shown, without drawing those again
@@ -602,9 +763,9 @@ function appendRows(add) {
   const box = $("#rows"), more = $(".rows-more", box);
   if (!$(".row", box)) return renderRows();
   for (const x of add) { shownIds.add(x.id); shownMarks.set(x.id, marksOf(x)); }
-  (more || box.appendChild(document.createElement("i"))).insertAdjacentHTML("beforebegin", add.map(rowTemplate).join(""));
-  if (!more) box.lastChild.remove();
-  else if (!S.more) more.remove();
+  const nodes = add.map((x) => rowNode(rowTemplate(x)));
+  if (more) more.before(...nodes); else box.append(...nodes);
+  if (more && !S.more) more.remove();
   syncSel();
 }
 
@@ -728,17 +889,33 @@ $("#filter-btn").innerHTML = icon("list-filter");
 $("#filter-btn").addEventListener("click", filterMenu);
 
 let listSeq = 0;
+// one page of the list on screen: a folder (with its filter) or a search; the server gives at most 500 at once
+const PAGE = 100, MAX_PAGE = 500;
+const fetchRows = (offset, limit) => (S.query
+  ? api("search", { q: S.query, limit, offset })
+  : api("list", { folder: S.folder, limit, offset, ...filterArgs() }));
+let moreJob = null;
 async function loadList({ quiet = false } = {}) {
   const seq = ++listSeq;
   syncFilterUI();
-  if (!quiet) S.loading = true;
+  if (!quiet) { S.loading = true; moreLater = false; }
+  refreshAt = quiet ? seq : 0;
   try {
-    let rows, more = false;
-    if (S.query) rows = (await api("search", { q: S.query })).rows;
-    else {
-      const limit = quiet ? Math.max(100, S.rows.length) : 100;
-      const r = await api("list", { folder: S.folder, limit, offset: 0, ...filterArgs() });
-      rows = r.rows; more = r.more;
+    // a page being added is part of what a refresh keeps
+    if (quiet && moreJob) { await moreJob; if (seq !== listSeq) return; }
+    // a refresh asks again for every row already loaded, in pages, and for the open mail's row if it slid further
+    // down (new mail on top): the list never shrinks under the reader and the open mail stays in it
+    const want = quiet ? Math.max(PAGE, S.rows.length + hidden.size) : PAGE;
+    // and the last row loaded, so new mail on top does not push rows off the end
+    const keep = quiet && !S.filter.unread ? [S.sel && S.rows.some((x) => x.id === S.sel) ? S.sel : null, S.rows.at(-1)?.id].filter(Boolean) : [];
+    let rows = [], more = true, offset = 0;
+    const have = new Set();
+    while (more && (rows.length < want || (keep.some((id) => !have.has(id)) && rows.length < want + MAX_PAGE))) {
+      const r = await fetchRows(offset, Math.min(MAX_PAGE, Math.max(PAGE, want - rows.length)));
+      if (seq !== listSeq) return;
+      offset += r.rows.length;
+      for (const x of r.rows) if (!have.has(x.id)) { have.add(x.id); rows.push(x); }
+      more = !!r.more && r.rows.length > 0;
     }
     if (seq !== listSeq) return;
     S.loading = false;
@@ -752,25 +929,42 @@ async function loadList({ quiet = false } = {}) {
       }
     }
     if (quiet && JSON.stringify(rows) === JSON.stringify(S.rows) && more === S.more) return;
-    const box = $("#rows"), top = box.scrollTop;
     S.rows = rows; S.more = more;
-    renderRows();
-    if (quiet) box.scrollTop = top; else box.scrollTop = 0;
+    renderRows();                       // a refresh keeps the row under the eye in place (renderRows)
+    if (!quiet) $("#rows").scrollTop = 0;
   } catch (e) { if (seq === listSeq && S.loading) { S.loading = false; renderRows(); } if (!quiet) fail(e); }
+  finally {
+    if (refreshAt === seq) refreshAt = 0;
+    // the end of the list was reached while the refresh was on its way: the next page comes now
+    if (seq === listSeq && moreLater) { moreLater = false; loadMore(); }
+  }
 }
 
+// the next page, when the list is scrolled near its end; a page for an older list (another folder, another
+// search) is dropped, and during a refresh it waits for it
+let moreLater = false;
 async function loadMore() {
-  if (!S.more || S.loadingMore || S.query) return;
+  if (!S.more || S.loadingMore || S.loading) return;
+  if (refreshing()) { moreLater = true; return; }
+  const seq = listSeq;
   S.loadingMore = true;
-  try {
-    const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length, ...filterArgs() });
-    const have = new Set(S.rows.map((x) => x.id));
-    const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
-    S.rows.push(...add);
-    S.more = r.more;
-    appendRows(add);
-  } catch (e) { fail(e); } finally { S.loadingMore = false; }
+  const job = (async () => {
+    try {
+      const r = await fetchRows(S.rows.length, PAGE);
+      if (seq !== listSeq) return;
+      const have = new Set(S.rows.map((x) => x.id));
+      const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
+      S.rows.push(...add);
+      S.more = !!r.more && r.rows.length > 0;
+      appendRows(add);
+    } catch (e) { if (seq === listSeq) fail(e); }
+  })();
+  moreJob = job;
+  try { await job; } finally { S.loadingMore = false; if (moreJob === job) moreJob = null; }
 }
+// the newest loadList is a quiet refresh still on its way
+let refreshAt = 0;
+const refreshing = () => refreshAt !== 0 && refreshAt === listSeq;
 
 function markRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);

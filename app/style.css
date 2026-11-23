@@ -646,7 +646,8 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group C1_LIST: new rules for this group only ---- */
-
+/* rows out of sight are counted at a row's measured height (app.js measureRow), so the view does not jump */
+.rows .row { contain-intrinsic-size: auto var(--row-h, 59px); }
 
 /* ---- 0.11 group C2_READ: new rules for this group only ---- */
 
