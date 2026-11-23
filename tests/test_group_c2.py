@@ -1,5 +1,5 @@
 """Offline tests for the reading pane, appearance, theme, problem notice and window fixes of 0.11 (group C2)."""
-import json, os, re, shutil, subprocess, sys, unittest
+import json, os, re, shutil, subprocess, sys, types, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll as R  # noqa: E402
@@ -270,6 +270,60 @@ class ProblemNotice(DemoBackend):
         css = read("app", "style.css")
         self.assertNotIn("background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%", css)
         self.assertIn(".list-col.has-banner .rows", css)
+
+
+class WindowPlace(DemoBackend):
+    """#66: the window opens where and how big it was, never larger than the screen."""
+    MAIN, RIGHT = (0, 25, 1440, 875), (1440, 0, 1920, 1080)
+
+    def test_default_is_centred_and_fits_a_small_screen(self):
+        self.assertEqual(A.fit_window(None, [self.MAIN]),
+                         {"width": 1280, "height": 820, "x": 80, "y": 52, "maximized": False})
+        p = A.fit_window(None, [(0, 0, 1280, 672)])           # 1080p at 150 %, taskbar off
+        self.assertEqual((p["width"], p["height"], p["x"], p["y"]), (1280, 672, 0, 0))
+        self.assertIsNone(A.fit_window({"x": 5, "y": 5, "width": 900, "height": 700}, [])["x"])
+
+    def test_saved_place_comes_back_and_is_kept_on_screen(self):
+        saved = {"x": 1600, "y": 100, "width": 1000, "height": 700, "maximized": False}
+        self.assertEqual(A.fit_window(saved, [self.MAIN, self.RIGHT]), saved)
+        p = A.fit_window({"x": 3200, "y": 900, "width": 1000, "height": 700}, [self.MAIN, self.RIGHT])
+        self.assertEqual((p["x"], p["y"]), (2360, 380))              # pulled back inside the right screen
+        p = A.fit_window({"x": 1600, "y": 100, "width": 1000, "height": 700}, [self.MAIN])   # that screen is gone
+        self.assertEqual((p["x"], p["y"], p["width"], p["height"]), (220, 112, 1000, 700))
+        p = A.fit_window({"x": 0, "y": 0, "width": 5000, "height": 4000, "maximized": True}, [self.MAIN])
+        self.assertEqual((p["width"], p["height"], p["maximized"]), (1440, 875, True))
+        self.assertEqual(A.fit_window({"width": "big"}, [self.MAIN])["width"], 1280)
+
+    def test_prefs_are_checked(self):
+        good = {"x": -1200, "y": 40, "width": 1100, "height": 760, "maximized": True}
+        self.assertEqual(self.backend.api_prefs({"window": good})["window"], good)
+        for bad in ({"x": 0, "y": 0, "width": 50, "height": 760}, {"x": "0", "y": 0, "width": 900, "height": 700},
+                    {"x": 0, "y": 0, "width": 900, "height": 700, "maximized": "yes"}, "900x700"):
+            self.assertEqual(self.backend.api_prefs({"window": bad})["window"], good)
+
+    def test_resize_move_and_close_are_kept(self):
+        class Event(list):
+            def __iadd__(self, f):
+                self.append(f)
+                return self
+
+            def set(self, *a):
+                return [f(*a) for f in self]
+        w = types.SimpleNamespace(events=types.SimpleNamespace(**{k: Event() for k in (
+            "resized", "moved", "maximized", "minimized", "restored", "closing", "before_show")}))
+        old = A.WINDOW.backend
+        A.WINDOW.backend = self.backend
+        try:
+            A.keep_window_place(w, {"x": 10, "y": 20, "width": 1280, "height": 820, "maximized": False})
+            w.events.resized.set(1000.0, 700.0)
+            w.events.moved.set(300, 200)
+            w.events.minimized.set()
+            w.events.moved.set(-32000, -32000)                 # Windows parks a minimized window there
+            w.events.restored.set()
+            self.assertEqual(w.events.closing.set(), [None])   # never stops the close
+        finally:
+            A.WINDOW.backend = old
+        self.assertEqual(self.backend.prefs()["window"], {"x": 300, "y": 200, "width": 1000, "height": 700, "maximized": False})
 
 
 class Strings(unittest.TestCase):
