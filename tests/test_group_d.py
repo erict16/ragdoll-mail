@@ -808,5 +808,70 @@ class StatusFields(OwnBackend):
         self.assertEqual(self.fields(), {"error_kind": None, "last_sync": None, "retry_at": None, "error_detail": None})
 
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class BrokenConfig(OwnBackend):
+    """#49: a typo in config.json does not stop the app; setup says so and keeps a copy of the file."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(setattr, R, "CONFIG_ERROR", None)
+        self.path = os.path.join(self.home, "config.json")
+
+    def write(self, text):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_load_config_survives_a_typo(self):
+        for text in ('{"user": "a@b.c",}', '["not", "an", "object"]', '{"imap": "imap.example.com"}'):
+            self.write(text)
+            cfg = R.load_config(self.path)
+            self.assertEqual(cfg.user, "")
+            self.assertEqual(cfg.imap["port"], 993)
+            self.assertEqual(R.CONFIG_ERROR["path"], self.path, text)
+        self.write('{"user": "A@B.C"}')
+        self.assertEqual(R.load_config(self.path).user, "a@b.c")
+        self.assertIsNone(R.CONFIG_ERROR)
+        with open(self.path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), '{"user": "A@B.C"}')           # never written over
+
+    def test_app_starts_with_a_broken_file(self):
+        import subprocess
+        self.write('{"user": "a@b.c",,}')
+        env = dict(os.environ, HOME=self.home, RAGDOLL_CONFIG=self.path, RAGDOLL_PASSWORD="x")
+        code = "import ragdoll_app as A; print(A.R.CONFIG_ERROR['path'])"
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30, cwd=ROOT)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), self.path)
+        cli = subprocess.run([sys.executable, "ragdoll.py", "sync"], env=env, capture_output=True, text=True,
+                             timeout=30, cwd=ROOT)
+        self.assertNotEqual(cli.returncode, 0)
+        self.assertIn("can't be read", cli.stderr)
+        self.assertNotIn("Traceback", cli.stderr)
+
+    def test_boot_and_status_tell_the_page(self):
+        b = self.b
+        b.demo = False
+        R.CONFIG_ERROR = {"path": self.path, "error": "Expecting property name: line 1 column 18"}
+        boot = b.api_boot({})
+        self.assertEqual(boot["config_error"]["path"], self.path)
+        self.assertIn(self.path, b.made)                            # the page may show the file
+        st = b.api_status({})
+        self.assertEqual((st["error"], st["error_kind"]), (A.CONFIG_MSG, "config"))
+
+    def test_setup_again_keeps_a_copy(self):
+        self.write('{"user": "a@b.c",}')
+        self.patch(A, "config_path", lambda: self.path)
+        self.online()
+        self.b.start_sync = lambda: None
+        self.b.api_save_settings({"user": "you@example.com", "name": "Alex", "imap_host": "demo", "smtp_host": "demo"})
+        with open(self.path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["user"], "you@example.com")
+        kept = [n for n in os.listdir(self.home) if n.startswith("config.json.broken-")]
+        self.assertEqual(len(kept), 1)
+        with open(os.path.join(self.home, kept[0]), encoding="utf-8") as f:
+            self.assertEqual(f.read(), '{"user": "a@b.c",}')
+
 if __name__ == "__main__":
     unittest.main()

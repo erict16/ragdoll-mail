@@ -780,6 +780,10 @@ const MORE_D_SYNC = {
     err_out_signin: "Outgoing server: sign-in failed. Check the address and password; some providers need an app password.",
     err_in: "Incoming server: %s",
     err_out: "Outgoing server: %s",
+    cfg_broken: "The settings file %s can't be read (maybe a typo after an edit). Sign in again to make a new one; a copy of the old file is kept beside it.",
+    cfg_show: "Show the file",
+    err_cfg: "The settings file can't be read. Sign in again to make a new one.",
+    err_cfg_nocopy: "The settings file %s can't be read, and no copy of it could be kept, so it was left as it is.",
   },
   "zh-Hans": {
     err_busy: "正在等另一个同步完成。完成后新邮件就会进来。",
@@ -795,6 +799,10 @@ const MORE_D_SYNC = {
     err_out_signin: "发信服务器：登录失败。请检查邮箱地址和密码；有些邮箱需要使用客户端专用密码。",
     err_in: "收信服务器：%s",
     err_out: "发信服务器：%s",
+    cfg_broken: "设置文件 %s 无法读取（可能是手动编辑时打错了）。重新登录即可生成新的设置文件，旧文件会在旁边留一份副本。",
+    cfg_show: "显示文件",
+    err_cfg: "设置文件无法读取。重新登录即可生成新的设置文件。",
+    err_cfg_nocopy: "设置文件 %s 无法读取，也无法保留副本，所以没有改动它。",
   },
   "zh-Hant": {
     err_busy: "正在等另一個同步完成。完成後新郵件就會進來。",
@@ -810,6 +818,10 @@ const MORE_D_SYNC = {
     err_out_signin: "寄信伺服器：登入失敗。請檢查郵件地址和密碼；有些郵件服務需要使用應用程式專用密碼。",
     err_in: "收信伺服器：%s",
     err_out: "寄信伺服器：%s",
+    cfg_broken: "設定檔 %s 無法讀取（可能是手動編輯時打錯了）。重新登入即可產生新的設定檔，舊檔案會在旁邊留一份副本。",
+    cfg_show: "顯示檔案",
+    err_cfg: "設定檔無法讀取。重新登入即可產生新的設定檔。",
+    err_cfg_nocopy: "設定檔 %s 無法讀取，也無法保留副本，所以沒有改動它。",
   },
   "ja": {
     err_busy: "別の同期が終わるのを待っています。終わると新しいメールが届きます。",
@@ -825,6 +837,10 @@ const MORE_D_SYNC = {
     err_out_signin: "送信サーバ：サインインできません。アドレスとパスワードを確認してください。アプリ用パスワードが必要なサービスもあります。",
     err_in: "受信サーバ：%s",
     err_out: "送信サーバ：%s",
+    cfg_broken: "設定ファイル %s を読み込めません（編集時の入力ミスかもしれません）。もう一度サインインすると新しく作られます。古いファイルのコピーは横に残ります。",
+    cfg_show: "ファイルを表示",
+    err_cfg: "設定ファイルを読み込めません。もう一度サインインすると新しく作られます。",
+    err_cfg_nocopy: "設定ファイル %s を読み込めず、コピーも残せなかったため、そのままにしました。",
   },
   "ko": {
     err_busy: "다른 동기화가 끝나기를 기다리는 중입니다. 끝나면 새 메일이 들어옵니다.",
@@ -840,6 +856,10 @@ const MORE_D_SYNC = {
     err_out_signin: "보내는 메일 서버: 로그인에 실패했습니다. 주소와 비밀번호를 확인하세요. 앱 비밀번호가 필요한 서비스도 있습니다.",
     err_in: "받는 메일 서버: %s",
     err_out: "보내는 메일 서버: %s",
+    cfg_broken: "설정 파일 %s 을(를) 읽을 수 없습니다(편집하다 잘못 입력했을 수 있습니다). 다시 로그인하면 새로 만들어지고, 이전 파일의 사본은 옆에 남습니다.",
+    cfg_show: "파일 보기",
+    err_cfg: "설정 파일을 읽을 수 없습니다. 다시 로그인하면 새로 만들어집니다.",
+    err_cfg_nocopy: "설정 파일 %s 을(를) 읽을 수 없고 사본도 남길 수 없어 그대로 두었습니다.",
   },
   "es": {
     err_busy: "Esperando a que termine otra sincronización. El correo nuevo llegará cuando acabe.",
@@ -855,6 +875,10 @@ const MORE_D_SYNC = {
     err_out_signin: "Servidor de salida: no se pudo iniciar sesión. Revisa la dirección y la contraseña; algunos proveedores piden una contraseña de aplicación.",
     err_in: "Servidor de entrada: %s",
     err_out: "Servidor de salida: %s",
+    cfg_broken: "No se puede leer el archivo de ajustes %s (quizá una errata al editarlo). Inicia sesión de nuevo para crear uno nuevo; se guarda una copia del antiguo a su lado.",
+    cfg_show: "Mostrar el archivo",
+    err_cfg: "No se puede leer el archivo de ajustes. Inicia sesión de nuevo para crear uno nuevo.",
+    err_cfg_nocopy: "No se puede leer el archivo de ajustes %s ni guardar una copia, así que se ha dejado como estaba.",
   },
   "fr": {
     err_busy: "En attente de la fin d'une autre synchronisation. Les nouveaux e-mails arriveront ensuite.",
@@ -870,6 +894,10 @@ const MORE_D_SYNC = {
     err_out_signin: "Serveur sortant : échec de la connexion. Vérifiez l'adresse et le mot de passe ; certains fournisseurs demandent un mot de passe d'application.",
     err_in: "Serveur entrant : %s",
     err_out: "Serveur sortant : %s",
+    cfg_broken: "Le fichier de réglages %s est illisible (peut-être une faute de frappe après une modification). Reconnectez-vous pour en créer un nouveau ; une copie de l'ancien est gardée à côté.",
+    cfg_show: "Afficher le fichier",
+    err_cfg: "Le fichier de réglages est illisible. Reconnectez-vous pour en créer un nouveau.",
+    err_cfg_nocopy: "Le fichier de réglages %s est illisible et aucune copie n'a pu être gardée : il a été laissé tel quel.",
   },
   "de": {
     err_busy: "Warten, bis eine andere Synchronisierung fertig ist. Danach kommen neue Mails an.",
@@ -885,6 +913,10 @@ const MORE_D_SYNC = {
     err_out_signin: "Postausgangsserver: Anmeldung fehlgeschlagen. Prüfe Adresse und Passwort; manche Anbieter verlangen ein App-Passwort.",
     err_in: "Posteingangsserver: %s",
     err_out: "Postausgangsserver: %s",
+    cfg_broken: "Die Einstellungsdatei %s lässt sich nicht lesen (vielleicht ein Tippfehler beim Bearbeiten). Melde dich neu an, um eine neue anzulegen; eine Kopie der alten bleibt daneben.",
+    cfg_show: "Datei zeigen",
+    err_cfg: "Die Einstellungsdatei lässt sich nicht lesen. Melde dich neu an, um eine neue anzulegen.",
+    err_cfg_nocopy: "Die Einstellungsdatei %s lässt sich nicht lesen, und es konnte keine Kopie angelegt werden; sie bleibt unverändert.",
   },
 };
 for (const [k, v] of Object.entries(MORE_D_SYNC)) Object.assign(LANGS[k], v);

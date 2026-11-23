@@ -105,6 +105,7 @@ TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 
 GONE_MSG = "This mail is no longer here. It may have been moved or deleted."
+CONFIG_MSG = "The settings file can't be read. Sign in again to make a new one."
 
 
 def explain(e):
@@ -123,6 +124,8 @@ def explain(e):
         return "No password saved. Add it in Settings.", "auth", s
     if "no account configured" in s:
         return "No account yet. Add one in Settings.", "config", s
+    if s.startswith("the settings file ") and "can't be read" in s:
+        return CONFIG_MSG, "config", s
     if isinstance(e, R.IndexTooNew):
         return s, "config", s
     mo = re.match(r"no mail \S+ \(moved or deleted", s)
@@ -1381,6 +1384,7 @@ class Backend:
             if self.stopping.is_set():
                 break
             if not configured():
+                self.config_problem()
                 continue
             self.sync["running"] = True
             self.pass_at, self.pass_cut = time.monotonic(), False
@@ -1571,8 +1575,19 @@ class Backend:
 
     # ---- api: app state
 
+    def config_problem(self):
+        """The settings file could not be read (#49): {path, error}, and the page may show the file."""
+        e = R.CONFIG_ERROR
+        if not e or self.demo:
+            return None
+        self.made.add(e["path"])
+        if not self.sync["error"]:
+            self.sync.update(error=CONFIG_MSG, kind="config", detail="%s: %s" % (e["path"], e["error"]),
+                             retry_at=None)
+        return {"path": e["path"], "error": e["error"]}
+
     def api_boot(self, a):
-        return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
+        return {"config_error": self.config_problem(), "configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
                 "prefs": self.prefs(), "news": self.news, "asks": self.asks,
@@ -2907,10 +2922,20 @@ class Backend:
         try:
             with open(path, encoding="utf-8") as f:
                 raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
         except FileNotFoundError:
             raw = {}
         except ValueError:
-            fail("The settings file %s is broken; fix or remove it first." % path)
+            # a file that can't be read is not written over: a copy of it stays beside the new one (#49)
+            keep = "%s.broken-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            try:
+                shutil.copy2(path, keep)
+            except OSError as e:
+                fail("The settings file %s can't be read, and no copy of it could be kept." % path, str(e))
+            print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
+            self.made.add(keep)
+            raw = {}
         user = (a.get("user") or R.CFG.user or "").strip().lower()
         if a.get("account", True):
             raw["user"] = user

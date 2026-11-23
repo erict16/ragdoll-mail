@@ -653,6 +653,10 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 /* ---- 0.11 group D_SYNC: new rules for this group only ---- */
 
+/* the settings file can't be read (#49): a line on the setup card, with a way to the file */
+.form .cfg-broken { overflow-wrap: anywhere; }
+.form .cfg-broken button.link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+  text-decoration: underline; cursor: pointer; }
 
 /* ---- 0.11 group E_FOLDERS: new rules for this group only ---- */
 

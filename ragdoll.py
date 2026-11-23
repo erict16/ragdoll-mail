@@ -173,6 +173,8 @@ def move_old_setup(path=None, home=None):
             raw = json.load(f)
     except (OSError, ValueError):
         raw = {}                                           # load_config reports a broken file
+    if not isinstance(raw, dict):
+        return path, over                                  # likewise; and it is never written over
     changed = False
     old_data = os.path.join(home, ".local", "share", "hmail")
     new_data = os.path.join(home, ".local", "share", "ragdoll-mail")
@@ -206,19 +208,36 @@ def move_old_setup(path=None, home=None):
     return path, over
 
 
+CONFIG_ERROR = None     # {"path", "error"} when the settings file could not be read (#49)
+
+
 def load_config(path=None):
+    """The settings: config.json over the defaults. A file that can't be read (a stray comma after a
+    hand edit) must not stop the app from opening: the defaults are used, the file is left as it is,
+    and CONFIG_ERROR says what is wrong so the app can show it."""
+    global CONFIG_ERROR
     path, over = move_old_setup(path or env("CONFIG"))
     d = json.loads(json.dumps(DEFAULTS))
+    CONFIG_ERROR = None
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            user = json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                user = json.load(f)
+            if not isinstance(user, dict):
+                raise ValueError("the settings are not a JSON object")
+            for k, v in user.items():
+                if isinstance(d.get(k), dict) and not isinstance(v, dict):
+                    raise ValueError("%r must be an object like {...}" % k)
+        except (OSError, ValueError) as e:      # json.JSONDecodeError is a ValueError
+            CONFIG_ERROR = {"path": path, "error": str(e)}
+            user = {}
         for k, v in user.items():
             if isinstance(v, dict) and isinstance(d.get(k), dict):
                 d[k].update(v)
             else:
                 d[k] = v
     d.update(over)
-    d["user"] = (d.get("user") or "").strip().lower()
+    d["user"] = (d.get("user") if isinstance(d.get("user"), str) else "").strip().lower()
     return Cfg(d)
 
 
@@ -414,6 +433,9 @@ def keychain_delete(account, service=KEYCHAIN_SERVICE):
 
 
 def need_account():
+    if CONFIG_ERROR:
+        die("the settings file %s can't be read (%s): fix it, or move it away and set up again"
+            % (CONFIG_ERROR["path"], CONFIG_ERROR["error"]))
     if not (CFG.user and CFG.imap["host"]):
         die("no account configured: copy config.example.json to ~/.config/ragdoll-mail/config.json")
 
