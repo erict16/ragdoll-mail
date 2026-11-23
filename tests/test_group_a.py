@@ -173,7 +173,7 @@ class SendFlow(unittest.TestCase):
         self.assertIn("if (S.compose === c) touched(c);", self.fn("async function uploadFiles("))
 
     def test_a_sent_mail_leaves_an_open_compose_alone(self):
-        self.assertIn("if (S.thread && !S.compose) openThread(", self.fn("async function sendWithUndo("))
+        self.assertIn("if (S.thread && !S.compose) openThread(", self.fn("async function sendHeld("))
 
 
 @unittest.skipUnless(NODE, "node is not installed")
@@ -253,6 +253,73 @@ class Sizes(unittest.TestCase):
         self.assertNotIn('font[size=\'7\']', src)
         self.assertIn('e.code === "Digit7"', src)
         self.assertIn("f.style.fontSize = px + \"px\"", src)
+
+
+class HeldSend(OwnBackend):
+    """The undo pause after Send lives in the backend too (#50)."""
+    def draft(self, subject="Held"):
+        st = {"mode": "new", "to": [{"name": "", "addr": "a@example.org"}], "cc": [], "bcc": [], "subject": subject,
+              "html": "<p>x</p>", "atts": [], "use_signature": False}
+        return self.b.api_prepare_send({**st, "force": True})["id"]
+
+    def sent(self, subject):
+        return bool(self.b.q("select 1 from msgs where folder=? and subject=?", (A.R.CFG.folders["sent"], subject)))
+
+    def test_send_wait_sends_once(self):
+        i = self.draft()
+        self.assertTrue(self.b.api_send({"id": i, "delay": 30})["held"])
+        self.assertEqual(self.b.send_state(), (1, 0))
+        self.assertFalse(self.sent("Held"))
+        self.assertTrue(self.b.api_send_wait({"id": i})["sent"])
+        self.assertTrue(self.sent("Held"))
+        self.assertEqual(self.b.send_state(), (0, 0))
+        self.assertIsNone(self.b.run_held(i))       # the timer finds nothing left to send
+
+    def test_undo_keeps_the_draft(self):
+        i = self.draft()
+        self.b.api_send({"id": i, "delay": 30})
+        self.assertTrue(self.b.api_send_cancel({"id": i})["cancelled"])
+        self.assertEqual(self.b.send_state(), (0, 0))
+        self.assertFalse(self.sent("Held"))
+        self.b.row(i)                                # still in Drafts
+
+    def test_a_closed_page_does_not_drop_it(self):
+        self.patch(self.b, "SEND_GRACE", 0)
+        i = self.draft("Page gone")
+        self.b.api_send({"id": i, "delay": 0.2})
+        end = time.time() + 5
+        while not self.sent("Page gone") and time.time() < end:
+            time.sleep(0.05)
+        self.assertTrue(self.sent("Page gone"))
+        self.assertFalse(self.b.api_send_cancel({"id": i})["cancelled"])    # too late to undo
+
+    def test_closing_asks_the_page_then_waits(self):
+        calls = []
+        self.patch(A, "WINDOW", A.SimpleNamespace(w=None, backend=self.b, quit_ok=False, asked=0))
+        self.patch(A, "page_call", calls.append)
+        self.patch(A, "close_window", lambda: calls.append("closed"))
+        self.assertTrue(A.window_closing())                  # nothing on its way: it just closes
+        i = self.draft("Closing")
+        self.b.api_send({"id": i, "delay": 30})
+        self.assertFalse(A.window_closing())                 # held: the page asks
+        self.assertEqual(calls, ["window.ragdollClosing && window.ragdollClosing()"])
+        self.b.api_close_asked({"open": True})
+        self.assertFalse(A.window_closing())                 # the question shows again, still open
+        self.assertFalse(self.sent("Closing"))
+        A.WINDOW.asked = 1                                    # a page that never showed it: send, then close
+        self.assertFalse(A.window_closing())
+        end = time.time() + 5
+        while "closed" not in calls and time.time() < end:
+            time.sleep(0.05)
+        self.assertTrue(self.sent("Closing"))
+        self.assertTrue(A.WINDOW.quit_ok)
+        self.assertTrue(A.window_closing())
+
+    def test_page_hands_the_pause_to_the_backend(self):
+        src = app_src()
+        self.assertIn('api("send", { id, delay: wait / 1000 })', src)
+        self.assertIn('api(wait ? "send_wait" : "send", { id })', src)
+        self.assertIn("window.ragdollClosing = () =>", src)
 
 
 class ForwardMarker(OwnBackend):

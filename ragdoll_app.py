@@ -920,6 +920,10 @@ class Backend:
         self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
         self.marklock = threading.Lock()
         self.badge_n = None                     # the unread count the Dock icon shows
+        self.holding = {}                        # id -> a mail in its undo pause after Send (hold_send)
+        self.sendlock = threading.Lock()
+        self.sending_n = 0                      # sends talking to the mail server right now
+        self.undo_moves = collections.deque(maxlen=10)    # the last moves, so they can be undone (api_unmove)
         if demo:
             self.make_demo()                    # opens self.c on the demo's own index
         else:
@@ -2372,11 +2376,121 @@ class Backend:
         return {"id": i, "problems": []}
 
     def api_send(self, a):
+        """Send the saved draft a["id"] now; with a["delay"] (seconds), after the undo pause (hold_send)."""
+        if a.get("delay"):
+            return self.hold_send(a["id"], a["delay"])
         with self.schedlock:
             self.sched_drop(a["id"])
             return self.send_now(a)
 
+    # ---- the undo pause after Send
+    # The page counts the pause down and then asks for the send (api_send_wait). The backend holds the
+    # mail too, so a closed page does not drop it: a mail still held a moment after its pause ends goes out
+    # by itself. The window's closing handler asks the page first, and waits for a send that has started.
+
+    SEND_GRACE = 3          # seconds after the pause before the backend sends a mail the page never asked for
+
+    def hold_send(self, i, delay):
+        folder, _ = self.parse(i)
+        if folder != R.CFG.folders["drafts"]:
+            fail("Only drafts can be sent.")
+        try:
+            delay = max(0.0, min(120.0, float(delay)))
+        except (TypeError, ValueError):
+            fail("bad delay")
+        with self.sendlock:
+            job = self.holding.get(i)
+            if job and job["state"] in ("held", "sending"):
+                return {"held": True, "at": job["at"]}
+            job = {"state": "held", "at": time.time() + delay, "done": threading.Event(), "result": None, "error": None}
+            job["timer"] = threading.Timer(delay + self.SEND_GRACE, self.run_held, (i,))
+            job["timer"].daemon = True
+            self.holding[i] = job
+        job["timer"].start()
+        return {"held": True, "at": job["at"]}
+
+    def run_held(self, i):
+        """Send the held mail i now, once (the page and the timer may both ask). Returns its job."""
+        with self.sendlock:
+            job = self.holding.get(i)
+            if not job or job["state"] != "held":
+                return job
+            job["state"] = "sending"
+            job["timer"].cancel()
+        try:
+            with self.schedlock:
+                self.sched_drop(i)
+                job["result"] = self.send_now({"id": i})
+            job["state"] = "sent"
+        except (Exception, SystemExit) as e:       # noqa: BLE001 - the page shows the reason
+            job["error"] = str(e) if isinstance(e, ApiError) else friendly(e)
+            job["state"] = "failed"
+        finally:
+            job["done"].set()
+        return job
+
+    def api_send_cancel(self, a):
+        """Undo: keep the held mail as a draft. cancelled is false when it had already started to go."""
+        with self.sendlock:
+            job = self.holding.get(a["id"])
+            if job is None or job["state"] in ("held", "cancelled"):
+                if job is not None:
+                    job["timer"].cancel()
+                    job["state"] = "cancelled"
+                    job["done"].set()
+                    del self.holding[a["id"]]
+                return {"cancelled": True}
+        return {"cancelled": False}
+
+    def api_send_wait(self, a):
+        """The pause is over: send the held mail now, or wait for the send already on its way."""
+        i = a["id"]
+        job = self.run_held(i)
+        if job is None:
+            return self.api_send({"id": i})
+        job["done"].wait(600)
+        with self.sendlock:
+            if self.holding.get(i) is job and job["state"] in ("sent", "failed"):
+                del self.holding[i]
+        if job["state"] == "failed":
+            fail(job["error"])
+        if job["state"] != "sent":
+            return {"sent": False, "cancelled": job["state"] == "cancelled", "problems_after_sending": []}
+        return job["result"]
+
+    def send_state(self):
+        """(mails held in their undo pause, sends talking to the server now)"""
+        with self.sendlock:
+            return sum(1 for j in self.holding.values() if j["state"] == "held"), self.sending_n
+
+    def wait_sends(self, most=120):
+        end = time.time() + most
+        while time.time() < end and (self.send_state()[1] or any(
+                j["state"] == "sending" for j in list(self.holding.values()))):
+            time.sleep(0.1)
+
+    def api_close_asked(self, a):
+        """The page shows its question about the mail on its way (window_closing), or put it away."""
+        WINDOW.asked = 2 if a.get("open", True) else 0
+        return {}
+
+    def api_quit_window(self, a):
+        """The page has dealt with the mail on its way: let the window close."""
+        WINDOW.quit_ok = True
+        if WINDOW.w is not None:
+            threading.Thread(target=close_window, daemon=True).start()
+        return {}
+
     def send_now(self, a):
+        with self.sendlock:
+            self.sending_n += 1
+        try:
+            return self.send_draft_now(a)
+        finally:
+            with self.sendlock:
+                self.sending_n -= 1
+
+    def send_draft_now(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
@@ -3130,7 +3244,49 @@ def system_dark():
     return False
 
 
-WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
+WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False, asked=0)
+
+
+def close_window():
+    with contextlib.suppress(Exception):
+        WINDOW.w.destroy()
+
+
+def page_call(js):
+    """Run a line in the page, from any thread but the window's own (run_js waits for that one)."""
+    def go():
+        with contextlib.suppress(Exception):
+            run = getattr(WINDOW.w, "run_js", None) or WINDOW.w.evaluate_js
+            run(js)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def window_closing():
+    """The window is closing, or the app quitting. A mail in its undo pause: the page asks whether to send
+    it now, cancel it or keep the window open (and closes it itself, api_quit_window). A send talking to
+    the mail server: it finishes first, then the window closes. False keeps the window open."""
+    b = WINDOW.backend
+    if WINDOW.quit_ok or b is None:
+        return True
+    held, active = b.send_state()
+    if held and WINDOW.asked == 0:
+        WINDOW.asked = 1
+        page_call("window.ragdollClosing && window.ragdollClosing()")
+        return False
+    if held and WINDOW.asked == 2:          # the page answers: it shows its question (again)
+        page_call("window.ragdollClosing && window.ragdollClosing()")
+        return False
+    # (asked before and the page never showed its question: it can't answer, so what it holds goes now)
+    if held or active:
+        def finish():
+            for i in [k for k, j in list(b.holding.items()) if j["state"] == "held"]:
+                b.run_held(i)
+            b.wait_sends()
+            WINDOW.quit_ok = True
+            close_window()
+        threading.Thread(target=finish, daemon=True).start()
+        return False
+    return True
 
 
 def bring_front():
@@ -3388,6 +3544,7 @@ def run_window(url, home):
     w = webview.create_window(APP_NAME, url, width=1280, height=820, min_size=(880, 560),
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
+    w.events.closing += window_closing      # a mail on its way is sent or asked about first
     if sys.platform == "darwin":
         mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
@@ -3433,6 +3590,7 @@ def main(argv=None):
     try:
         with R.running("app"):
             if use_window:
+                WINDOW.backend = backend
                 run_window(url, R.CFG.home)
             else:
                 print("ragdoll-mail is running at http://127.0.0.1:%d  (Ctrl+C stops it)" % srv.server_address[1])

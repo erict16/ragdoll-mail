@@ -2223,16 +2223,37 @@ async function sendCompose(force = false, at = null) {
 }
 
 // the pause after Send: Undo stops the mail before it leaves; after that it can't be called back
+// The backend holds the mail through the pause as well (api send with a delay), so closing the window or
+// the page does not drop it: the window asks first (ragdollClosing), a page that is gone still sends.
+const HELD = new Map();         // id -> the mail in its pause: { undo, now, quiet, ok, done }
 async function sendWithUndo(id, onUndo) {
   const wait = undoSeconds() * 1000;
-  let undone = false;
-  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
-  for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
-  if (undone) { tt.close(); return onUndo?.(); }
-  tt.node.querySelector(".toast-act")?.remove();
-  tt.node.querySelector(".toast-bar")?.remove();
+  if (wait) {
+    try { await api("send", { id, delay: wait / 1000 }); }
+    catch (e) { fail(e); return onUndo?.(); }
+  }
+  let undone = false, rush = false, finish;
+  const held = { undo: () => { undone = true; }, now: () => { rush = true; }, quiet: false, ok: false, done: new Promise((r) => { finish = r; }) };
+  HELD.set(id, held);
+  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: held.undo }, ms: 0, bar: wait } : { ms: 0 });
+  const end = Date.now() + wait;
   try {
-    const res = await api("send", { id });
+    while (wait && Date.now() < end && !undone && !rush) await sleep(100);
+    if (undone) {
+      const r = await api("send_cancel", { id }).catch(() => ({ cancelled: false }));
+      // too late: it had started to go out, so it is waited for below like any other send
+      if (r.cancelled) { tt.close(); if (!held.quiet) onUndo?.(); return; }
+    }
+    tt.node.querySelector(".toast-act")?.remove();
+    tt.node.querySelector(".toast-bar")?.remove();
+    await sendHeld(id, tt, onUndo, held, wait);
+  } finally { HELD.delete(id); finish(); }
+}
+async function sendHeld(id, tt, onUndo, held, wait) {
+  try {
+    const res = await api(wait ? "send_wait" : "send", { id });
+    if (res.cancelled) { tt.close(); return; }
+    held.ok = true;
     tt.close();
     const after = res.problems_after_sending || [];
     if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
@@ -2246,6 +2267,30 @@ async function sendWithUndo(id, onUndo) {
     onUndo?.();
   }
 }
+// the window is being closed while a mail waits out its pause (ragdoll_app.py window_closing)
+window.ragdollClosing = () => {
+  if (!HELD.size) return api("quit_window").catch(() => {});
+  api("close_asked", { open: true }).catch(() => {});
+  let leaving = false;
+  const away = () => { if (!leaving) api("close_asked", { open: false }).catch(() => {}); };
+  const go = async (send) => {
+    leaving = true;
+    closeLayer();
+    const all = [...HELD.values()];
+    for (const h of all) { h.quiet = !send; if (send) h.now(); else h.undo(); }
+    await Promise.all(all.map((h) => h.done));
+    // a mail that could not go out stays open in the window, with its reason
+    if (send && all.some((h) => !h.ok)) return api("close_asked", { open: false }).catch(() => {});
+    api("quit_window").catch(() => {});
+  };
+  const box = sheet(el("div", {},
+    el("h2", { html: icon("send") + esc(t("closing_sending")) }),
+    el("div", { class: "sheet-acts" },
+      el("button", { class: "btn", onclick: () => { closeLayer(); away(); } }, t("keep_window")),
+      el("button", { class: "btn", onclick: () => go(false) }, t("cancel_sending")),
+      el("button", { class: "btn primary", onclick: () => go(true) }, t("send_now")))), { onclose: away });
+  box.querySelector(".btn.primary").focus();
+};
 
 function problemsSheet(problems, at = null) {
   const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);

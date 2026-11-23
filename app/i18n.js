@@ -684,27 +684,59 @@ for (const [k, v] of Object.entries(MORE9)) Object.assign(LANGS[k], v);
 const MORE_A_COMPOSE = {
   "en": {
     att_wait: "An attachment is still uploading.",
+    closing_sending: "A mail is still being sent", keep_window: "Keep open", cancel_sending: "Cancel sending",
+    sig_add: "New signature", sig_name: "Name", sig_delete: "Delete signature", sig_n: "Signature %s",
+    sig_for_new: "New mail", sig_for_reply: "Replies and forwards", sig_change: "Change signature",
+    moved_back: "Moved back", nothing_undo: "Nothing to undo",
   },
   "zh-Hans": {
     att_wait: "附件还在上传。",
+    closing_sending: "还有一封邮件正在发送", keep_window: "不关闭", cancel_sending: "取消发送",
+    sig_add: "新建签名", sig_name: "名称", sig_delete: "删除签名", sig_n: "签名 %s",
+    sig_for_new: "新邮件", sig_for_reply: "回复和转发", sig_change: "换一个签名",
+    moved_back: "已移回", nothing_undo: "没有可撤销的操作",
   },
   "zh-Hant": {
     att_wait: "附件還在上傳。",
+    closing_sending: "還有一封郵件正在寄出", keep_window: "不關閉", cancel_sending: "取消寄出",
+    sig_add: "新增簽名", sig_name: "名稱", sig_delete: "刪除簽名", sig_n: "簽名 %s",
+    sig_for_new: "新郵件", sig_for_reply: "回覆和轉寄", sig_change: "換一個簽名",
+    moved_back: "已移回", nothing_undo: "沒有可復原的操作",
   },
   "ja": {
     att_wait: "添付ファイルをアップロード中です。",
+    closing_sending: "送信中のメールがあります", keep_window: "閉じない", cancel_sending: "送信を取り消す",
+    sig_add: "新しい署名", sig_name: "名前", sig_delete: "署名を削除", sig_n: "署名 %s",
+    sig_for_new: "新規メール", sig_for_reply: "返信と転送", sig_change: "署名を変更",
+    moved_back: "元に戻しました", nothing_undo: "取り消せる操作はありません",
   },
   "ko": {
     att_wait: "첨부 파일을 아직 올리는 중입니다.",
+    closing_sending: "아직 보내는 중인 메일이 있습니다", keep_window: "열어 두기", cancel_sending: "보내기 취소",
+    sig_add: "새 서명", sig_name: "이름", sig_delete: "서명 삭제", sig_n: "서명 %s",
+    sig_for_new: "새 메일", sig_for_reply: "답장 및 전달", sig_change: "서명 바꾸기",
+    moved_back: "되돌렸습니다", nothing_undo: "되돌릴 작업이 없습니다",
   },
   "es": {
     att_wait: "Un archivo adjunto aún se está subiendo.",
+    closing_sending: "Aún se está enviando un correo", keep_window: "Mantener abierto", cancel_sending: "Cancelar envío",
+    sig_add: "Nueva firma", sig_name: "Nombre", sig_delete: "Eliminar firma", sig_n: "Firma %s",
+    sig_for_new: "Correo nuevo", sig_for_reply: "Respuestas y reenvíos", sig_change: "Cambiar firma",
+    moved_back: "Devuelto a su sitio", nothing_undo: "No hay nada que deshacer",
   },
   "fr": {
     att_wait: "Une pièce jointe est encore en cours d’envoi.",
+    closing_sending: "Un e-mail est encore en cours d’envoi", keep_window: "Garder ouvert", cancel_sending: "Annuler l’envoi",
+    sig_add: "Nouvelle signature", sig_name: "Nom", sig_delete: "Supprimer la signature", sig_n: "Signature %s",
+    sig_for_new: "Nouvel e-mail", sig_for_reply: "Réponses et transferts", sig_change: "Changer de signature",
+    moved_back: "Remis à sa place", nothing_undo: "Rien à annuler",
   },
   "de": {
     att_wait: "Ein Anhang wird noch hochgeladen.",
+    closing_sending: "Eine E-Mail wird noch gesendet", keep_window: "Geöffnet lassen", cancel_sending: "Senden abbrechen",
+    sig_add: "Neue Signatur", sig_name: "Name", sig_delete: "Signatur löschen", sig_n: "Signatur %s",
+    sig_for_new: "Neue E-Mail", sig_for_reply: "Antworten und Weiterleitungen", sig_change: "Signatur wechseln",
+    moved_back: "Zurückverschoben", nothing_undo: "Nichts zum Rückgängigmachen",
   },
 };
 for (const [k, v] of Object.entries(MORE_A_COMPOSE)) Object.assign(LANGS[k], v);
