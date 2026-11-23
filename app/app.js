@@ -858,6 +858,7 @@ function moveFolderMenu(anchor, f) {
   pickMenu(anchor, entries);
 }
 // a sentence from the server about folders, in the chosen language
+MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
 MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
 function accountMenu() {
