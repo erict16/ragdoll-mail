@@ -982,26 +982,71 @@ def b64_cut(p):
         return None
 
 
+META_CHARSET_RE = re.compile(rb"""(?i)<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""")
+HIGH_PAIR_RE = re.compile(rb"[\x80-\xff]{2}")
+# tried in turn when the part names no charset or the wrong one: Chinese first (most of this
+# mail), then the other East Asian ones; GB18030 also reads GBK and GB2312
+GUESS_CHARSETS = ("utf-8", "gb18030", "big5", "shift_jis", "euc-kr")
+
+
+def decode_strict(b, cs):
+    """b in charset cs, strictly; a character cut off at the very end (the index reads only the start
+    of a mail) is dropped. None when cs does not fit."""
+    try:
+        return b.decode(cs)
+    except LookupError:
+        return None
+    except UnicodeDecodeError as e:
+        if e.end >= len(b) and e.start >= len(b) - 4:
+            try:
+                return b[:e.start].decode(cs)
+            except UnicodeDecodeError:
+                return None
+        return None
+
+
+def decode_text(b, declared=None, html=False):
+    """Bytes of a text part to text: the declared charset when it fits, then an HTML part's own
+    <meta charset>, then UTF-8 and the East Asian charsets in turn. Text whose 8-bit bytes all stand
+    alone cannot be multi-byte: Western (cp1252, Latin-1). Last, GB18030 with replacement (#46)."""
+    tries = [declared] if declared else []
+    if html:
+        mo = META_CHARSET_RE.search(b[:8192])
+        if mo:
+            tries.append(mo.group(1).decode("ascii", "ignore").lower())
+    if re.search(rb"[\x80-\xff]", b) and not HIGH_PAIR_RE.search(b):
+        tries += ["utf-8", "cp1252", "latin-1"]
+    tries += GUESS_CHARSETS
+    seen = set()
+    for cs in tries:
+        if cs in seen:
+            continue
+        seen.add(cs)
+        s = decode_strict(b, cs)
+        if s is not None:
+            return s
+    return b.decode("gb18030", "replace")
+
+
 def part_text(p):
-    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...)."""
+    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...).
+    The bytes are decoded here: get_content() reads a part without a charset as ASCII and turned
+    every Chinese character into "�" (#46)."""
     payload = b64_cut(p)
     if payload is None:
         try:
-            return nfc(p.get_content())
+            payload = p.get_payload(decode=True)
         except Exception:
-            pass
-        payload = p.get_payload(decode=True) or b""
-    else:
-        try:        # the cut can also split the last character: drop it rather than fail on it
-            return nfc(payload.decode(p.get_content_charset() or "utf-8", "ignore"))
-        except LookupError:
-            pass
-    for cs, err in ((p.get_content_charset() or "utf-8", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
-        try:
-            return nfc(payload.decode(cs, err))
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return ""
+            payload = None
+        if not isinstance(payload, bytes):
+            try:
+                return nfc(p.get_content())
+            except Exception:
+                return ""
+    declared = p.get_content_charset()
+    if declared in ("unknown-8bit", "x-unknown", "us-ascii", "ascii") and re.search(rb"[\x80-\xff]", payload):
+        declared = None         # 8-bit bytes the label cannot be right about
+    return nfc(decode_text(payload, declared, p.get_content_type() == "text/html"))
 
 
 def leaf_parts(msg):
@@ -1247,6 +1292,14 @@ def db():
                 continue
             n += 1
         c.execute("insert or replace into meta values('body_fix', ?)", (str(n),))
+        c.commit()
+    if not c.execute("select 1 from meta where k='charset_fix2'").fetchone():
+        # 0.10 and older read a text part without a charset as ASCII: "报价单" was stored as "���"
+        bad = c.execute("select id from msgs where has_body=1 and instr(body, char(65533))>0").fetchall()
+        for r in bad:
+            c.execute("update msgs set body='', has_body=0 where id=?", (r["id"],))
+            c.execute("update fts set body='' where rowid=?", (r["id"],))
+        c.execute("insert or replace into meta values('charset_fix2', ?)", (str(len(bad)),))
         c.commit()
     if have < SCHEMA_VERSION:
         c.execute("insert or replace into meta values('schema', ?)", (str(SCHEMA_VERSION),))

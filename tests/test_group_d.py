@@ -976,5 +976,69 @@ class Prefs(OwnBackend):
         self.assertEqual(self.b.prefs(), {})
         self.assertEqual(self.b.api_prefs({"lang": "de"})["lang"], "de")
 
+def part(headers, body):
+    return R.to_msg(headers.encode() + b"\r\n\r\n" + body)
+
+
+class NoCharset(unittest.TestCase):
+    """#46: a text part without a charset (or with the wrong one) is read right."""
+
+    def test_utf8_without_charset(self):
+        self.assertEqual(R.part_text(part("Content-Type: text/plain", "报价单 PO-1234".encode())), "报价单 PO-1234")
+
+    def test_gb2312_html_with_only_a_meta_charset(self):
+        html = '<html><head><meta http-equiv="Content-Type" content="text/html; charset=gb2312"></head>' \
+               '<body>报价 附件</body></html>'
+        got = R.part_text(part("Content-Type: text/html", html.encode("gb2312")))
+        self.assertIn("报价 附件", got)
+        self.assertNotIn("�", got)
+
+    def test_gbk_without_meta(self):
+        self.assertEqual(R.part_text(part("Content-Type: text/plain", "陈喆 您好".encode("gbk"))), "陈喆 您好")
+
+    def test_labelled_utf8_but_gbk(self):
+        self.assertEqual(R.part_text(part("Content-Type: text/plain; charset=utf-8", "您好".encode("gbk"))), "您好")
+
+    def test_big5_shift_jis_euc_kr(self):
+        self.assertEqual(R.decode_text("請見附件".encode("big5"), "big5"), "請見附件")
+        self.assertEqual(R.decode_text("見積書".encode("shift_jis"), "shift_jis"), "見積書")
+        self.assertEqual(R.decode_text("見積書です".encode("shift_jis"), None).count("�"), 0)     # some reading, never "�"
+        self.assertEqual(R.decode_text("견적서".encode("euc-kr"), "euc-kr"), "견적서")
+
+    def test_western_without_charset(self):
+        self.assertEqual(R.part_text(part("Content-Type: text/plain", "Caf\xe9 au lait, r\xe9sum\xe9".encode("latin-1"))),
+                         "Café au lait, résumé")
+        self.assertEqual(R.part_text(part("Content-Type: text/plain", "“quoted”".encode("cp1252"))),
+                         "“quoted”")
+
+    def test_cut_in_the_middle_of_a_character(self):
+        raw = "报价单".encode()[:-1]                       # the index reads only the start of a mail
+        self.assertEqual(R.part_text(part("Content-Type: text/plain; charset=utf-8", raw)), "报价")
+
+    def test_base64_and_qp(self):
+        import base64 as b64
+        body = b64.b64encode("请查收报价".encode())
+        self.assertEqual(R.part_text(part("Content-Type: text/plain\r\nContent-Transfer-Encoding: base64", body)),
+                         "请查收报价")
+        qp = b"=E8=AF=B7=E6=9F=A5=E6=94=B6"
+        self.assertEqual(R.part_text(part("Content-Type: text/plain\r\nContent-Transfer-Encoding: quoted-printable", qp)),
+                         "请查收")
+
+    def test_garbled_rows_are_fetched_again(self):
+        import tempfile, shutil
+        cfg = R.CFG
+        R.CFG = R.Cfg(dict(R.DEFAULTS, data_dir=tempfile.mkdtemp()))
+        self.addCleanup(setattr, R, "CFG", cfg)
+        self.addCleanup(shutil.rmtree, R.CFG.home, True)
+        c = R.db()
+        c.execute("delete from meta where k='charset_fix2'")
+        c.execute("insert into msgs(folder,uidv,uid,msgid,ts,frm,subject,body,seen,flagged,answered,has_body) "
+                  "values('INBOX',1,1,'<a@x>',1,'a','s','���',1,0,0,1)")
+        c.commit()
+        c.close()
+        c = R.db()
+        self.assertEqual(tuple(c.execute("select body, has_body from msgs").fetchone()), ("", 0))
+        c.close()
+
 if __name__ == "__main__":
     unittest.main()
