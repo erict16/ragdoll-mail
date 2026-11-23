@@ -43,13 +43,13 @@ EN = {
     "lang": "en", "path": "", "other": "zh/", "other_name": "简体中文", "hreflang": "zh-Hans",
     "title": "Ragdoll Mail: the free mail app your AI agent can use, for Mac and Windows",
     "desc": "A free, open-source mail app for Mac and Windows with a command line built in. Claude Code, Codex and "
-            "other agents can search your mail and draft replies, and you approve every send. Local SQLite search, "
+            "other agents can search your mail, draft replies and send them once you say yes. Local SQLite search, "
             "any IMAP mailbox.",
     "nav": ["How it works", "Speed", "Compare"], "download": "Download",
     "pill": ["Free", "Open source", "Mac and Windows"],
     "h1": "The mail app your AI agent <em>can actually use</em>.",
     "lead": "A desktop mail app with a command line built in. Claude Code, Codex or any agent can search your mail "
-            "and write the reply. Nothing goes out until you press Send.",
+            "and write the reply, then send it once you say yes. Or you press Send.",
     "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
     "first": "Not signed by Apple or Microsoft yet. The first time, choose Open Anyway (Mac: System Settings → "
              "Privacy &amp; Security) or Run anyway (Windows: More info).",
@@ -58,7 +58,7 @@ EN = {
                 "opens in the app, the send is undone and set for tomorrow morning, and search finds mail as you type",
     "sound": ["Sound on", "Sound off"],
 
-    "a_h2": ["Your agent writes.", "You press Send."],
+    "a_h2": ["Your agent writes.", "You say yes."],
     "a_sub": "One click installs the <code>ragdoll</code> command (Settings → Command line). Every command speaks "
              "<code>--json</code>, so an agent learns it from <code>ragdoll --help</code>.",
     "a_guide": "Read the command-line guide",
@@ -68,7 +68,9 @@ EN = {
              ("$", "ragdoll check drafts:14 --reply"),
              ("ok", "CHECK OK"),
              ("$", "ragdoll open drafts:14"),
-             ("agent", "The draft is open in Ragdoll Mail. Send it when you are happy.")],
+             ("agent", "The draft is open in Ragdoll Mail. Shall I send it?"),
+             ("you", "Yes, send it."),
+             ("$", "ragdoll send drafts:14 --yes")],
     "draft": {"box": "Drafts", "to": "To", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
               "body": "Hi Jane, the signed quote for PO-1234 is attached. Please confirm the delivery address by Friday.",
               "file": "Quote.pdf", "send": "Send"},
@@ -93,8 +95,8 @@ EN = {
         ("check", "Free and open source", "No ads, no subscription. MIT license, so anyone can check what it does."),
     ],
     "c_more": "Compare with Superhuman, Shortwave, Foxmail and others",
-    "quote": "The good AI mail apps cost $25 to $30 a month and only took Gmail or Outlook. My work mail is on "
-             "Tencent Exmail. So I built the one I needed.",
+    "quote": "Spark started charging, and I wanted a free alternative to it. Himalaya was too slow to search my mail. "
+             "So I built Ragdoll Mail.",
     "sign": "Eric Tan, who made Ragdoll Mail",
 
     "q_h2": "Questions",
@@ -104,7 +106,8 @@ EN = {
          "the ragdoll command the same way you would in a terminal."),
         ("Can my agent send mail without asking me?",
          "Not by accident. The send command refuses to run without an explicit yes, and the setup we suggest tells "
-         "agents to ask you first. Most people let the agent write the draft and press Send themselves."),
+         "agents to ask you first. When you say yes, the agent sends it with ragdoll send. Or you open the draft in the app "
+         "and press Send yourself."),
         ("Is my mail safe?", "Your mail is stored on your computer and on your own mail server, and nowhere else. "
          "The app sends nothing to us. We do not run a server."),
         ("Is it really free?", "Yes. There are no ads, no subscription and no account. The code is open source under "
@@ -118,11 +121,11 @@ ZH = dict(EN, **{
     "lang": "zh-Hans", "path": "zh/", "og": "og-zh.png", "other": "../", "other_name": "English", "hreflang": "en",
     "title": "Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）",
     "desc": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，"
-            "每一封都要你确认才会发出。本地 SQLite 搜索，支持任何 IMAP 邮箱。",
+            "你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。",
     "nav": ["怎么用", "速度", "对比"], "download": "下载",
     "pill": ["免费", "开源", "Mac 和 Windows"],
     "h1": "让 AI 助手<em>真正用得上</em>的邮件软件。",
-    "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复。你不点发送，什么都不会发出去。",
+    "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复，你点头后还能直接帮你发。",
     "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
     "first": "还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。",
     "demo": "zh", "demo_name": "30 秒看懂 Ragdoll Mail", "demo_len": "PT33S",
@@ -130,7 +133,7 @@ ZH = dict(EN, **{
                 "最后边打字边搜到邮件",
     "sound": ["打开声音", "关闭声音"],
 
-    "a_h2": ["AI 来写，", "你来点发送。"],
+    "a_h2": ["AI 来写，", "你来点头。"],
     "a_sub": "<code>ragdoll</code> 命令在软件里一键安装（设置 → 命令行）。每条命令都能输出 <code>--json</code>，"
              "AI 看一遍 <code>ragdoll --help</code> 就会用。",
     "a_guide": "看命令行说明（英文）",
@@ -140,7 +143,9 @@ ZH = dict(EN, **{
              ("$", "ragdoll check drafts:14 --reply"),
              ("ok", "CHECK OK"),
              ("$", "ragdoll open drafts:14"),
-             ("agent", "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。")],
+             ("agent", "草稿已经在 Ragdoll Mail 里打开了，要发吗？"),
+             ("you", "发吧。"),
+             ("$", "ragdoll send drafts:14 --yes")],
     "draft": {"box": "草稿箱", "to": "收件人", "name": "Jane Doe", "subj": "Re: Quote for PO-1234",
               "body": "Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。",
               "file": "Quote.pdf", "send": "发送"},
@@ -164,7 +169,7 @@ ZH = dict(EN, **{
         ("check", "免费，开源", "没有广告，不用订阅。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
     "c_more": "和 Superhuman、Shortwave、Foxmail 等软件对比",
-    "quote": "好用的 AI 邮件软件一个月要 25 到 30 美元，还只支持 Gmail 和 Outlook。我的工作邮箱是腾讯企业邮箱。所以我自己做了一个。",
+    "quote": "Spark 开始收费了，我想要一个免费的 Spark 平替。Himalaya 搜邮件又太慢。所以我自己做了 Ragdoll Mail。",
     "sign": "Eric Tan，Ragdoll Mail 作者",
 
     "q_h2": "常见问题",
@@ -172,7 +177,7 @@ ZH = dict(EN, **{
         ("哪些 AI 助手能用？", "能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，"
          "跟你自己在终端里敲是一样的。"),
         ("AI 会不会不问我就把邮件发出去？", "不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。"
-         "大多数人的用法是：AI 写草稿，自己检查后点发送。"),
+         "你说可以，AI 就用 ragdoll send 帮你发；你也可以在软件里打开草稿，自己点发送。"),
         ("我的邮件安全吗？", "邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。"),
         ("真的免费吗？", "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
@@ -201,7 +206,8 @@ def page(L):
 
     def tline(who, text):
         if who == "$":
-            return '<span class="ln"><span class="p">$</span> <span class="tx" data-t="%s">%s</span></span>' % (e(text), e(text))
+            land = ' land' if text.startswith("ragdoll open") else ''   # the draft card lands after this line
+            return '<span class="ln%s"><span class="p">$</span> <span class="tx" data-t="%s">%s</span></span>' % (land, e(text), e(text))
         if who == "ok":
             return '<span class="ln">  <span class="ok">%s</span></span>' % e(text)
         if who == "you":
@@ -478,12 +484,12 @@ COMPARE_EN = {
     "cmp_h": "Side by side",
     "cmp_cols": ["", "Ragdoll Mail", "Apple Mail", "Outlook (new)", "Thunderbird", "Foxmail", "Spark"],
     "cmp": [
-        ("Price", "Free", "Free", "Free with ads, or paid", "Free", "Free", "Free plan, paid plan"),
+        ("Price", "Free", "Free", "Free with ads, or paid", "Free", "Free", "Free plan; Plus and Pro are paid"),
         ("Mac and Windows", "Both", "Mac only", "Both", "Both", "Both", "Both"),
         ("Mail goes straight between you and your mail server", YES, YES, "A copy is kept in Microsoft's cloud", YES, YES,
          "Goes through Spark's servers"),
         ("Open code that anyone can check", YES, "No", "No", YES, "No", "No"),
-        ("Your own AI assistant can use the mailbox", YES, "No", "No", "No", "No", "No"),
+        ("Your own AI assistant can use the mailbox", YES, "No", "No", "No", "No", "Yes, sending needs Pro"),
         ("Phone app", "No", YES, YES, "Android", "No", YES),
         ("Several mailboxes in one window", "Not yet", YES, YES, YES, YES, YES),
     ],
@@ -533,11 +539,11 @@ COMPARE_ZH = {
     "cmp_h": "逐项对比",
     "cmp_cols": ["", "Ragdoll Mail", "苹果“邮件”", "新版 Outlook", "Thunderbird", "Foxmail", "Spark"],
     "cmp": [
-        ("价格", "免费", "免费", "免费版有广告，或付费", "免费", "免费", "有免费版和付费版"),
+        ("价格", "免费", "免费", "免费版有广告，或付费", "免费", "免费", "有免费版，Plus 和 Pro 收费"),
         ("Mac 和 Windows", "都有", "只有 Mac", "都有", "都有", "都有", "都有"),
         ("邮件只在你和邮箱服务器之间走", "是", "是", "会在微软云端存一份", "是", "是", "要经过 Spark 的服务器"),
         ("代码公开，谁都能查", "是", "否", "否", "是", "否", "否"),
-        ("你自己的 AI 助手可以用这个邮箱", "是", "否", "否", "否", "否", "否"),
+        ("你自己的 AI 助手可以用这个邮箱", "是", "否", "否", "否", "否", "可以，发信要 Pro"),
         ("手机版", "没有", SHI, SHI, "安卓", "没有", SHI),
         ("一个窗口里看多个邮箱", "还没有", "可以", "可以", "可以", "可以", "可以"),
     ],
