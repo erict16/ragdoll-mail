@@ -1263,17 +1263,35 @@ const hidden = new Set();
 const pendingMoves = new Set();
 function moveMail(ids, to) {
   if (!ids.length) return;
+  // the pane changes only when what it shows moved: the open mail's own row, or the several selected ones. The
+  // next mail is the one beside the open row (or beside the moved block). Another mail of the open conversation
+  // that moved only leaves the conversation; mails moved outside a selection of several leave the selection.
+  const sel = S.sel, many = S.multi.size > 1;
+  const allSel = many && ids.every((i) => S.multi.has(i));
+  const rest = many && !allSel ? [...S.multi].filter((i) => !ids.includes(i)) : null;
+  const wasSel = allSel || (!many && ids.includes(sel));
+  const next = wasSel ? nextAfter(S.rows, ids, allSel ? null : sel) : null;
   S.multi.clear();
-  const k = Math.max(...ids.map((i) => S.rows.findIndex((x) => x.id === i)));
-  const next = S.rows.slice(k + 1).find((x) => !ids.includes(x.id)) || S.rows.slice(0, k).reverse().find((x) => !ids.includes(x.id));
-  const wasSel = ids.includes(S.sel) || (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i)));
-  const sel = S.sel;
   ids.forEach((i) => hidden.add(i));
   S.rows = S.rows.filter((x) => !ids.includes(x.id));
   shownIds = new Set(S.rows.map((x) => x.id));
   const gone = ids.map((i) => $(`.row[data-id="${CSS.escape(i)}"]`));
   foldRows(gone).then(() => { gone.forEach((n) => n?.remove()); if (!S.rows.length) renderRows(); });
-  if (wasSel) { if (next) selectRow(next.id); else { S.sel = null; showEmpty(); } }
+  let leftThread = false;
+  if (wasSel) { if (next) selectRow(next); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (rest) { S.multi = new Set(rest); if (rest.length > 1) showMulti(); else if (rest.length) selectRow(rest[0]); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i))) {
+    leftThread = true;
+    S.thread.rows = S.thread.rows.filter((r) => !ids.includes(r.id));
+    if (ids.includes(S.focus)) S.focus = sel;
+    for (const n of $$("#pane > .doc:not(.pane-ghost) > .msg").filter((x) => ids.includes(x.dataset.id))) {
+      if (REDUCED.matches) { n.remove(); continue; }
+      n.style.overflow = "hidden";
+      n.animate([{ height: n.offsetHeight + "px", opacity: 1 }, { height: "0px", opacity: 0, marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px" }],
+        { duration: 260, easing: SMOOTH, fill: "forwards" }).finished.then(() => n.remove(), () => n.remove());
+    }
+    renderToolbar();
+  }
   const job = { ids, to, done: false };
   const unhide = () => { ids.forEach((i) => hidden.delete(i)); pendingMoves.delete(job); };
   job.commit = async () => {
@@ -1291,6 +1309,7 @@ function moveMail(ids, to) {
       job.done = true; clearTimeout(job.timer); unhide();
       await loadList({ quiet: true });
       if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
+      else if (leftThread && S.sel === sel && S.thread) openThread(sel);
     } },
   });
 }
@@ -1366,6 +1385,7 @@ function goBack() {
 
 function showEmpty() {
   S.thread = null; S.focus = null; S.sched = null; S.multi.clear();
+  threadSeq++; schedSeq++;            // a mail or a scheduled one still on its way stays out of the empty pane
   $("#pane").innerHTML = `<div class="pane-empty"><img src="logo.png" alt=""></div>`;
   renderToolbar();
 }
@@ -1416,13 +1436,15 @@ function renderToolbar() {
   const has = !!S.thread;
   const id = S.focus || S.sel;
   const r = S.thread?.rows.find((x) => x.id === id);
-  const inTrash = r?.folder === "trash", inJunk = r?.folder === "junk";
+  // moves act on the mail selected in the list (read and star on the message opened last)
+  const mv = moveId(), rm = S.thread?.rows.find((x) => x.id === mv);
+  const inTrash = rm?.folder === "trash", inJunk = rm?.folder === "junk";
   tools.append(
     inTrash || inJunk
-      ? iconBtn("inbox", backLabel(r.folder), () => moveMail([id], "inbox"), { disabled: !has })
-      : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
-    iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
-    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
+      ? iconBtn("inbox", backLabel(rm.folder), () => moveMail([mv], "inbox"), { disabled: !has })
+      : iconBtn("archive", t("archive_it"), () => moveMail([mv], "archive"), { key: "E", disabled: !has || rm?.folder === "archive" }),
+    iconBtn("trash-2", t("trash_it"), () => moveMail([mv], "trash"), { key: "#", disabled: !has || inTrash }),
+    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [mv]), { key: "V", disabled: !has || !rm }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
   );
@@ -1475,6 +1497,7 @@ async function openThread(id) {
 let schedSeq = 0;
 async function openScheduled(r) {
   const seq = ++schedSeq;
+  threadSeq++;
   S.thread = null; S.focus = r.id; S.sched = r;
   const zone = TZ || SYS_TZ;
   const card = el("div", { class: "sched-card" + (r.sched_error ? " err" : "") },
@@ -2040,10 +2063,12 @@ function parseAddrs(text) {
 
 async function openCompose(opts) {
   if (S.compose && !(await leaveCompose())) return;
+  const seq = ++threadSeq;            // a mail still loading does not replace the compose view, nor this a later choice
   let c;
   try {
     c = await api("compose", { mode: opts.mode, id: opts.id });
   } catch (e) { return fail(e); }
+  if (seq !== threadSeq) return;
   if (opts.to) c.to = [...opts.to, ...c.to];
   if (opts.subject) c.subject = opts.subject;
   if (opts.files) c.pending = opts.files;
@@ -2931,9 +2956,9 @@ function onKey(e) {
   else if (k === "r") { e.preventDefault(); openCompose({ mode: "reply", id }); }
   else if (k === "a") { e.preventDefault(); openCompose({ mode: "replyall", id }); }
   else if (k === "f") { e.preventDefault(); openCompose({ mode: "forward", id }); }
-  else if (k === "e") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "archive") moveMail([id], "archive"); }
-  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "trash") moveMail([id], "trash"); }
-  else if (k === "v") { e.preventDefault(); moveKey([id]); }
+  else if (k === "e") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "archive") moveMail([mv], "archive"); }
+  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "trash") moveMail([mv], "trash"); }
+  else if (k === "v") { e.preventDefault(); moveKey([moveId()]); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
   else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
