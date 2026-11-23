@@ -646,6 +646,9 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group C1_LIST: new rules for this group only ---- */
+:root { --hit: rgba(250, 204, 80, .42); }
+:root[data-theme="dark"] { --hit: rgba(240, 190, 70, .28); }
+
 /* rows out of sight are counted at a row's measured height (app.js measureRow), so the view does not jump */
 .rows .row { contain-intrinsic-size: auto var(--row-h, 59px); }
 
@@ -654,6 +657,9 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 .row { border-top: 1px solid transparent; background-clip: padding-box; }
 .row::before { top: -1px; }
 .row.on + .row.on { background-clip: border-box; }
+
+/* the searched words in the list */
+.row mark, .doc-subject mark, .att-name mark { background: var(--hit); color: inherit; border-radius: 3px; padding: 0 1px; margin: 0 -1px; }
 
 /* "Mark as unread": the dot and the cut round it come and go with the mark, press with the envelope (scaled about
    the button's centre, as the icon is) and darken with it on hover */
@@ -683,6 +689,7 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 .btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .btn.quiet:hover:not(:disabled) .i { color: var(--text); }
 .tip.key-only kbd { margin-left: 0; }
+
 
 /* ---- 0.11 group C2_READ: new rules for this group only ---- */
 

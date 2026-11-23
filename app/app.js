@@ -1353,6 +1353,7 @@ function onSearch(now = false) {
     S.query = q;
     renderNav();
     loadList();
+    markOpen();
   }, now ? 0 : 220);
 }
 
@@ -1453,7 +1454,8 @@ async function openThread(id) {
   try { th = await api("thread", { id }); } catch (e) { if (seq === threadSeq) { fail(e); showEmpty(); } return; }
   if (seq !== threadSeq) return;
   S.thread = th;
-  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto" }, th.subject || t("no_subject")));
+  hitScroll = S.query ? seq : 0;
+  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto", html: hl(th.subject || t("no_subject")) }));
   // newest on top; the reply buttons sit right under the open message, older mail below
   const rows = [...th.rows].reverse();
   const openId = rows.some((r) => r.id === id) ? id : rows[0]?.id;
@@ -1681,7 +1683,7 @@ function attNode(a, id) {
   const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
     onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
-    el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
+    el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
   if (MAC && S.boot.window) {
@@ -1751,8 +1753,14 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
     css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
+  css += hitCss(dark, plain);
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
 }
+
+// a searched word in a mail: a soft amber behind the text. A dark HTML mail is shown inverted (.rd-root's filter),
+// so there the light amber is given and the filter turns it into the dark one.
+const hitCss = (dark, plain) => `mark.rd-hit{color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px;-webkit-box-decoration-break:clone;box-decoration-break:clone;` +
+  `background:${dark && plain ? "rgba(240,190,70,.30)" : "rgba(250,204,80,.42)"}}`;
 
 // a picture worth enlarging: not an icon, a spacer or a tracking pixel
 const bigImg = (img) => img.naturalWidth >= 48 && img.naturalHeight >= 32;
@@ -1822,8 +1830,10 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d) return;
     minText(d);
     if (quote) collapseQuote(st);
+    if (quote) markFrame(st);
     fitColumn(d);
     fit();
+    if (quote) scrollToHit(st);
     // the frame's own observer: it goes away with the frame; one fit per frame at most
     try {
       let q = 0;
@@ -1845,7 +1855,13 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
         openCompose({ mode: "new", to: addr.split(",").filter(Boolean).map((x) => ({ name: "", addr: x.trim().toLowerCase() })) });
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
-    d.addEventListener("keydown", (e) => onKey(e));
+    // keys for reading stay in the mail (select its text, scroll it); the app's own keys still work from here
+    d.addEventListener("keydown", (e) => {
+      const k = frameKey(e);
+      if (k === "keep") return;
+      if (k) { e.preventDefault(); scrollReader(frame, k); return; }
+      onKey(e);
+    });
     const linkOf = (e) => {
       const a = e.target.closest?.("a[href]"), href = a?.getAttribute("href") || "";
       if (/^mailto:/i.test(href)) return { mail: decodeURIComponent(href.slice(7).split("?")[0]) };
@@ -1882,6 +1898,65 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
   const obs = new MutationObserver(() => { if (!wrap.isConnected) { frames.delete(st); obs.disconnect(); } });
   requestAnimationFrame(() => obs.observe(document.body, { childList: true, subtree: true }));
   return { node: wrap, frame, st };
+}
+
+// a key for reading pressed inside a mail: the reading pane scrolls (the frame itself is as tall as the mail)
+function scrollReader(frame, k) {
+  const pane = frame.closest(".pane") || $("#pane"), h = pane.clientHeight;
+  const by = { down: 48, up: -48, page: h * 0.85, pageup: -h * 0.85 }[k];
+  const how = REDUCED.matches || k === "down" || k === "up" ? "auto" : "smooth";
+  if (by != null) pane.scrollBy({ top: by, behavior: how });
+  else pane.scrollTo({ top: k === "home" ? 0 : pane.scrollHeight, behavior: how });
+}
+
+// the searched words in an open mail, marked for the eye only: replies and forwards are built from the server's
+// copy, never from what is on screen. Only text is touched (a mark around a run of text), never the mail's tags.
+function markFrame(st) {
+  const d = st.frame.contentDocument;
+  if (!d?.body) return;
+  for (const m of d.querySelectorAll("mark.rd-hit")) { const p = m.parentNode; m.replaceWith(...m.childNodes); p.normalize(); }
+  st.hits = [];
+  const re = hitRe();
+  if (!re) return;
+  const root = d.querySelector(".rd-root") || d.body;
+  const skip = "style,script,title,textarea,noscript,mark";
+  const tw = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = tw.nextNode(); n && nodes.length < 20000; n = tw.nextNode()) if (n.nodeValue.trim() && !n.parentElement?.closest(skip)) nodes.push(n);
+  for (const n of nodes) {
+    const parts = splitHits(n.nodeValue, re);
+    if (parts.length < 2) continue;
+    const frag = d.createDocumentFragment();
+    for (const [a, m] of parts) {
+      if (a) frag.append(a);
+      if (!m) continue;
+      const k = d.createElement("mark");
+      k.className = "rd-hit"; k.textContent = m;
+      frag.append(k); st.hits.push(k);
+    }
+    n.replaceWith(frag);
+    if (st.hits.length > 2000) break;
+  }
+  // the only match is in the quoted older mail: the quote opens
+  if (st.hits.length && st.toggle && !st.toggle.classList.contains("open") && st.hits.every((h) => st.hidden.some((x) => x.contains(h)))) st.toggle.click();
+}
+// the first match comes into view once, when a mail is opened from a search
+let hitScroll = 0;
+function scrollToHit(st) {
+  if (!hitScroll || hitScroll !== threadSeq || !st.hits?.length || !st.frame.isConnected) return;
+  hitScroll = 0;
+  requestAnimationFrame(() => {
+    const pane = st.frame.closest(".pane");
+    const h = st.hits.find((x) => x.getClientRects().length);
+    if (!pane || !h) return;
+    const p = pane.getBoundingClientRect(), y = st.frame.getBoundingClientRect().top + h.getBoundingClientRect().top;
+    if (y < p.top + 60 || y > p.bottom - 60) pane.scrollTo({ top: Math.max(0, pane.scrollTop + y - p.top - p.height / 3), behavior: REDUCED.matches ? "auto" : "smooth" });
+  });
+}
+// the search changed: the marks in what is open follow it, and go when the search is cleared
+function markOpen() {
+  for (const st of frames) if (st.quote && st.wrap.isConnected) { markFrame(st); st.fit?.(); }
+  for (const n of $$("#pane .doc-subject, #pane .att-name")) n.innerHTML = hl(n.textContent);
 }
 
 // where a link goes, shown at the foot of the reader while the pointer is on it
