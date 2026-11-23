@@ -1280,3 +1280,15 @@ const MORE_F_INVITES = {
 };
 for (const [k, v] of Object.entries(MORE_F_INVITES)) Object.assign(LANGS[k], v);
 
+
+const MORE_G_UPDATE = {
+  "en": { upd_check: "Check for updates", upd_checking: "Checking for updates…", upd_latest: "You're up to date (%s).", upd_found: "Ragdoll Mail %s is out.", upd_get: "Get it", run_cmd: "Run in a terminal: %s", err_upd: "Can't check for updates right now. Try again later." },
+  "zh-Hans": { upd_check: "检查更新", upd_checking: "正在检查更新…", upd_latest: "已是最新版本（%s）。", upd_found: "Ragdoll Mail %s 已发布。", upd_get: "获取", run_cmd: "在终端运行：%s", err_upd: "暂时无法检查更新，请稍后再试。" },
+  "zh-Hant": { upd_check: "檢查更新", upd_checking: "正在檢查更新…", upd_latest: "已是最新版本（%s）。", upd_found: "Ragdoll Mail %s 已發布。", upd_get: "取得", run_cmd: "在終端機執行：%s", err_upd: "暫時無法檢查更新，請稍後再試。" },
+  "ja": { upd_check: "アップデートを確認", upd_checking: "アップデートを確認中…", upd_latest: "最新バージョンです（%s）。", upd_found: "Ragdoll Mail %s が公開されました。", upd_get: "入手", run_cmd: "ターミナルで実行: %s", err_upd: "今はアップデートを確認できません。後でもう一度お試しください。" },
+  "ko": { upd_check: "업데이트 확인", upd_checking: "업데이트 확인 중…", upd_latest: "최신 버전입니다(%s).", upd_found: "Ragdoll Mail %s이(가) 나왔습니다.", upd_get: "받기", run_cmd: "터미널에서 실행: %s", err_upd: "지금은 업데이트를 확인할 수 없습니다. 나중에 다시 시도하세요." },
+  "es": { upd_check: "Buscar actualizaciones", upd_checking: "Buscando actualizaciones…", upd_latest: "Tienes la última versión (%s).", upd_found: "Ya está disponible Ragdoll Mail %s.", upd_get: "Obtener", run_cmd: "Ejecuta en una terminal: %s", err_upd: "No se pueden buscar actualizaciones ahora. Inténtalo más tarde." },
+  "fr": { upd_check: "Rechercher des mises à jour", upd_checking: "Recherche de mises à jour…", upd_latest: "Vous avez la dernière version (%s).", upd_found: "Ragdoll Mail %s est disponible.", upd_get: "Obtenir", run_cmd: "Dans un terminal, lancez : %s", err_upd: "Impossible de rechercher des mises à jour pour le moment. Réessayez plus tard." },
+  "de": { upd_check: "Nach Updates suchen", upd_checking: "Suche nach Updates…", upd_latest: "Sie haben die neueste Version (%s).", upd_found: "Ragdoll Mail %s ist da.", upd_get: "Holen", run_cmd: "Im Terminal ausführen: %s", err_upd: "Updates können gerade nicht gesucht werden. Versuchen Sie es später erneut." },
+};
+for (const [k, v] of Object.entries(MORE_G_UPDATE)) Object.assign(LANGS[k], v);

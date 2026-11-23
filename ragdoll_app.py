@@ -58,6 +58,18 @@ FROZEN = bool(getattr(sys, "frozen", False))
 RELEASES_API = "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
 APP_NAME = "Ragdoll Mail"   # what people see: window title, Dock, menu bar; the repo and files keep ragdoll-mail
 RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
+UPDATE_EVERY = 12 * 3600       # the app asks for a new release this often while it stays open (#76)
+UPDATE_TICK = 5 * 60
+UPDATE_FAIL_MSG = "Can't check for updates right now. Try again later."
+BREW_UPGRADE = "brew upgrade --cask ragdoll-mail"
+
+
+def brew_cask():
+    """The Mac app was put in place by Homebrew: it updates with brew, not from the download page."""
+    if sys.platform != "darwin":
+        return False
+    return any(os.path.isdir(os.path.join(root, "Caskroom", "ragdoll-mail"))
+               for root in ("/opt/homebrew", "/usr/local"))
 FOLDER_KEYS = ("inbox", "drafts", "sent", "archive", "trash", "junk")
 LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled")      # the names the app's own lists go by
 VIEW_FLAGS = ("\\noselect", "\\nonexistent", "\\all", "\\flagged", "\\important")   # not a folder to show
@@ -1797,6 +1809,7 @@ class Backend:
         self.stopping = threading.Event()
         self.contacts = (0, {})
         self.update = None
+        self.update_at = 0.0
         self.server_folders = None
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
@@ -1850,7 +1863,7 @@ class Backend:
                 r = self.q("select v from meta where k='last_sync'")
                 self.sync["last"] = int(r[0]["v"]) if r else None
             threading.Thread(target=self.tidy_loop, daemon=True).start()
-            threading.Thread(target=self.check_update, daemon=True).start()
+            threading.Thread(target=self.update_loop, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
         if not demo:
@@ -2624,23 +2637,58 @@ class Backend:
             self.data_v = v
             self.bump()
 
-    def check_update(self):
+    def check_update(self, manual=False):
+        """Ask for the newest release (#76): at start, every 12 hours while open, after the Mac wakes,
+        and from "Check for updates". A quiet check says nothing when it fails; a manual one says so."""
         try:
             if FROZEN:
                 req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "ragdoll-mail",
                                                                     "Accept": "application/vnd.github+json"})
-                with urllib.request.urlopen(req, timeout=15) as f:
+                with urllib.request.urlopen(req, timeout=15, context=R.tls_context()) as f:
                     d = json.load(f)
                 v = (d.get("tag_name") or "").lstrip("v")
                 if version_tuple(v) > version_tuple(__version__):
-                    self.update = {"version": v, "url": d.get("html_url") or RELEASES_PAGE}
+                    up = {"version": v, "url": d.get("html_url") or RELEASES_PAGE}
+                    if brew_cask():
+                        up["command"] = BREW_UPGRADE
+                    self.update = up
+                elif v:
+                    self.update = None
             elif os.path.isdir(os.path.join(R.APP_DIR, ".git")):
-                R.maybe_check_later()
+                if manual:
+                    R.update_check_background()
+                    st = R.update_state()
+                    if st.get("check_error"):
+                        raise OSError(st["check_error"])
+                else:
+                    R.maybe_check_later()
                 latest = R.update_waiting()
-                if latest:
-                    self.update = {"version": latest.get("version"), "command": "ragdoll update"}
-        except Exception:
-            pass
+                self.update = ({"version": latest.get("version"), "command": "ragdoll update"}
+                               if latest else None)
+            self.update_at = time.time()
+        except Exception as e:      # noqa: BLE001 - offline, rate limit, a bad answer: try again later
+            if manual:
+                fail(UPDATE_FAIL_MSG, str(e))
+        return self.update
+
+    def update_loop(self):
+        """Check again every 12 hours, and soon after a sleep: the wall clock jumps while the
+        monotonic one in time.sleep does not."""
+        self.check_update()
+        while True:
+            t0, m0 = time.time(), time.monotonic()
+            time.sleep(UPDATE_TICK)
+            woke = (time.time() - t0) - (time.monotonic() - m0) > 5 * 60
+            if woke or time.time() - self.update_at >= UPDATE_EVERY:
+                if woke:
+                    time.sleep(30)      # the network comes back a little after the lid opens
+                self.check_update()
+
+    def api_check_update(self, a):
+        """ "Check for updates" in the account menu: {"update": {...} or None, "version": this one}."""
+        if self.demo:
+            return {"update": None, "version": __version__}
+        return {"update": self.check_update(manual=True), "version": __version__}
 
     # ---- api: app state
 
@@ -3758,7 +3806,7 @@ class Backend:
                                              headers={"Content-Type": "application/x-www-form-urlencoded",
                                                       "User-Agent": APP_NAME})
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as r:
+                    with urllib.request.urlopen(req, timeout=15, context=R.tls_context()) as r:
                         r.read(4096)
                 except Exception as e:
                     fail("The list did not answer: %s" % (getattr(e, "reason", None) or e))
@@ -4748,7 +4796,7 @@ class Backend:
         ihost, iport = text_in(a, "imap_host").strip(), int_in(a, "imap_port", 993)
         shost, sport = text_in(a, "smtp_host").strip(), int_in(a, "smtp_port", 465)
         try:
-            m = imaplib.IMAP4_SSL(ihost, iport, timeout=20)
+            m = imaplib.IMAP4_SSL(ihost, iport, ssl_context=R.tls_context(), timeout=20)
         except Exception as e:
             fail("Incoming server: " + friendly(e), str(e))
         try:

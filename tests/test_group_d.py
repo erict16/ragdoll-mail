@@ -101,7 +101,7 @@ class Timeouts(unittest.TestCase):
         made = []
 
         class Fake:
-            def __init__(self, host, port, timeout=None):
+            def __init__(self, host, port, timeout=None, **kw):
                 self.sock, self.capabilities = Sock(), ()
                 made.append(self)
 
@@ -119,7 +119,7 @@ class Timeouts(unittest.TestCase):
         port = hung_server()
 
         class Plain(imaplib.IMAP4):     # the same reads as IMAP4_SSL, without TLS
-            def __init__(self, host, port_, timeout=None):
+            def __init__(self, host, port_, timeout=None, **kw):
                 super().__init__(host, port, timeout=timeout)
         with unittest.mock.patch.object(R.imaplib, "IMAP4_SSL", Plain), \
                 unittest.mock.patch.object(R, "IMAP_TIMEOUT", 0.3):
