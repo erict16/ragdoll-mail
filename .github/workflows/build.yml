@@ -3,6 +3,7 @@ name: build
 on:
   push:
     tags: ["v*"]
+  pull_request:          # tests only; the builds run for tags and by hand
   workflow_dispatch:
 
 permissions:
@@ -13,7 +14,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # all three systems: ragdoll update keeps a new version only when its tests pass on that system
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -33,7 +39,7 @@ jobs:
 
   mac:
     needs: [test, release]
-    if: ${{ !cancelled() && needs.test.result == 'success' && needs.release.result != 'failure' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.test.result == 'success' && needs.release.result != 'failure' }}
     runs-on: macos-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -60,7 +66,7 @@ jobs:
 
   windows:
     needs: [test, release]
-    if: ${{ !cancelled() && needs.test.result == 'success' && needs.release.result != 'failure' }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.test.result == 'success' && needs.release.result != 'failure' }}
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -82,19 +88,6 @@ jobs:
           name: windows
           path: ragdoll-mail-windows.zip
           retention-days: 1
-
-  checksums:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [mac, windows]
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Add SHA256SUMS.txt to the release (packaging/bump.py reads it)
-        run: |
-          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p "ragdoll-mail-*"
-          sha256sum ragdoll-mail-* > SHA256SUMS.txt && cat SHA256SUMS.txt
-          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber -R "$GITHUB_REPOSITORY"
 
   # Off until PyPI trusted publishing is set up and the repo variable PYPI is "on"
   # (see packaging/README.md).
