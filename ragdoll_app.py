@@ -2219,7 +2219,10 @@ class Backend:
 
     def api_search(self, a):
         text = text_in(a, "q").strip()[:500]
-        ns = SimpleNamespace(limit=200, folder=None, from_=None, to=None, since=None, until=None,
+        # one page at a time, as in a folder: the list asks for the next one when it is scrolled to the end
+        limit = max(1, min(int_in(a, "limit", 200), 500))
+        offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
+        ns = SimpleNamespace(limit=limit, offset=offset, folder=None, from_=None, to=None, since=None, until=None,
                              unread=False, att=False)
         words = []
         for w in re.findall(r'(\w+:"[^"]*"|"[^"]*"|\S+)', text):
@@ -2233,13 +2236,15 @@ class Backend:
             else:
                 words.append(w.strip('"'))
         if not words and not any((ns.folder, ns.from_, ns.to, ns.unread, ns.att)):
-            return {"rows": []}
+            return {"rows": [], "more": False}
         with self.dblock:
             rows = R.search_rows(self.c, words, ns)
+        more = len(rows) == limit
         skip = {R.CFG.folders.get("junk")}
         rows = [r for r in rows if r["folder"] not in skip]
-        self.prefetch(rows[:10])
-        return {"rows": [self.row_json(r) for r in rows]}
+        if not offset:
+            self.prefetch(rows[:10])
+        return {"rows": [self.row_json(r) for r in rows], "more": more}
 
     def api_thread(self, a):
         r = self.row(a["id"])

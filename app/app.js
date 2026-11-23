@@ -322,7 +322,7 @@ document.addEventListener("mouseover", (e) => {
   if (side) return;
   tipTimer = setTimeout(() => {
     const r = b.getBoundingClientRect();
-    tipEl = el("div", { class: "tip", html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
+    tipEl = el("div", { class: "tip" + (b.dataset.tip ? "" : " key-only"), html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
     document.body.append(tipEl);
     const w = tipEl.offsetWidth;
     tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
@@ -870,7 +870,90 @@ function accountMenu() {
   ], { above: true });
 }
 
+// ---- C1 pure: start (no page, no app state: tests/test_group_c1.py runs this part in node)
+// the words of a search, as the server reads them (ragdoll_app.api_search), without its operators (from:, in:,
+// is:unread...): these are what the list and the open mail mark; longest first, so "price list" wins over "price"
+function searchTerms(q) {
+  const strip = (s) => s.replace(/^"+|"+$/g, "");
+  const out = [], seen = new Set();
+  for (const w of String(q || "").match(/[\p{L}\p{N}_]+:"[^"]*"|"[^"]*"|\S+/gu) || []) {
+    const i = w.indexOf(":"), k = i < 0 ? w : w.slice(0, i), v = i < 0 ? "" : strip(w.slice(i + 1));
+    if (v && ["from", "to", "in", "folder"].includes(k.toLowerCase())) continue;
+    if (["is:unread", "has:attachment", "has:file"].includes(w.toLowerCase())) continue;
+    const term = strip(w).trim();
+    if (term && !seen.has(term.toLowerCase())) { seen.add(term.toLowerCase()); out.push(term); }
+  }
+  return out.sort((a, b) => b.length - a.length).slice(0, 30);
+}
+// one pattern for all the words: any case, Chinese and Japanese inside a longer run of text (no word edges),
+// the space in a quoted phrase matches a line break too
+function termsRe(terms) {
+  if (!terms?.length) return null;
+  return new RegExp(terms.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")).join("|"), "giu");
+}
+// [text before, the match] pairs; the last pair holds the rest and an empty match
+function splitHits(text, re) {
+  const out = [];
+  let at = 0;
+  if (re) for (const m of String(text).matchAll(re)) {
+    if (!m[0]) continue;
+    out.push([text.slice(at, m.index), m[0]]);
+    at = m.index + m[0].length;
+  }
+  out.push([String(text).slice(at), ""]);
+  return out;
+}
+const escHit = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// text as HTML with the words marked
+function hlText(text, re) {
+  return splitHits(String(text ?? ""), re).map(([a, m]) => escHit(a) + (m ? `<mark>${escHit(m)}</mark>` : "")).join("");
+}
+// a key pressed inside an open mail: "keep" lets the mail have it (select its text, scroll a wide table sideways),
+// a direction scrolls the reading pane, null hands it on to the app's own keys (J, K, E, R...)
+function frameKey(e) {
+  const mod = e.metaKey || e.ctrlKey, k = e.key;
+  if (mod && ["a", "c"].includes(k.toLowerCase())) return "keep";
+  if (k === "ArrowLeft" || k === "ArrowRight") return "keep";
+  if (k === "ArrowDown") return mod ? "end" : e.altKey ? "page" : "down";
+  if (k === "ArrowUp") return mod ? "home" : e.altKey ? "pageup" : "up";
+  if (k === " " && !mod) return e.shiftKey ? "pageup" : "page";
+  return { PageDown: "page", PageUp: "pageup", Home: "home", End: "end" }[k] || null;
+}
+// the mail to open after moving ids: the one beside the open mail (sel), or beside the moved block when several
+// selected ones moved (sel null); null when the open mail did not move or nothing is left
+function nextAfter(rows, ids, sel) {
+  const gone = new Set(ids), at = (id) => rows.findIndex((x) => x.id === id);
+  let lo, hi;
+  if (sel != null) {
+    if (!gone.has(sel) || (lo = hi = at(sel)) < 0) return null;
+  } else {
+    const ks = ids.map(at).filter((k) => k >= 0);
+    if (!ks.length) return null;
+    lo = Math.min(...ks); hi = Math.max(...ks);
+  }
+  const r = rows.slice(hi + 1).find((x) => !gone.has(x.id)) || rows.slice(0, lo).reverse().find((x) => !gone.has(x.id));
+  return r ? r.id : null;
+}
+// how far to scroll after the list was drawn again so the row under the eye stays where it was: a = {id, off,
+// after} (off: its distance from the top of the view before; after: the rows below it, in case it went), offs: the
+// distances now
+function anchorShift(a, ids, offs) {
+  if (!a) return null;
+  const have = new Set(ids);
+  const id = have.has(a.id) ? a.id : (a.after || []).find((x) => have.has(x));
+  return id == null ? null : offs[id] - a.off;
+}
+// ---- C1 pure: end
+
 // ---------------------------------------------------------------- list
+
+// the searched words, ready to mark (one pattern per search)
+let hitCache = { q: null, re: null };
+function hitRe() {
+  if (hitCache.q !== S.query) hitCache = { q: S.query, re: S.query ? termsRe(searchTerms(S.query)) : null };
+  return hitCache.re;
+}
+const hl = (s) => hlText(s, hitRe());
 
 function rowTemplate(r) {
   const outgoing = r.folder === "sent" || r.folder === "drafts";
@@ -891,11 +974,12 @@ function rowTemplate(r) {
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span>${done}<span class="who" dir="auto">${esc(name)}</span>` +
+  // the selection is not part of the row's text (syncSel marks it), so a row is drawn again only when it changed
+  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span>${done}<span class="who" dir="auto">${hl(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
-    `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
-    `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
+    `<span class="subj" dir="auto">${hl(r.subject || t("no_subject"))}</span>` +
+    `<span class="snip" dir="auto">${hl(r.snippet) || "&nbsp;"}</span>` +
     `<span class="hover-acts">${acts}</span></div>`;
 }
 
@@ -916,20 +1000,97 @@ function renderRows() {
     box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query && !filtered ? icon("loader-circle", "big spin") : icon(S.query ? "search" : filtered ? "list-filter" : FOLDER_ICON[S.folder] || "folder-open", "big")}<span>${esc(msg)}</span></div>`;
     return;
   }
-  const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
-  box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
-  if (S.multi.size > 1) syncSel();
-  if (REDUCED.matches) return;
-  if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-  else {
-    growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
-    for (const n of $$(".row", box)) {
-      const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
-      if (!was || !now) continue;
-      if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
-      if (now.s && !was.s) popStar($(".flag-ic", n));
-    }
+  const html = S.rows.map(rowTemplate);
+  const more = S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "";
+  if (!same || !$(".row", box)) {
+    box.innerHTML = html.join("") + more;
+    $$(".row", box).forEach((n, k) => { n._h = html[k]; });
+    syncSel();
+    measureRow(box);
+    if (!REDUCED.matches) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+    return;
   }
+  // the same list again: only the rows that came, went or changed are touched, the others stay as they are
+  // (drawing every row again counted the rows out of sight at a guessed height, and the view jumped)
+  const anchor = takeAnchor(box);
+  const old = new Map($$(".row", box).map((n) => [n.dataset.id, n]));
+  const want = [], added = [], changed = [];
+  S.rows.forEach((r, k) => {
+    const n = old.get(r.id);
+    if (n && n._h === html[k]) { want.push(n); old.delete(r.id); return; }
+    const m = rowNode(html[k]);
+    if (n) { if (n.classList.contains("ctx")) m.classList.add("ctx"); changed.push(m); } else added.push(m);
+    want.push(m);
+  });
+  const drop = [...old.values(), ...$$(":scope > :not(.row)", box)];
+  for (const n of drop) n.remove();
+  let cur = box.firstElementChild;
+  for (const n of want) {
+    if (n === cur) { cur = cur.nextElementSibling; continue; }
+    box.insertBefore(n, cur);
+  }
+  if (more) box.insertAdjacentHTML("beforeend", more);
+  syncSel();
+  keepAnchor(box, anchor);
+  if (REDUCED.matches) return;
+  // a row that came in above the one held would push it while it opens: that one is simply there
+  const at = anchor ? want.findIndex((n) => n.dataset.id === anchor.id) : -1;
+  growRows(added.filter((n) => want.indexOf(n) > at));
+  for (const n of changed) {
+    const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
+    if (!was || !now) continue;
+    if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
+    if (now.s && !was.s) popStar($(".flag-ic", n));
+  }
+}
+const rowTpl = document.createElement("template");
+function rowNode(html) {
+  rowTpl.innerHTML = html;
+  const n = rowTpl.content.firstElementChild;
+  n._h = html;
+  return n;
+}
+// the row the eye is on: the one under the pointer, else the open one when it is in view, else the first in view.
+// At the very top, with the pointer elsewhere, nothing is held: new mail shows at the top.
+function takeAnchor(box) {
+  const nodes = $$(".row", box);
+  if (!nodes.length) return null;
+  const hover = box.matches(":hover") ? nodes.find((n) => n.matches(":hover")) : null;
+  if (!hover && box.scrollTop <= 0) return null;
+  const view = box.getBoundingClientRect();
+  const inView = (n) => { const r = n.getBoundingClientRect(); return r.bottom > view.top && r.top < view.bottom; };
+  const n = hover || nodes.find((x) => x.classList.contains("on") && inView(x)) || nodes[firstInView(box, nodes)];
+  const k = nodes.indexOf(n);
+  return { id: n.dataset.id, off: n.getBoundingClientRect().top - view.top, after: nodes.slice(k + 1, k + 30).map((x) => x.dataset.id) };
+}
+function keepAnchor(box, a) {
+  if (!a) return;
+  const top = box.getBoundingClientRect().top, offs = {};
+  for (const id of [a.id, ...a.after]) {
+    const n = box.querySelector(`:scope > .row[data-id="${CSS.escape(id)}"]`);
+    if (n) offs[id] = n.getBoundingClientRect().top - top;
+  }
+  const d = anchorShift(a, Object.keys(offs), offs);
+  if (d) box.scrollTop += d;
+}
+// a row's real height, so the rows not drawn yet (content-visibility) are counted at their true size
+// the first row in view, by halving: rows are in order
+function firstInView(box, nodes) {
+  const top = box.getBoundingClientRect().top;
+  let lo = 0, hi = nodes.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (nodes[mid].getBoundingClientRect().bottom > top) hi = mid; else lo = mid + 1; }
+  return lo;
+}
+// (the size given is the row's content box: padding and border come on top)
+function measureRow(box) {
+  if (box.style.getPropertyValue("--row-h")) return;
+  const n = $(":scope > .row:not(.leaving)", box);
+  if (!n) return;
+  n.style.contentVisibility = "visible";        // laid out for real, whether in view or not
+  const cs = getComputedStyle(n);
+  const h = n.getBoundingClientRect().height - ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((s, k) => s + parseFloat(cs[k]), 0);
+  n.style.contentVisibility = "";
+  if (h > 20) box.style.setProperty("--row-h", h.toFixed(2) + "px");
 }
 
 // the next page goes after the rows already shown, without drawing those again
@@ -937,9 +1098,9 @@ function appendRows(add) {
   const box = $("#rows"), more = $(".rows-more", box);
   if (!$(".row", box)) return renderRows();
   for (const x of add) { shownIds.add(x.id); shownMarks.set(x.id, marksOf(x)); }
-  (more || box.appendChild(document.createElement("i"))).insertAdjacentHTML("beforebegin", add.map(rowTemplate).join(""));
-  if (!more) box.lastChild.remove();
-  else if (!S.more) more.remove();
+  const nodes = add.map((x) => rowNode(rowTemplate(x)));
+  if (more) more.before(...nodes); else box.append(...nodes);
+  if (more && !S.more) more.remove();
   syncSel();
 }
 
@@ -1063,17 +1224,33 @@ $("#filter-btn").innerHTML = icon("list-filter");
 $("#filter-btn").addEventListener("click", filterMenu);
 
 let listSeq = 0;
+// one page of the list on screen: a folder (with its filter) or a search; the server gives at most 500 at once
+const PAGE = 100, MAX_PAGE = 500;
+const fetchRows = (offset, limit) => (S.query
+  ? api("search", { q: S.query, limit, offset })
+  : api("list", { folder: S.folder, limit, offset, ...filterArgs() }));
+let moreJob = null;
 async function loadList({ quiet = false } = {}) {
   const seq = ++listSeq;
   syncFilterUI();
-  if (!quiet) S.loading = true;
+  if (!quiet) { S.loading = true; moreLater = false; }
+  refreshAt = quiet ? seq : 0;
   try {
-    let rows, more = false;
-    if (S.query) rows = (await api("search", { q: S.query })).rows;
-    else {
-      const limit = quiet ? Math.max(100, S.rows.length) : 100;
-      const r = await api("list", { folder: S.folder, limit, offset: 0, ...filterArgs() });
-      rows = r.rows; more = r.more;
+    // a page being added is part of what a refresh keeps
+    if (quiet && moreJob) { await moreJob; if (seq !== listSeq) return; }
+    // a refresh asks again for every row already loaded, in pages, and for the open mail's row if it slid further
+    // down (new mail on top): the list never shrinks under the reader and the open mail stays in it
+    const want = quiet ? Math.max(PAGE, S.rows.length + hidden.size) : PAGE;
+    // and the last row loaded, so new mail on top does not push rows off the end
+    const keep = quiet && !S.filter.unread ? [S.sel && S.rows.some((x) => x.id === S.sel) ? S.sel : null, S.rows.at(-1)?.id].filter(Boolean) : [];
+    let rows = [], more = true, offset = 0;
+    const have = new Set();
+    while (more && (rows.length < want || (keep.some((id) => !have.has(id)) && rows.length < want + MAX_PAGE))) {
+      const r = await fetchRows(offset, Math.min(MAX_PAGE, Math.max(PAGE, want - rows.length)));
+      if (seq !== listSeq) return;
+      offset += r.rows.length;
+      for (const x of r.rows) if (!have.has(x.id)) { have.add(x.id); rows.push(x); }
+      more = !!r.more && r.rows.length > 0;
     }
     if (seq !== listSeq) return;
     S.loading = false;
@@ -1087,25 +1264,42 @@ async function loadList({ quiet = false } = {}) {
       }
     }
     if (quiet && JSON.stringify(rows) === JSON.stringify(S.rows) && more === S.more) return;
-    const box = $("#rows"), top = box.scrollTop;
     S.rows = rows; S.more = more;
-    renderRows();
-    if (quiet) box.scrollTop = top; else box.scrollTop = 0;
+    renderRows();                       // a refresh keeps the row under the eye in place (renderRows)
+    if (!quiet) $("#rows").scrollTop = 0;
   } catch (e) { if (seq === listSeq && S.loading) { S.loading = false; renderRows(); } if (!quiet) fail(e); }
+  finally {
+    if (refreshAt === seq) refreshAt = 0;
+    // the end of the list was reached while the refresh was on its way: the next page comes now
+    if (seq === listSeq && moreLater) { moreLater = false; loadMore(); }
+  }
 }
 
+// the next page, when the list is scrolled near its end; a page for an older list (another folder, another
+// search) is dropped, and during a refresh it waits for it
+let moreLater = false;
 async function loadMore() {
-  if (!S.more || S.loadingMore || S.query) return;
+  if (!S.more || S.loadingMore || S.loading) return;
+  if (refreshing()) { moreLater = true; return; }
+  const seq = listSeq;
   S.loadingMore = true;
-  try {
-    const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length, ...filterArgs() });
-    const have = new Set(S.rows.map((x) => x.id));
-    const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
-    S.rows.push(...add);
-    S.more = r.more;
-    appendRows(add);
-  } catch (e) { fail(e); } finally { S.loadingMore = false; }
+  const job = (async () => {
+    try {
+      const r = await fetchRows(S.rows.length, PAGE);
+      if (seq !== listSeq) return;
+      const have = new Set(S.rows.map((x) => x.id));
+      const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
+      S.rows.push(...add);
+      S.more = !!r.more && r.rows.length > 0;
+      appendRows(add);
+    } catch (e) { if (seq === listSeq) fail(e); }
+  })();
+  moreJob = job;
+  try { await job; } finally { S.loadingMore = false; if (moreJob === job) moreJob = null; }
 }
+// the newest loadList is a quiet refresh still on its way
+let refreshAt = 0;
+const refreshing = () => refreshAt !== 0 && refreshAt === listSeq;
 
 function markRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
@@ -1123,14 +1317,31 @@ function markRow(id, patch) {
 const isSel = (id) => (S.multi.size > 1 ? S.multi.has(id) : id === S.sel);
 function syncSel() {
   let prev = null;
+  const joined = [];
   for (const n of $$("#rows .row")) {
     const on = isSel(n.dataset.id);
+    if (on && S.multi.size > 1 && !n.classList.contains("on") && n._h) joined.push(n);
     n.classList.toggle("on", on);
     prev?.classList.toggle("on-next", on);
     prev = n;
   }
   prev?.classList.remove("on-next");
+  joinRows(joined);
 }
+// a row that joins a selection of several: its grey grows out from inside the row to the block's edges, with the
+// corners it shares with a selected neighbour already square, so the rows read as merging into one block
+function joinRows(nodes) {
+  if (REDUCED.matches || nodes.length > 40) return;
+  for (const n of nodes) {
+    const up = n.previousElementSibling?.classList.contains("on"), down = n.classList.contains("on-next");
+    const r = (a, b) => `${a ? 0 : 9}px ${a ? 0 : 9}px ${b ? 0 : 9}px ${b ? 0 : 9}px`;
+    n.animate([{ clipPath: `inset(${up ? 0 : 5}px 5px ${down ? 0 : 5}px 5px round ${r(up, down)})` },
+      { clipPath: `inset(0px 0px 0px 0px round ${r(up, down)})` }], { duration: 180, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  }
+}
+// the mail E, # and V (and their toolbar buttons) move: the row selected in the list, not an older message of
+// its conversation that was opened in the pane
+const moveId = () => (S.sel && S.thread?.rows.some((x) => x.id === S.sel) ? S.sel : S.focus || S.sel);
 // the mails the next action works on: the selection, or the open mail
 function targets() {
   if (S.multi.size > 1) return [...S.multi];
@@ -1177,18 +1388,67 @@ function showMulti() {
   const anyUnread = rows.some((r) => r.unread), allFlagged = rows.length && rows.every((r) => r.flagged);
   const inTrash = rows.length && rows.every((r) => r.folder === "trash");
   const inJunk = rows.length && rows.every((r) => r.folder === "junk");
-  const b = (ic, label, run) => el("button", { class: "btn", onclick: run, html: icon(ic, "small") + esc(label) });
-  const stack = el("div", { class: "multi-stack" });
-  for (let k = Math.min(3, ids.length) - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
-  $("#pane").replaceChildren(el("div", { class: "multi" }, stack,
-    el("h2", {}, t("n_selected", ids.length)),
-    el("div", { class: "multi-acts" },
-      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
-      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
-      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids)),
-      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
-      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
+  // moves first, as equal buttons on one line; the marks below them, quieter; the key shows on hover
+  const b = (ic, label, run, key, cls = "btn") => el("button", { class: cls, onclick: run, "data-tip": key ? "" : null, "data-key": key,
+    html: icon(ic, "small") + `<span>${esc(label)}</span>` });
+  const acts = el("div", { class: "multi-acts" },
+    el("div", { class: "multi-moves" },
+      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive"), "E"),
+      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash"), "#"),
+      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), "V")),
+    el("div", { class: "multi-marks" },
+      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread), "U", "btn quiet"),
+      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged), "S", "btn quiet")));
+  const title = t("n_selected", ids.length), cards = Math.min(3, ids.length);
+  const was = $("#pane > .multi:not(.pane-ghost)");
+  if (was) {
+    // more or fewer selected: the count ticks and a card joins or leaves the stack; the rest stays
+    const h2 = $("h2", was), stack = $(".multi-stack", was);
+    if (h2.textContent !== title) {
+      const up = ids.length > (parseInt(h2.dataset.n, 10) || 0);
+      h2.textContent = title; h2.dataset.n = ids.length;
+      if (!REDUCED.matches) h2.animate([{ opacity: 0.2, transform: `translateY(${up ? 5 : -5}px)` }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
+    }
+    for (let k = stack.children.length; k < cards; k++) stack.prepend(el("span", { class: "multi-card", style: `--k:${k}` }));
+    while (stack.children.length > cards) stack.firstElementChild.remove();
+    $(".multi-acts", was).replaceWith(acts);
+  } else {
+    const stack = el("div", { class: "multi-stack" });
+    for (let k = cards - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
+    swapPane(el("div", { class: "multi" }, stack, el("h2", { "data-n": ids.length }, title), acts));
+  }
+  fitMoves();
   renderToolbar();
+}
+// the three move buttons stand side by side, all as wide as the widest; when the pane is too narrow for that line
+// in this language they stand one above the other, full width
+function fitMoves() {
+  const box = $("#pane > .multi:not(.pane-ghost)"), moves = box && $(".multi-moves", box);
+  if (!moves) return;
+  moves.classList.remove("stack");
+  moves.style.width = "max-content";
+  const w = moves.offsetWidth;
+  moves.style.width = "";
+  moves.classList.toggle("stack", w > box.clientWidth - 48);
+}
+new ResizeObserver(() => fitMoves()).observe($("#pane"));
+// the reading pane changes between one mail and several selected: the old view fades and draws back a little
+// while the new one comes in (only the fade with reduced motion). The old view keeps its place in the page (an
+// open mail's frames would load again if they were moved) and goes once it has faded.
+function swapPane(node) {
+  const pane = $("#pane"), old = [...pane.children].find((n) => !n.classList.contains("pane-ghost"));
+  const kind = (n) => (n?.classList.contains("multi") ? "multi" : n?.classList.contains("doc") ? "doc" : null);
+  const a = kind(old), b = kind(node);
+  if (!a || !b || a === b) { pane.replaceChildren(node); return; }
+  const top = pane.scrollTop;
+  for (const g of $$(":scope > .pane-ghost", pane)) g.remove();
+  old.classList.add("pane-ghost");
+  old.style.top = -top + "px";
+  old.style.transformOrigin = `50% ${top + pane.clientHeight / 2}px`;
+  pane.insertBefore(node, old);
+  pane.scrollTop = 0;
+  old.animate(REDUCED.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.97)" }],
+    { duration: 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" }).finished.then(() => old.remove(), () => old.remove());
 }
 
 // read / unread and flags, for one mail or many
@@ -1342,17 +1602,35 @@ const hidden = new Set();
 const pendingMoves = new Set();
 function moveMail(ids, to) {
   if (!ids.length) return;
+  // the pane changes only when what it shows moved: the open mail's own row, or the several selected ones. The
+  // next mail is the one beside the open row (or beside the moved block). Another mail of the open conversation
+  // that moved only leaves the conversation; mails moved outside a selection of several leave the selection.
+  const sel = S.sel, many = S.multi.size > 1;
+  const allSel = many && ids.every((i) => S.multi.has(i));
+  const rest = many && !allSel ? [...S.multi].filter((i) => !ids.includes(i)) : null;
+  const wasSel = allSel || (!many && ids.includes(sel));
+  const next = wasSel ? nextAfter(S.rows, ids, allSel ? null : sel) : null;
   S.multi.clear();
-  const k = Math.max(...ids.map((i) => S.rows.findIndex((x) => x.id === i)));
-  const next = S.rows.slice(k + 1).find((x) => !ids.includes(x.id)) || S.rows.slice(0, k).reverse().find((x) => !ids.includes(x.id));
-  const wasSel = ids.includes(S.sel) || (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i)));
-  const sel = S.sel;
   ids.forEach((i) => hidden.add(i));
   S.rows = S.rows.filter((x) => !ids.includes(x.id));
   shownIds = new Set(S.rows.map((x) => x.id));
   const gone = ids.map((i) => $(`.row[data-id="${CSS.escape(i)}"]`));
   foldRows(gone).then(() => { gone.forEach((n) => n?.remove()); if (!S.rows.length) renderRows(); });
-  if (wasSel) { if (next) selectRow(next.id); else { S.sel = null; showEmpty(); } }
+  let leftThread = false;
+  if (wasSel) { if (next) selectRow(next); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (rest) { S.multi = new Set(rest); if (rest.length > 1) showMulti(); else if (rest.length) selectRow(rest[0]); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i))) {
+    leftThread = true;
+    S.thread.rows = S.thread.rows.filter((r) => !ids.includes(r.id));
+    if (ids.includes(S.focus)) S.focus = sel;
+    for (const n of $$("#pane > .doc:not(.pane-ghost) > .msg").filter((x) => ids.includes(x.dataset.id))) {
+      if (REDUCED.matches) { n.remove(); continue; }
+      n.style.overflow = "hidden";
+      n.animate([{ height: n.offsetHeight + "px", opacity: 1 }, { height: "0px", opacity: 0, marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px" }],
+        { duration: 260, easing: SMOOTH, fill: "forwards" }).finished.then(() => n.remove(), () => n.remove());
+    }
+    renderToolbar();
+  }
   const job = { ids, to, done: false };
   const unhide = () => { ids.forEach((i) => hidden.delete(i)); pendingMoves.delete(job); };
   job.commit = async () => {
@@ -1370,6 +1648,7 @@ function moveMail(ids, to) {
       job.done = true; clearTimeout(job.timer); unhide();
       await loadList({ quiet: true });
       if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
+      else if (leftThread && S.sel === sel && S.thread) openThread(sel);
     } },
   });
 }
@@ -1432,6 +1711,7 @@ function onSearch(now = false) {
     S.query = q;
     renderNav();
     loadList();
+    markOpen();
   }, now ? 0 : 220);
 }
 
@@ -1444,13 +1724,16 @@ function goBack() {
 
 function showEmpty() {
   S.thread = null; S.focus = null; S.sched = null; S.multi.clear();
+  threadSeq++; schedSeq++;            // a mail or a scheduled one still on its way stays out of the empty pane
   $("#pane").innerHTML = `<div class="pane-empty"><img src="logo.png" alt=""></div>`;
   renderToolbar();
 }
 
 function renderToolbar() {
   const tools = $("#tools"), end = $("#tools-end");
+  const wasU = unreadState();
   tools.replaceChildren(); end.replaceChildren();
+  queueMicrotask(() => easeUnread(wasU));
   $("#toolbar").classList.toggle("lined", $("#pane").scrollTop > 0);
   $("#app").classList.toggle("reading", !!(S.compose || S.sched || S.thread || S.multi.size > 1));
   tools.append(iconBtn("arrow-left", t("back"), goBack, { key: "Esc", cls: "back-btn" }));
@@ -1492,16 +1775,36 @@ function renderToolbar() {
   const has = !!S.thread;
   const id = S.focus || S.sel;
   const r = S.thread?.rows.find((x) => x.id === id);
-  const inTrash = r?.folder === "trash", inJunk = r?.folder === "junk";
+  // moves act on the mail selected in the list (read and star on the message opened last)
+  const mv = moveId(), rm = S.thread?.rows.find((x) => x.id === mv);
+  const inTrash = rm?.folder === "trash", inJunk = rm?.folder === "junk";
   tools.append(
     inTrash || inJunk
-      ? iconBtn("inbox", backLabel(r.folder), () => moveMail([id], "inbox"), { disabled: !has })
-      : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
-    iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
-    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
+      ? iconBtn("inbox", backLabel(rm.folder), () => moveMail([mv], "inbox"), { disabled: !has })
+      : iconBtn("archive", t("archive_it"), () => moveMail([mv], "archive"), { key: "E", disabled: !has || rm?.folder === "archive" }),
+    iconBtn("trash-2", t("trash_it"), () => moveMail([mv], "trash"), { key: "#", disabled: !has || inTrash }),
+    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [mv]), { key: "V", disabled: !has || !rm }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
   );
+}
+
+// "Mark as unread" carries a dot on the envelope's corner; "Mark as read" has none. When the button turns from one
+// into the other, the new button starts as the old one looked and the dot (and the cut round it) grows or shrinks
+// away, with the envelope settling, instead of the toolbar swapping it in one frame (style.css, group C1).
+function unreadState() {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  return b ? { dot: b.classList.contains("unread-mark"), multi: S.multi.size > 1, id: S.focus || S.sel } : null;
+}
+function easeUnread(was) {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  const now = b && b.classList.contains("unread-mark");
+  // only the same mail (or the same selection) changing its mark: a new mail opening just shows its button
+  if (!b || !was || was.dot === now || was.multi !== S.multi.size > 1 || (!was.multi && was.id !== (S.focus || S.sel))) return;
+  b.classList.toggle("unread-mark", was.dot);
+  void b.offsetWidth;
+  b.classList.toggle("unread-mark", now);
+  if (!REDUCED.matches) $(".i", b)?.animate([{ opacity: 0.4, transform: "scale(.86)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
 }
 
 let threadSeq = 0;
@@ -1512,7 +1815,8 @@ async function openThread(id) {
   try { th = await api("thread", { id }); } catch (e) { if (seq === threadSeq) { fail(e); showEmpty(); } return; }
   if (seq !== threadSeq) return;
   S.thread = th;
-  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto" }, th.subject || t("no_subject")));
+  hitScroll = S.query ? seq : 0;
+  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto", html: hl(th.subject || t("no_subject")) }));
   // newest on top; the reply buttons sit right under the open message, older mail below
   const rows = [...th.rows].reverse();
   const openId = rows.some((r) => r.id === id) ? id : rows[0]?.id;
@@ -1521,10 +1825,10 @@ async function openThread(id) {
     doc.append(msgNode(r, r.id === openId));
     if (r.id === openId) doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
   }
-  $("#pane").replaceChildren(doc);
+  swapPane(doc);
   $("#pane").scrollTop = 0;
   renderToolbar();
-  const open = $(`.msg[data-id="${CSS.escape(id)}"]`);
+  const open = $(`.msg[data-id="${CSS.escape(id)}"]`, doc);
   if (open && openId !== rows[0].id) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
 }
 
@@ -1532,6 +1836,7 @@ async function openThread(id) {
 let schedSeq = 0;
 async function openScheduled(r) {
   const seq = ++schedSeq;
+  threadSeq++;
   S.thread = null; S.focus = r.id; S.sched = r;
   const zone = TZ || SYS_TZ;
   const card = el("div", { class: "sched-card" + (r.sched_error ? " err" : "") },
@@ -1991,7 +2296,7 @@ function attNode(a, id) {
   const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
     onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
-    el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
+    el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }), el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
   if (MAC && S.boot.window) {
@@ -2119,8 +2424,13 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
     css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
-  return css;
+  return css + hitCss(dark, plain);
 }
+
+// a searched word in a mail: a soft amber behind the text. A dark HTML mail is shown inverted (.rd-root's filter),
+// so there the light amber is given and the filter turns it into the dark one.
+const hitCss = (dark, plain) => `mark.rd-hit{color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px;-webkit-box-decoration-break:clone;box-decoration-break:clone;` +
+  `background:${dark && plain ? "rgba(240,190,70,.30)" : "rgba(250,204,80,.42)"}}`;
 
 // a picture worth enlarging: not an icon, a spacer or a tracking pixel
 const bigImg = (img) => img.naturalWidth >= 48 && img.naturalHeight >= 32;
@@ -2193,8 +2503,10 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d) return;
     minText(d);
     if (quote) collapseQuote(st);
+    if (quote) markFrame(st);
     fitColumn(d);
     fit();
+    if (quote) scrollToHit(st);
     // the frame's own observer: it goes away with the frame; one fit per frame at most
     try {
       let q = 0;
@@ -2216,7 +2528,13 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
         openCompose({ mode: "new", to: addr.split(",").filter(Boolean).map((x) => ({ name: "", addr: x.trim().toLowerCase() })) });
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
-    d.addEventListener("keydown", (e) => onKey(e));
+    // keys for reading stay in the mail (select its text, scroll it); the app's own keys still work from here
+    d.addEventListener("keydown", (e) => {
+      const k = frameKey(e);
+      if (k === "keep") return;
+      if (k) { e.preventDefault(); scrollReader(frame, k); return; }
+      onKey(e);
+    });
     const linkOf = (e) => {
       const a = e.target.closest?.("a[href]"), href = a?.getAttribute("href") || "";
       if (/^mailto:/i.test(href)) return { mail: decodeURIComponent(href.slice(7).split("?")[0]) };
@@ -2253,6 +2571,65 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
   const obs = new MutationObserver(() => { if (!wrap.isConnected) { frames.delete(st); obs.disconnect(); } });
   requestAnimationFrame(() => obs.observe(document.body, { childList: true, subtree: true }));
   return { node: wrap, frame, st };
+}
+
+// a key for reading pressed inside a mail: the reading pane scrolls (the frame itself is as tall as the mail)
+function scrollReader(frame, k) {
+  const pane = frame.closest(".pane") || $("#pane"), h = pane.clientHeight;
+  const by = { down: 48, up: -48, page: h * 0.85, pageup: -h * 0.85 }[k];
+  const how = REDUCED.matches || k === "down" || k === "up" ? "auto" : "smooth";
+  if (by != null) pane.scrollBy({ top: by, behavior: how });
+  else pane.scrollTo({ top: k === "home" ? 0 : pane.scrollHeight, behavior: how });
+}
+
+// the searched words in an open mail, marked for the eye only: replies and forwards are built from the server's
+// copy, never from what is on screen. Only text is touched (a mark around a run of text), never the mail's tags.
+function markFrame(st) {
+  const d = st.frame.contentDocument;
+  if (!d?.body) return;
+  for (const m of d.querySelectorAll("mark.rd-hit")) { const p = m.parentNode; m.replaceWith(...m.childNodes); p.normalize(); }
+  st.hits = [];
+  const re = hitRe();
+  if (!re) return;
+  const root = d.querySelector(".rd-root") || d.body;
+  const skip = "style,script,title,textarea,noscript,mark";
+  const tw = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = tw.nextNode(); n && nodes.length < 20000; n = tw.nextNode()) if (n.nodeValue.trim() && !n.parentElement?.closest(skip)) nodes.push(n);
+  for (const n of nodes) {
+    const parts = splitHits(n.nodeValue, re);
+    if (parts.length < 2) continue;
+    const frag = d.createDocumentFragment();
+    for (const [a, m] of parts) {
+      if (a) frag.append(a);
+      if (!m) continue;
+      const k = d.createElement("mark");
+      k.className = "rd-hit"; k.textContent = m;
+      frag.append(k); st.hits.push(k);
+    }
+    n.replaceWith(frag);
+    if (st.hits.length > 2000) break;
+  }
+  // the only match is in the quoted older mail: the quote opens
+  if (st.hits.length && st.toggle && !st.toggle.classList.contains("open") && st.hits.every((h) => st.hidden.some((x) => x.contains(h)))) st.toggle.click();
+}
+// the first match comes into view once, when a mail is opened from a search
+let hitScroll = 0;
+function scrollToHit(st) {
+  if (!hitScroll || hitScroll !== threadSeq || !st.hits?.length || !st.frame.isConnected) return;
+  hitScroll = 0;
+  requestAnimationFrame(() => {
+    const pane = st.frame.closest(".pane");
+    const h = st.hits.find((x) => x.getClientRects().length);
+    if (!pane || !h) return;
+    const p = pane.getBoundingClientRect(), y = st.frame.getBoundingClientRect().top + h.getBoundingClientRect().top;
+    if (y < p.top + 60 || y > p.bottom - 60) pane.scrollTo({ top: Math.max(0, pane.scrollTop + y - p.top - p.height / 3), behavior: REDUCED.matches ? "auto" : "smooth" });
+  });
+}
+// the search changed: the marks in what is open follow it, and go when the search is cleared
+function markOpen() {
+  for (const st of frames) if (st.quote && st.wrap.isConnected) { markFrame(st); st.fit?.(); }
+  for (const n of $$("#pane .doc-subject, #pane .att-name")) n.innerHTML = hl(n.textContent);
 }
 
 // where a link goes, shown at the foot of the reader while the pointer is on it
@@ -2345,10 +2722,12 @@ function parseAddrs(text) {
 
 async function openCompose(opts) {
   if (S.compose && !(await leaveCompose())) return;
+  const seq = ++threadSeq;            // a mail still loading does not replace the compose view, nor this a later choice
   let c;
   try {
     c = await api("compose", { mode: opts.mode, id: opts.id });
   } catch (e) { return fail(e); }
+  if (seq !== threadSeq) return;
   if (opts.to) c.to = [...opts.to, ...c.to];
   if (opts.subject) c.subject = opts.subject;
   if (opts.files) c.pending = opts.files;
@@ -3279,9 +3658,9 @@ function onKey(e) {
   else if (k === "r") { e.preventDefault(); openCompose({ mode: "reply", id }); }
   else if (k === "a") { e.preventDefault(); openCompose({ mode: "replyall", id }); }
   else if (k === "f") { e.preventDefault(); openCompose({ mode: "forward", id }); }
-  else if (k === "e") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "archive") moveMail([id], "archive"); }
-  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "trash") moveMail([id], "trash"); }
-  else if (k === "v") { e.preventDefault(); moveKey([id]); }
+  else if (k === "e") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "archive") moveMail([mv], "archive"); }
+  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "trash") moveMail([mv], "trash"); }
+  else if (k === "v") { e.preventDefault(); moveKey([moveId()]); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
   else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }

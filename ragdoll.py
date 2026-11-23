@@ -1674,8 +1674,10 @@ def search_where(words, a):
 
 
 def search_rows(c, words, a):
+    """The newest matches first; a.offset (when set) skips that many, for the next page."""
     where, params = search_where(words, a)
-    return c.execute("select m.* from msgs m %s order by m.ts desc limit ?" % where, params + [a.limit]).fetchall()
+    return c.execute("select m.* from msgs m %s order by m.ts desc, m.id desc limit ? offset ?" % where,
+                     params + [a.limit, max(0, getattr(a, "offset", 0) or 0)]).fetchall()
 
 
 def search_total(c, words, a):
