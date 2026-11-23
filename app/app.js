@@ -376,7 +376,8 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 let navSig = "", navKeys = null;
 function renderNav() {
   const nav = $("#nav");
-  const folders = [...S.boot.folders.filter((f) => !f.other), ...ownFolders()];
+  const own = ownFolders();
+  const folders = [...S.boot.folders.filter((f) => !f.other), ...own];
   for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
@@ -410,6 +411,7 @@ function renderNav() {
       seenOther = true;
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
       $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); folderMenu(b, f); });
+      folderDrag(b, f, own);
     } else if (READ_ALL_IN.includes(f.key)) {
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
     }
@@ -430,11 +432,24 @@ function renderNav() {
 
 // the owner's own folders sit under a heading that folds them away; a folder with folders inside has
 // its own arrow. A folded folder adds the unread mail inside it to its own count. The open folder stays.
+// A folder dropped on the heading goes to the top level, first in it.
 function navSection() {
-  return el("div", { class: "nav-sec" },
+  const sec = el("div", { class: "nav-sec" },
     el("button", { class: "nav-sec-btn", "aria-label": t("fold"), onclick: () => toggleFold("@mine"),
       html: `<span class="label">${esc(t("my_folders"))}</span>` + icon("chevron-right", "small") + `<span class="count"></span>` }),
     el("button", { class: "icon-btn tiny nav-sec-add", "data-tip": t("new_folder"), "aria-label": t("new_folder"), onclick: () => newFolder(), html: icon("plus", "small") }));
+  sec.addEventListener("dragover", (e) => { if (!dragF) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; clearDrop(); sec.classList.add("drop"); });
+  sec.addEventListener("dragleave", (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove("drop"); });
+  sec.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const g = dragF.f;
+    dragF = null; clearDrop();
+    const first = ownFolders().find((x) => !x.up && x.key !== g.key);
+    if (g.up) moveFolder(g, null, { at: (key) => first && placeFolder(key, first.key, "before") });
+    else if (first) { const snap = navRects(); placeFolder(g.key, first.key, "before"); renderNav(); flipNav(snap); }
+  });
+  return sec;
 }
 function toggleFold(key) {
   const s = new Set(PREFS.folded || []);
@@ -551,6 +566,14 @@ function flipNav(snap, rename = (k) => k) {
 }
 const renamer = (old, nu, sep) => (k) => (k === old ? nu : k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
 
+// The owner's own order: `key` goes right before or after `target` among the folders beside it.
+function placeFolder(key, target, where) {
+  const keys = ownFolders().map((f) => f.key).filter((k) => k !== key);
+  const at = keys.indexOf(target);
+  if (at < 0) return;
+  keys.splice(where === "after" ? at + 1 : at, 0, key);
+  savePref({ folder_order: keys });
+}
 // Put a folder in another one (parent null: the top level). It is a rename on the server: the mail and the
 // folders inside go along; the open folder, the selection and the fold state follow. at(newKey) places it
 // among its new neighbours. Undo puts it back.
@@ -575,6 +598,55 @@ async function moveFolder(f, parent, { at } = {}) {
     flipNav(back, renamer(r.key, f.key, r.sep));
     if (again) showMoved();
   } } });
+}
+
+// Dragging an own folder: onto another one puts it inside (the folder lights up as for mail); near the top
+// or bottom edge of one puts it before or after it (a line shows where). Not into itself or a folder inside
+// it, and not onto the built-in folders (they take mail only). The heading takes it to the top level.
+let dragF = null;
+function clearDrop() {
+  for (const n of $$("#nav .drop, #nav .drop-before, #nav .drop-after")) n.classList.remove("drop", "drop-before", "drop-after");
+}
+function folderZone(b, f, e, list) {
+  if (!dragF || dragF.inside.has(f.key)) return null;
+  const r = b.getBoundingClientRect(), y = (e.clientY - r.top) / r.height;
+  const open = list[list.findIndex((x) => x.key === f.key) + 1]?.up === f.key && !PREFS.folded?.includes(f.key);
+  const z = y < 0.3 ? "before" : y > 0.7 && !open ? "after" : "inside";
+  return z === "inside" && dragF.f.up === f.key ? null : z;
+}
+function folderDrag(b, f, list) {
+  b.draggable = true;
+  b.addEventListener("dragstart", (e) => {
+    dragF = { f, inside: new Set(subtreeOf(list, f.key).map((x) => x.key)) };
+    e.dataTransfer.setData("x-ragdoll/folder", f.key);
+    e.dataTransfer.effectAllowed = "move";
+    requestAnimationFrame(() => { for (const x of $$("#nav .nav-item.other")) x.classList.toggle("dragging", !!dragF?.inside.has(x.dataset.folder)); });
+  });
+  b.addEventListener("dragend", () => { dragF = null; clearDrop(); for (const x of $$("#nav .dragging")) x.classList.remove("dragging"); });
+  b.addEventListener("dragover", (e) => {
+    if (!dragF) return;
+    const z = folderZone(b, f, e, list);
+    if (!z) return clearDrop();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const cls = z === "inside" ? "drop" : "drop-" + z;
+    if (!b.classList.contains(cls)) { clearDrop(); b.classList.add(cls); }
+  });
+  b.addEventListener("dragleave", (e) => { if (!b.contains(e.relatedTarget)) b.classList.remove("drop-before", "drop-after"); });
+  b.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const z = folderZone(b, f, e, list), g = dragF.f;
+    dragF = null; clearDrop();
+    if (!z) return;
+    const parent = z === "inside" ? f.key : f.up;
+    const at = z === "inside" ? null : (key) => placeFolder(key, f.key, z);
+    if (parent !== g.up) return moveFolder(g, parent, { at });
+    const snap = navRects();
+    at(g.key);
+    renderNav();
+    flipNav(snap);
+  });
 }
 
 // A menu of folders with a box on top to find one: typing narrows it (Chinese too, once the input method is

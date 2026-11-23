@@ -655,6 +655,17 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group E_FOLDERS: new rules for this group only ---- */
+/* dragging a folder: it fades while held; a line shows where it lands before or after another folder,
+   the folder it would go into lights up as for mail (.nav-item.drop), the heading for the top level */
+.nav-item.other { position: relative; }
+.nav-item.dragging { opacity: .4; }
+.nav-item.drop-before::after, .nav-item.drop-after::after { content: ""; position: absolute; left: calc(8px + var(--depth, 0) * 16px); right: 6px; height: 2px;
+  border-radius: 1px; background: var(--accent); pointer-events: none; animation: drop-line .16s var(--ease); }
+.nav-item.drop-before::after { top: 0; }
+.nav-item.drop-after::after { bottom: 0; }
+.nav-sec.drop { color: var(--text); }
+.nav-sec.drop::after { content: ""; position: absolute; left: 8px; right: 6px; bottom: 0; height: 2px; border-radius: 1px; background: var(--accent); animation: drop-line .16s var(--ease); }
+@keyframes drop-line { from { opacity: 0; transform: scaleX(.6); } }
 /* the move menus: a box to find a folder on top, the folders nested under it */
 .menu.pick { display: flex; flex-direction: column; overflow: hidden; padding: 0; max-width: 360px; }
 .pick-find { flex: none; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--text-3); cursor: text; }
