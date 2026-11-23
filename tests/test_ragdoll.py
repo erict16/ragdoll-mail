@@ -1168,6 +1168,7 @@ class AppBridge(unittest.TestCase):
         self.assertIn("newer Ragdoll Mail", err)
 
 
+@unittest.skipIf(sys.platform == "win32", "Windows reads the registry, never the login shell")
 class PasswordFromShell(unittest.TestCase):
     """An app opened from the Dock does not get the variables the shell profile exports."""
 
