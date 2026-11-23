@@ -2562,15 +2562,63 @@ def servers_from_mx(domain):
     return None
 
 
+class SendLater(SystemExit):
+    """Sending stopped before anything left this machine (no network, the server did not answer,
+    it said "try later"): trying again later cannot send the mail twice. .cause is what went wrong."""
+    def __init__(self, cause):
+        super().__init__("not sent, nothing left this computer: %s" % (cause or type(cause).__name__))
+        self.cause = cause
+
+
+MAYBE_SENT = ("The connection broke while the mail was going out, so it may have been sent. "
+              "Check Sent before you send it again.")
+
+
+def smtp_send(s, frm, rcpts, out):
+    """sendmail in its two halves: until DATA nothing has left (SendLater on a failure there); a break
+    while the mail itself goes out may have sent it (MAYBE_SENT). Returns the refused recipients."""
+    try:
+        s.ehlo_or_helo_if_needed()
+        code, resp = s.mail(frm)
+        if code != 250:
+            raise smtplib.SMTPSenderRefused(code, resp, frm)
+        refused = {}
+        for r in rcpts:
+            code, resp = s.rcpt(r)
+            if code not in (250, 251):
+                refused[r] = (code, resp)
+        if len(refused) == len(rcpts):
+            raise smtplib.SMTPRecipientsRefused(refused)
+    except (smtplib.SMTPSenderRefused, smtplib.SMTPRecipientsRefused):
+        raise                                   # the server will not take it: trying again does not help
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        code, resp = s.data(out)
+    except smtplib.SMTPDataError as e:          # the server answered: it did not take the mail
+        if 400 <= e.smtp_code < 500:
+            raise SendLater(e) from e
+        raise
+    except (OSError, smtplib.SMTPException):
+        die(MAYBE_SENT)
+    return refused
+
+
 def send_draft(folder, uid, wait=3):
     """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
-    answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
+    answered. Returns what happened; dies (SystemExit) before sending when it must not go out, and
+    raises SendLater when it stopped before anything left (a network or server hiccup)."""
     sent = CFG.folders["sent"]
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
-        msg = to_msg(raw)
-        mid = hdr(msg, "Message-ID").strip()
-        when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    try:
+        with session() as m:
+            raw = fetch_raw(m, folder, uid)
+            msg = to_msg(raw)
+            mid = hdr(msg, "Message-ID").strip()
+            when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    except SystemExit:
+        raise
+    except Exception as e:      # noqa: BLE001 - the draft was not even read: nothing went out
+        raise SendLater(e) from e
     if when:
         die("NOT SENT AGAIN: this draft already went out %s. Check Sent; remove the draft with delete-draft."
             % when)
@@ -2586,10 +2634,19 @@ def send_draft(folder, uid, wait=3):
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
     out = msg.as_bytes(policy=OUT_POLICY)        # what goes out: never a Bcc line
     keep = sent_copy(out, bcc)
-    s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    pw = password()
     try:
-        s.login(CFG.user, password())
-        refused = s.sendmail(CFG.user, rcpts, out)
+        s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        try:
+            s.login(CFG.user, pw)
+        except smtplib.SMTPAuthenticationError:
+            raise                               # a wrong password stays wrong
+        except (OSError, smtplib.SMTPException) as e:
+            raise SendLater(e) from e
+        refused = smtp_send(s, CFG.user, rcpts, out)
     finally:
         try:
             s.quit()
@@ -2929,6 +2986,26 @@ def running(cmd):
             f.close()
             with contextlib.suppress(OSError):
                 os.remove(path)
+
+
+def pid_running(pid, cmd="app"):
+    """True when process pid still runs `cmd` (its run marker is locked)."""
+    if not isinstance(pid, int):
+        return False
+    path = os.path.join(CFG.home, "run", "%d-%s.lock" % (pid, cmd))
+    if not os.path.exists(path):
+        return False
+    try:
+        f = open(path, "a+")
+    except OSError:
+        return True
+    try:
+        free = try_lock(f)
+        if free:
+            unlock(f)
+        return not free
+    finally:
+        f.close()
 
 
 def busy_commands():
@@ -3370,11 +3447,15 @@ def cmd_schedule(a):
         return
     drafts_only(a.id, "schedule")
     if a.cancel:
-        items = sched_read()
-        keep = [x for x in items if x["id"] != a.id]
-        if len(keep) == len(items):
-            die("%s is not scheduled" % a.id)
-        sched_write(keep)
+        with file_lock("sched", True):      # the app changes the list too (ragdoll_app.sched_edit)
+            items = sched_read()
+            keep = [x for x in items if x["id"] != a.id]
+            if len(keep) == len(items):
+                die("%s is not scheduled" % a.id)
+            if any(isinstance(x.get("sending"), dict) and pid_running(x["sending"].get("pid"))
+                   for x in items if x["id"] == a.id):
+                die("%s is going out right now" % a.id)
+            sched_write(keep)
         print(json.dumps({"id": a.id, "scheduled": False}))
         return
     if not a.yes:
@@ -3388,8 +3469,9 @@ def cmd_schedule(a):
         die("that time has already passed")
     if at > time.time() + 5 * 366 * 86400:
         die("pick a time within the next five years")
-    items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
-    sched_write(items)
+    with file_lock("sched", True):
+        items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
+        sched_write(items)
     print(json.dumps({"id": a.id, "at": local_time(at), "app_running": app_running(),
                       "note": "Ragdoll Mail sends it at that time while the app is open; if the app is "
                               "closed then, it goes out when the app next starts."}, ensure_ascii=False, indent=1))

@@ -112,6 +112,8 @@ TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 def friendly(e):
     """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+    if isinstance(e, R.SendLater) and e.cause is not None:
+        return friendly(e.cause)
     s = str(e.code if isinstance(e, SystemExit) else e) or e.__class__.__name__
     low = s.lower()
     if isinstance(e, (smtplib.SMTPAuthenticationError,)) or (
@@ -805,6 +807,8 @@ class Backend:
         self.demo_raw = {}
         self.thread = None
         self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
+        self.inflight = set()                   # drafts going out right now (by the schedule or Send)
+        self.editing = {}                       # draft id -> when a compose last opened or saved it
         self.data_v = None                      # the index as last seen: changes when the sync or the CLI writes
         self.counts = None                      # (what they were counted from, the folder counts)
         self.pre = collections.deque()          # mail to bring in before it is opened: (folder, uidv, uid, size)
@@ -2152,6 +2156,7 @@ class Backend:
                 out["subject"] = R.reply_subject(R.hdr(orig, "Subject"))
         elif mode == "draft":
             out["replace"] = a["id"]
+            self.editing[a["id"]] = time.time()     # a scheduled one waits while it is being changed
             msg = R.to_msg(self.raw(a["id"]))
             state = self.compose_state(R.hdr(msg, "Message-ID"))
             if state:
@@ -2296,7 +2301,9 @@ class Backend:
                 old = None
             else:
                 with self.schedlock:
-                    self.sched_drop(old)
+                    if old in self.inflight:
+                        fail("This mail is going out right now, so the change was not saved.")
+                    self.editing[old] = time.time()     # not sent by the schedule while it changes
                 self.drop_state(old)
         if self.demo:
             uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
@@ -2327,6 +2334,8 @@ class Backend:
                     self.db_delete(old)
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
+        if old and uid:
+            self.sched_move(old, R.make_id(drafts, uid))   # still scheduled, now as the saved draft
         state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
                                        "use_signature", "irt", "refs", "fwd")}
         with contextlib.suppress(OSError):
@@ -2352,20 +2361,31 @@ class Backend:
         return {"id": i, "problems": []}
 
     def api_send(self, a):
-        with self.schedlock:
-            self.sched_drop(a["id"])
+        """Send the saved draft now. The scheduled-send list is locked only to take the mail off it,
+        not while it goes out: a long upload does not hold up the other screens."""
+        i = a["id"]
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), {"id": i})
+            if self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != i]
+            self.inflight.add(i)
+        try:
             return self.send_now(a)
+        finally:
+            with self.schedlock:
+                self.inflight.discard(i)
 
     def send_now(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
-        self.drop_state(a["id"])
         if self.demo:
             raw = self.demo_raw.get((folder, uid))
             if raw is None:
                 fail("The draft is gone.")
             msg = R.to_msg(raw)
+            self.drop_state(a["id"])
             self.demo_delete(a["id"])
             bcc = R.hdr(msg, "Bcc").strip()
             del msg["Bcc"]
@@ -2380,6 +2400,7 @@ class Backend:
             self.bump()
             return {"sent": True, "problems_after_sending": []}
         r = R.send_draft(folder, uid)
+        self.drop_state(a["id"])
         with self.dblock:
             self.db_delete(a["id"])
         self.bump()
@@ -2402,23 +2423,85 @@ class Backend:
             except (OSError, ValueError):
                 return []
 
+    RETRY_MAX = 3600        # a mail that could not go out is tried again after 1, 2, 4, ... minutes, then hourly
+    HOLD = 15 * 60          # a scheduled draft being changed in a compose waits this long after its last save
+
     def sched_save(self, items):
         with self.schedlock:
             os.makedirs(R.CFG.home, exist_ok=True)
-            tmp = self.sched_path() + ".tmp"
+            tmp = "%s.%d.tmp" % (self.sched_path(), os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False)
             os.replace(tmp, self.sched_path())
 
-    def sched_drop(self, i):
-        with self.schedlock:
+    @contextlib.contextmanager
+    def sched_edit(self):
+        """The list to change in place; saved when it changed. Locked for this app's threads and for
+        other processes (the ragdoll command, a second copy of the app) alike, and only for as long as
+        the list changes: never while a mail is going out."""
+        with self.schedlock, R.file_lock("sched", True):
             items = self.sched_list()
-            keep = [x for x in items if x["id"] != i]
-            if len(keep) != len(items):
-                self.sched_save(keep)
+            before = json.dumps(items, sort_keys=True)
+            yield items
+            if json.dumps(items, sort_keys=True) != before:
+                self.sched_save(items)
                 self.bump()
-                return True
+
+    def sched_drop(self, i):
+        with self.sched_edit() as items:
+            n = len(items)
+            items[:] = [x for x in items if x["id"] != i]
+            return len(items) != n
+
+    def sched_move(self, old, new):
+        """A scheduled draft saved again (as a new draft): it stays scheduled, at the same time."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] == old:
+                    x["id"] = new
+                    for k in ("error", "tries", "retry_at", "note", "sending"):
+                        x.pop(k, None)
+            self.editing[new] = time.time()
+            self.editing.pop(old, None)
+
+    def going_out(self, x):
+        """True while the mail of this entry is being sent, here or by another copy of the app."""
+        if x["id"] in self.inflight:
+            return True
+        s = x.get("sending")
+        if not isinstance(s, dict):
             return False
+        # ours but no longer in flight: left by a send that ended without tidying up
+        return s.get("pid") != os.getpid() and R.pid_running(s.get("pid"))
+
+    def sched_claim(self, i, now):
+        """Mark a due mail as going out, so nothing else sends it meanwhile. False when it is not due,
+        is being sent already, or is being changed in a compose."""
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), None)
+            if (x is None or x["at"] > now or x.get("error") or (x.get("retry_at") or 0) > now
+                    or self.going_out(x) or self.editing.get(i, 0) > time.time() - self.HOLD):
+                return False
+            x["sending"] = {"pid": os.getpid(), "at": int(time.time())}
+            self.inflight.add(i)
+            return True
+
+    def sched_after(self, i, now, error=None, later=None):
+        """A scheduled send that failed: for good (error, shown), or before anything left (later: tried
+        again with a growing pause; the already-sent and Sent checks still guard against a double send)."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] != i:
+                    continue
+                x.pop("sending", None)
+                if error:
+                    x["error"] = error
+                    for k in ("tries", "retry_at", "note"):
+                        x.pop(k, None)
+                else:
+                    x["tries"] = int(x.get("tries") or 0) + 1
+                    x["retry_at"] = int(now + min(60 * 2 ** (x["tries"] - 1), self.RETRY_MAX))
+                    x["note"] = later
 
     def api_schedule(self, a):
         """Send the saved draft a["id"] at a["at"] (Unix seconds)."""
@@ -2434,18 +2517,22 @@ class Backend:
             fail("That time has already passed.")
         if at > time.time() + 5 * 366 * 86400:
             fail("Pick a time within the next five years.")
-        with self.schedlock:
+        with self.sched_edit() as items:
             self.row(i)
-            items = [x for x in self.sched_list() if x["id"] != i]
-            items.append({"id": i, "at": at})
-            self.sched_save(items)
-        self.bump()
+            if i in self.inflight:
+                fail("This mail is going out right now.")
+            items[:] = [x for x in items if x["id"] != i] + [{"id": i, "at": at}]
+            self.editing.pop(i, None)
         self.sched_wake.set()
         return {"id": i, "at": at}
 
     def api_unschedule(self, a):
         """Keep the mail as a draft and do not send it."""
-        self.sched_drop(a["id"])
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == a["id"]), None)
+            if x is not None and self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != a["id"]]
         return {}
 
     def scheduled_rows(self):
@@ -2457,6 +2544,8 @@ class Backend:
                 continue
             r["sched"] = x["at"]
             r["sched_error"] = x.get("error")
+            r["sched_retry"] = x.get("retry_at")
+            r["sched_note"] = x.get("note")
             out.append(r)
         return out
 
@@ -2466,30 +2555,32 @@ class Backend:
             self.sched_wake.clear()
             if self.stopping.is_set():
                 break
-            with contextlib.suppress(Exception):
+            try:
                 self.send_due()
+            except (Exception, SystemExit):     # noqa: BLE001 - the loop must outlive any one mail
+                traceback.print_exc(file=sys.stderr)
 
     def send_due(self, now=None):
-        """Send every scheduled mail that is due. A failure stays in the list with its reason and is not
-        tried again by itself: a send that failed half way could otherwise go out twice."""
+        """Send every scheduled mail that is due, one at a time. A failure before anything left this
+        computer (no network after sleep, the server did not answer) is tried again later; any other
+        failure stays in the list with its reason: a send that broke half way could go out twice."""
         now = time.time() if now is None else now
         sent = 0
-        with self.schedlock:
-            for x in self.sched_list():
-                if x["at"] > now or x.get("error"):
-                    continue
-                try:
-                    self.send_now({"id": x["id"]})
-                    self.sched_drop(x["id"])
-                    sent += 1
-                except Exception as e:       # noqa: BLE001 - every reason is shown to the person
-                    msg = str(e) if isinstance(e, ApiError) else friendly(e)
-                    items = self.sched_list()
-                    for y in items:
-                        if y["id"] == x["id"]:
-                            y["error"] = msg
-                    self.sched_save(items)
-                    self.bump()
+        for x in sorted(self.sched_list(), key=lambda x: x["at"]):
+            if not self.sched_claim(x["id"], now):
+                continue
+            try:
+                self.send_now({"id": x["id"]})
+            except R.SendLater as e:
+                self.sched_after(x["id"], now, later=friendly(e))
+            except (Exception, SystemExit) as e:    # noqa: BLE001 - every reason is shown to the person
+                self.sched_after(x["id"], now, error=str(e) if isinstance(e, ApiError) else friendly(e))
+            else:
+                self.sched_drop(x["id"])
+                sent += 1
+            finally:
+                with self.schedlock:
+                    self.inflight.discard(x["id"])
         return sent
 
     def api_delete_draft(self, a):
@@ -2497,6 +2588,8 @@ class Backend:
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be deleted this way.")
         with self.schedlock:
+            if a["id"] in self.inflight:
+                fail("This mail is going out right now.")
             self.sched_drop(a["id"])
         self.drop_state(a["id"])
         if self.demo:

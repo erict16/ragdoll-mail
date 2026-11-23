@@ -1,5 +1,5 @@
 """Offline tests of sending, drafts, scheduled send, the MIME build and files on disk (0.11 group B)."""
-import email, os, re, shutil, sys, tempfile, unittest
+import email, imaplib, os, re, shutil, smtplib, sys, tempfile, threading, time, unittest
 from email import policy
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -292,7 +292,7 @@ class SendWorld:
         self.drafts = dict(drafts or {})            # uid -> raw
         self.smtp, self.appended, self.deleted, self.server_sent = [], [], [], set()
         self.files_sent = True                      # the server files SMTP mail in Sent by itself
-        self.fail_open = self.fail_login = self.fail_data = self.fail_fetch = None
+        self.fail_open = self.fail_login = self.fail_mail = self.fail_data = self.fail_fetch = None
         self.logins = 0
         self.during = None                          # runs while SMTP is taking the mail
         world = self
@@ -311,15 +311,30 @@ class SendWorld:
                 if world.fail_login:
                     raise world.fail_login
 
-            def sendmail(self, frm, rcpts, out):
+            rcpts = None
+
+            def ehlo_or_helo_if_needed(self):
+                pass
+
+            def mail(self, frm):
+                if world.fail_mail:
+                    raise world.fail_mail
+                self.rcpts = []
+                return 250, b"ok"
+
+            def rcpt(self, r):
+                self.rcpts.append(r)
+                return 250, b"ok"
+
+            def data(self, out):
                 if world.during:
                     world.during()
                 if world.fail_data:
                     raise world.fail_data
-                world.smtp.append((rcpts, out))
+                world.smtp.append((self.rcpts, out))
                 if world.files_sent:
                     world.server_sent.add(R.hdr(msg_of(out), "Message-ID").strip())
-                return {}
+                return 250, b"queued"
 
             def quit(self):
                 pass
@@ -618,6 +633,192 @@ class DraftSavedOnce(DemoBackend):
         self.assertEqual(R.uid_of_mid(M(), "Drafts", "<x@y.z>"), 9)
         self.assertEqual(R.uid_of_mid(M(), "Drafts", "<a@b.c>"), 8)
         self.assertEqual(R.uid_of_mid(M(), "Drafts", "<q@b.c>"), 0)
+
+
+class SendFailures(unittest.TestCase):
+    """#3: a failure before anything left the computer is SendLater; one that may have sent is not."""
+    def setUp(self):
+        own_cfg(self)
+        self.draft = R.build_message("<div>x</div>", [("", "to@x.com")], [], "s").as_bytes(policy=R.OUT_POLICY)
+
+    def patch(self, obj, name, value):
+        old = getattr(obj, name)
+        setattr(obj, name, value)
+        self.addCleanup(setattr, obj, name, old)
+
+    def outcome(self, **fail):
+        w = SendWorld(self, {7: self.draft})
+        for k, v in fail.items():
+            setattr(w, k, v)
+        try:
+            R.send_draft(R.CFG.folders["drafts"], 7)
+        except R.SendLater:
+            return "later", w
+        except SystemExit as e:
+            return "stop: %s" % e.code, w
+        except Exception as e:      # noqa: BLE001
+            return "error: %s" % type(e).__name__, w
+        return "sent", w
+
+    def test_before_anything_left(self):
+        for kw in ({"fail_open": OSError("no route")}, {"fail_open": TimeoutError()},
+                   {"fail_fetch": imaplib.IMAP4.abort("EOF")}, {"fail_fetch": OSError("down")},
+                   {"fail_login": smtplib.SMTPServerDisconnected("gone")},
+                   {"fail_mail": smtplib.SMTPServerDisconnected("gone")},
+                   {"fail_data": smtplib.SMTPDataError(451, b"try later")}):
+            got, w = self.outcome(**kw)
+            self.assertEqual(got, "later", kw)
+            self.assertEqual(w.smtp, [])
+            self.assertIsNone(R.already_sent(R.hdr(msg_of(self.draft), "Message-ID")))
+
+    def test_failures_that_are_not_tried_again(self):
+        got, _ = self.outcome(fail_login=smtplib.SMTPAuthenticationError(535, b"bad password"))
+        self.assertEqual(got, "error: SMTPAuthenticationError")
+        got, _ = self.outcome(fail_data=smtplib.SMTPDataError(552, b"too big"))
+        self.assertEqual(got, "error: SMTPDataError")
+        got, _ = self.outcome(fail_data=smtplib.SMTPServerDisconnected("cut"))     # it may have gone out
+        self.assertEqual(got, "stop: " + R.MAYBE_SENT)
+        w = SendWorld(self, {})
+        with self.assertRaises(SystemExit) as e:                                    # the draft is gone
+            R.send_draft(R.CFG.folders["drafts"], 7)
+        self.assertNotIsInstance(e.exception, R.SendLater)
+
+    def test_app_says_what_went_wrong(self):
+        self.assertEqual(A.friendly(R.SendLater(TimeoutError())), "The mail server did not answer in time.")
+
+
+class ScheduledSend(DemoBackend):
+    """#3, #14, #62: the scheduled-send loop with a stand-in server."""
+    def setUp(self):
+        super().setUp()
+        self.b.demo = False
+        self.w = SendWorld(self)
+
+    def scheduled(self, subject="Later", at=None):
+        raw = R.build_message("<div>x</div>", [("", "to@x.com")], [], subject).as_bytes(policy=R.OUT_POLICY)
+        drafts = R.CFG.folders["drafts"]
+        uid = self.b.demo_insert(drafts, raw, int(time.time()), 1, 0)
+        self.w.drafts[uid] = raw
+        i = R.make_id(drafts, uid)
+        at = at or int(time.time()) + 60
+        self.b.api_schedule({"id": i, "at": at})
+        return i, at
+
+    def entry(self, i):
+        return next((x for x in self.b.sched_list() if x["id"] == i), None)
+
+    def test_failure_before_smtp_is_tried_again_with_a_pause(self):
+        i, at = self.scheduled()
+        self.w.fail_open = OSError("network is down")
+        self.assertEqual(self.b.send_due(now=at + 1), 0)
+        x = self.entry(i)
+        self.assertEqual((x.get("error"), x["tries"], x["retry_at"]), (None, 1, at + 61))
+        self.assertNotIn("sending", x)
+        self.assertIn("network is down", x["note"])
+        self.assertEqual(self.b.send_due(now=at + 30), 0)          # not before the pause is over
+        self.assertEqual(self.b.send_due(now=at + 62), 0)
+        self.assertEqual(self.entry(i)["retry_at"], at + 62 + 120)  # the pause grows
+        row = [r for r in self.b.scheduled_rows() if r["id"] == i][0]
+        self.assertEqual((row["sched_retry"], row["sched_error"]), (at + 182, None))
+        self.w.fail_open = None
+        self.assertEqual(self.b.send_due(now=at + 200), 1)
+        self.assertIsNone(self.entry(i))
+        self.assertEqual(len(self.w.smtp), 1)
+
+    def test_one_failure_does_not_stop_the_others(self):
+        gone, at = self.scheduled("Gone")
+        ok, _ = self.scheduled("Fine", at)
+        del self.w.drafts[R.parse_id(gone)[1]]                     # deleted in webmail: fetch_raw dies
+        self.assertEqual(self.b.send_due(now=at + 1), 1)
+        self.assertTrue(self.entry(gone)["error"])
+        self.assertIsNone(self.entry(ok))
+        self.assertEqual(self.b.send_due(now=at + 9999), 0)        # a lasting failure waits for the person
+
+    def test_the_loop_outlives_a_system_exit(self):
+        calls = []
+
+        def boom(now=None):
+            calls.append(1)
+            raise SystemExit("no mail Drafts:9")
+        self.b.send_due = boom
+        b = self.b
+        t = threading.Thread(target=b.sched_loop, daemon=True)
+        t.start()
+        for _ in range(2):
+            b.sched_wake.set()
+            end = time.time() + 3
+            n = len(calls)
+            while len(calls) == n and time.time() < end:
+                time.sleep(0.01)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(t.is_alive())
+        b.stopping.set()
+        b.sched_wake.set()
+        t.join(3)
+
+    def test_a_long_send_does_not_block_the_other_screens(self):
+        i, at = self.scheduled("Big")
+        other, _ = self.scheduled("Other", at + 3600)
+        seen = {}
+
+        def meanwhile():
+            def other_screens():
+                seen["rows"] = len(self.b.scheduled_rows())
+                self.b.api_unschedule({"id": other})
+                seen["send"] = self.b.call("send", {"id": i})[1]       # the same mail: refused, not sent twice
+            t = threading.Thread(target=other_screens)
+            t.start()
+            t.join(3)
+            seen["done"] = not t.is_alive()
+        self.w.during = meanwhile
+        self.assertEqual(self.b.send_due(now=at + 1), 1)
+        self.assertTrue(seen["done"])
+        self.assertEqual(seen["rows"], 2)
+        self.assertEqual(seen["send"]["error"], "This mail is going out right now.")
+        self.assertIsNone(self.entry(other))
+        self.assertEqual(len(self.w.smtp), 1)
+
+    def test_another_copy_sending_it_is_left_alone(self):
+        i, at = self.scheduled()
+        run = os.path.join(R.CFG.home, "run")
+        os.makedirs(run, exist_ok=True)
+        f = open(os.path.join(run, "424242-app.lock"), "a+")
+        self.addCleanup(f.close)
+        self.assertTrue(R.try_lock(f))                              # that copy of the app is running
+        with self.b.sched_edit() as items:
+            items[0]["sending"] = {"pid": 424242, "at": int(time.time())}
+        self.assertEqual(self.b.send_due(now=at + 1), 0)
+        self.assertFalse(self.b.call("unschedule", {"id": i})[1]["ok"])
+        R.unlock(f)                                                 # it quit half way: the mark is stale
+        self.assertEqual(self.b.send_due(now=at + 1), 1)
+        self.assertEqual(len(self.w.smtp), 1)
+
+
+class EditScheduled(DemoBackend):
+    """#3: changing a scheduled mail keeps it scheduled; it waits while a compose changes it."""
+    def test_edit_keeps_the_schedule(self):
+        _, out = self.b.call("prepare_send", compose(self.b, subject="Plan"))
+        i = out["data"]["id"]
+        at = int(time.time()) + 600
+        self.b.api_schedule({"id": i, "at": at})
+        c = self.b.api_compose({"mode": "draft", "id": i})
+        self.assertEqual(self.b.send_due(now=at + 1), 0)            # open in a compose: it waits
+        a = compose(self.b, subject="Plan v2", replace=c["replace"])
+        new = self.b.api_save_draft(a)["id"]
+        self.assertNotEqual(new, i)
+        self.assertEqual([(x["id"], x["at"]) for x in self.b.sched_list()], [(new, at)])
+        self.assertEqual(self.b.send_due(now=at + 1), 0)
+        self.b.editing[new] = 0                                     # the compose closed long ago
+        self.assertEqual(self.b.send_due(now=at + 1), 1)
+        sent = self.b.q("select subject from msgs where folder=?", (R.CFG.folders["sent"],))
+        self.assertIn("Plan v2", [r["subject"] for r in sent])
+
+    def test_page_no_longer_unschedules_on_edit(self):
+        js = open(os.path.join(os.path.dirname(A.__file__), "app", "app.js"), encoding="utf-8").read()
+        body = js[js.index("function editScheduled"):]
+        body = body[:body.index("\n}\n")]
+        self.assertNotIn("unschedule", body)
+        self.assertIn("still_sched", body)
 
 
 if __name__ == "__main__":

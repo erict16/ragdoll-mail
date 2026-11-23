@@ -62,6 +62,9 @@ const MSGS = [
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
   [/^(.*) is a program, so it was not opened\./, "att_program"],
+  [/^The connection broke while the mail was going out/, "err_maybe_sent"],
+  [/^This mail is going out right now, so the change was not saved\./, "err_going_out_unsaved"],
+  [/^This mail is going out right now\./, "err_going_out"],
 ];
 function tr(msg) {
   msg = String(msg ?? "");
@@ -1200,7 +1203,8 @@ async function openScheduled(r) {
     el("span", { class: "sched-ic", html: icon(r.sched_error ? "triangle-alert" : "calendar-clock") }),
     el("div", { class: "sched-text" },
       el("div", { class: "sched-when" }, t("sends_at", longTime(r.sched))),
-      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
+      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error))
+        : r.sched_retry ? t("sched_retry", tr(r.sched_note || ""), shortTime(r.sched_retry)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
     el("div", { class: "sched-acts" },
       el("button", { class: "btn", onclick: () => editScheduled(r), html: icon("square-pen", "small") + esc(t("edit")) }),
       el("button", { class: "btn primary", onclick: () => sendNow(r), html: icon("send", "small") + esc(t("send_now")) })));
@@ -1231,10 +1235,10 @@ async function dontSend(r) {
   afterSchedule();
 }
 
-async function editScheduled(r) {
-  try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
-  afterSchedule();
+// the mail stays scheduled while it is changed: what is saved goes out at the time set
+function editScheduled(r) {
   openCompose({ mode: "draft", id: r.id });
+  toast(t("still_sched", longTime(r.sched)), { ms: 5000 });
 }
 
 async function sendNow(r) {
