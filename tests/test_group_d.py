@@ -1040,5 +1040,33 @@ class NoCharset(unittest.TestCase):
         self.assertEqual(tuple(c.execute("select body, has_body from msgs").fetchone()), ("", 0))
         c.close()
 
+@unittest.skipUnless(__import__("shutil").which("node"), "needs node to read app/i18n.js")
+class Translations(unittest.TestCase):
+    """#65: every language has every string English has; every message the page translates has its string."""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        js = ("const { LANGS } = await import(%s);"
+              "console.log(JSON.stringify(Object.fromEntries(Object.entries(LANGS).map(([k, v]) => [k, Object.keys(v)]))));"
+              % json.dumps("file://" + os.path.join(ROOT, "app", "i18n.js")))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        cls.keys = json.loads(out.stdout)
+
+    def test_no_language_misses_a_key(self):
+        en = set(self.keys["en"])
+        for lang in ("zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de"):
+            self.assertEqual(sorted(en - set(self.keys[lang])), [], lang)
+
+    def test_every_message_key_exists(self):
+        import re
+        with open(os.path.join(ROOT, "app", "app.js"), encoding="utf-8") as f:
+            js = f.read()
+        start = js.index("const MSGS = [")
+        end = js.index("function tr(msg)")
+        used = set(re.findall(r'/[a-z]*, "([a-z_0-9]+)"\]', js[start:end]))
+        self.assertGreater(len(used), 20)
+        self.assertEqual(sorted(used - set(self.keys["en"])), [])
+
 if __name__ == "__main__":
     unittest.main()

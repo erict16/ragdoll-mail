@@ -215,6 +215,7 @@ LANGS.ja = {
   p_no_subject: "件名が空です。", p_garbled: "文字化け（�）があります: %s",
   p_holes: "本文にプレースホルダが残っています: %s", p_att: "本文に添付の記載がありますが、ファイルが添付されていません。",
   p_img: "メール内の画像 %s 件が見つかりません。",
+  b_pw_sub: "保存するまで新しいメールは届きません。", b_acct_title: "アカウントがまだありません", b_acct_btn: "アカウントを追加", b_signin_sub: "アドレスとパスワードを確認してください。", b_signin_btn: "確認", cli_command: "ragdoll コマンド", cli_done: "インストールしました：%s。", cli_kept: "%s はご自身で作ったものなので、そのままにしました。", cli_new_terminal: "新しいターミナルウィンドウを開くと使えます。",
 };
 
 LANGS.ko = {
@@ -267,6 +268,7 @@ LANGS.ko = {
   p_no_subject: "제목이 비어 있습니다.", p_garbled: "깨진 문자(�)가 있습니다: %s",
   p_holes: "본문에 채우지 않은 자리표시자가 있습니다: %s", p_att: "본문에 첨부 파일이 언급되어 있지만 첨부된 파일이 없습니다.",
   p_img: "메일의 이미지 %s개가 없습니다.",
+  b_pw_sub: "저장해야 새 메일을 받을 수 있습니다.", b_acct_title: "아직 계정이 없습니다", b_acct_btn: "계정 추가", b_signin_sub: "주소와 비밀번호를 확인하세요.", b_signin_btn: "확인", cli_command: "ragdoll 명령", cli_done: "설치됨: %s.", cli_kept: "%s 은(는) 직접 만든 파일이라 그대로 두었습니다.", cli_new_terminal: "새 터미널 창을 열면 사용할 수 있습니다.",
 };
 
 LANGS.es = {
@@ -319,6 +321,7 @@ LANGS.es = {
   p_no_subject: "El asunto está vacío.", p_garbled: "Caracteres ilegibles (�) en: %s",
   p_holes: "Quedan marcadores de posición en el texto: %s", p_att: "El texto menciona un archivo adjunto, pero no hay ninguno.",
   p_img: "Faltan %s imagen(es) del correo.",
+  b_pw_sub: "No llegará correo nuevo hasta que la guardes.", b_acct_title: "Todavía no hay ninguna cuenta", b_acct_btn: "Añadir cuenta", b_signin_sub: "Revisa la dirección y la contraseña.", b_signin_btn: "Revisar", cli_command: "El comando ragdoll", cli_done: "Instalado: %s.", cli_kept: "%s es tuyo; se ha dejado como estaba.", cli_new_terminal: "Abre una ventana de terminal nueva para usarlo.",
 };
 
 LANGS.fr = {
@@ -371,6 +374,7 @@ LANGS.fr = {
   p_no_subject: "L’objet est vide.", p_garbled: "Caractères illisibles (�) dans : %s",
   p_holes: "Il reste des espaces réservés dans le texte : %s", p_att: "Le texte mentionne une pièce jointe, mais rien n’est joint.",
   p_img: "%s image(s) du message sont manquantes.",
+  b_pw_sub: "Aucun nouvel e-mail n'arrivera tant qu'il n'est pas enregistré.", b_acct_title: "Aucun compte pour l'instant", b_acct_btn: "Ajouter un compte", b_signin_sub: "Vérifiez l'adresse et le mot de passe.", b_signin_btn: "Vérifier", cli_command: "La commande ragdoll", cli_done: "Installé : %s.", cli_kept: "%s vous appartient ; il a été laissé tel quel.", cli_new_terminal: "Ouvrez une nouvelle fenêtre de terminal pour l'utiliser.",
 };
 
 LANGS.de = {
@@ -423,6 +427,7 @@ LANGS.de = {
   p_no_subject: "Der Betreff ist leer.", p_garbled: "Unleserliche Zeichen (�) in: %s",
   p_holes: "Im Text sind noch Platzhalter: %s", p_att: "Im Text wird ein Anhang erwähnt, aber es ist nichts angehängt.",
   p_img: "%s Bild(er) in der E-Mail fehlen.",
+  b_pw_sub: "Bis dahin kommen keine neuen Mails an.", b_acct_title: "Noch kein Konto", b_acct_btn: "Konto hinzufügen", b_signin_sub: "Prüfe Adresse und Passwort.", b_signin_btn: "Prüfen", cli_command: "Der Befehl ragdoll", cli_done: "Installiert: %s.", cli_kept: "%s gehört dir; es wurde so gelassen.", cli_new_terminal: "Öffne ein neues Terminalfenster, um ihn zu nutzen.",
 };
 
 // formatting, flags, several mails at once, keyboard shortcuts
