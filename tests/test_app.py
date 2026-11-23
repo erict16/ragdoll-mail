@@ -300,7 +300,7 @@ class AppServer(unittest.TestCase):
     def test_own_folders_made_renamed_deleted(self):
         keys = lambda: [f["key"] for f in self.api("status")[1]["data"]["folders"] if f.get("other")]
         err = lambda name, a: self.api(name, a)[1].get("error", "")
-        self.assertEqual(self.api("folder_new", {"name": "  Tenders   2026 "})[1]["data"], {"key": "Tenders 2026"})
+        self.assertEqual(self.api("folder_new", {"name": "  Tenders   2026 "})[1]["data"]["key"], "Tenders 2026")
         self.assertIn("Tenders 2026", keys())
         self.assertIn("already a folder", err("folder_new", {"name": "tenders 2026"}))
         self.assertIn("Give the folder a name", err("folder_new", {"name": "  "}))

@@ -52,8 +52,44 @@ class Demo(OwnBackend):
             getattr(self.b, "api_" + name)(a)
         return str(e.exception)
 
+    def test_subfolder(self):
+        self.assertEqual(self.b.api_folder_new({"name": "2026", "parent": "Projects/Acme"}), {"key": "Projects/Acme/2026", "sep": "/"})
+        self.assertIn(("Projects/Acme/2026", "2026", 2), self.b.others())
+        self.assertIn("already a folder", self.err("folder_new", {"name": "2026", "parent": "Projects/Acme"}))
+        self.assertIn("no longer on the server", self.err("folder_new", {"name": "x", "parent": "Trash"}))
+        self.assertIn("no longer on the server", self.err("folder_new", {"name": "x", "parent": "Nowhere"}))
+        self.assertIn("can't have / in it", self.err("folder_new", {"name": "a/b", "parent": "Projects"}))
+
+    def test_move_folder(self):
+        i = mail(self.b, "Projects/Acme", "Acme mail")
+        self.b.api_folder_new({"name": "Clients"})
+        out = self.b.api_folder_move({"key": "Projects/Acme", "parent": "Clients"})
+        self.assertEqual(out, {"key": "Clients/Acme", "was": "Projects", "sep": "/"})
+        self.assertIn(("Clients/Acme", "Acme", 1), self.b.others())
+        self.assertNotIn("Projects/Acme", self.keys())
+        self.assertIn("Acme mail", self.subjects("Clients/Acme"))
+        moved = i.replace("Projects/Acme", "Clients/Acme")
+        self.assertTrue(self.b.api_message({"id": moved}))         # the mail opens under its new name
+        # to the top level, and back with what the move said it was in (the page's Undo)
+        out = self.b.api_folder_move({"key": "Clients/Acme", "top": True})
+        self.assertEqual(out["key"], "Acme")
+        self.b.api_folder_move({"key": "Acme", "parent": "Projects"})
+        self.assertIn("Projects/Acme", self.keys())
+        # never into itself, a folder inside it, or a built-in folder
+        self.assertIn("inside itself", self.err("folder_move", {"key": "Projects", "parent": "Projects"}))
+        self.assertIn("inside itself", self.err("folder_move", {"key": "Projects", "parent": "Projects/Acme"}))
+        self.assertIn("can't go inside", self.err("folder_move", {"key": "Projects", "parent": "Deleted Messages"}))
+        self.assertIn("can't go inside", self.err("folder_move", {"key": "Projects", "parent": "INBOX"}))
+        self.assertIn("no longer on the server", self.err("folder_move", {"key": "Projects", "parent": "Nowhere"}))
+        self.assertIn("bad request", self.err("folder_move", {"key": "Projects"}))
+        # a name already taken where it goes
+        self.b.api_folder_new({"name": "Acme"})
+        self.assertIn("already a folder", self.err("folder_move", {"key": "Projects/Acme", "top": True}))
+        # where it already is: nothing changes
+        self.assertEqual(self.b.api_folder_move({"key": "Projects/Acme", "parent": "Projects"})["key"], "Projects/Acme")
+
     def test_rename_parent_takes_children(self):
-        self.b.found.append(("Projects/Acme/2026", ""))
+        self.b.api_folder_new({"name": "2026", "parent": "Projects/Acme"})
         mail(self.b, "Projects/Acme/2026", "Deep mail")
         mail(self.b, "Projects", "Top mail")
         self.assertEqual(self.b.api_folder_rename({"key": "Projects", "name": "Work"})["key"], "Work")
@@ -65,7 +101,7 @@ class Demo(OwnBackend):
         self.assertFalse({f for f in st if f.startswith("Projects")})
 
     def test_delete_with_mail_goes_to_trash(self):
-        self.b.found.append(("Projects/Acme/2026", ""))
+        self.b.api_folder_new({"name": "2026", "parent": "Projects/Acme"})
         mail(self.b, "Projects/Acme/2026", "Deep mail")
         mail(self.b, "Projects", "Top mail")
         n = len(self.b.q("select 1 from msgs where folder in ('Projects', 'Projects/Acme', 'Projects/Acme/2026')"))
@@ -79,7 +115,7 @@ class Demo(OwnBackend):
         self.assertIn("Deep mail", self.subjects("Deleted Messages"))
         self.assertFalse(self.b.q("select 1 from msgs where folder like 'Projects%'"))
         # an empty one goes without the question
-        self.b.found.append(("Empty", ""))
+        self.b.api_folder_new({"name": "Empty"})
         self.assertEqual(self.b.api_folder_delete({"key": "Empty", "check": True}), {"mails": 0, "folders": 0})
         self.assertEqual(self.b.api_folder_delete({"key": "Empty"}), {"deleted": ["Empty"]})
 
@@ -99,6 +135,12 @@ class Demo(OwnBackend):
         counts = {f["key"]: f for f in self.b.count_folders()}
         self.assertEqual((counts["trash"]["total"], counts["junk"]["total"]), (0, 0))
 
+    def test_chinese_names(self):
+        self.assertEqual(self.b.api_folder_new({"name": "华明印尼", "parent": "Projects"})["key"], "Projects/华明印尼")
+        mail(self.b, "Projects/华明印尼", "印尼订单")
+        self.assertEqual(self.b.api_folder_rename({"key": "Projects/华明印尼", "name": "印尼 2026"})["key"], "Projects/印尼 2026")
+        self.assertEqual(self.b.api_folder_move({"key": "Projects/印尼 2026", "top": True})["key"], "印尼 2026")
+        self.assertEqual(self.subjects("印尼 2026"), ["印尼订单"])
 
     def test_order_and_recent_prefs(self):
         p = self.b.api_prefs({"folder_order": ["Projects/Acme", "Projects"], "folder_recent": ["inbox", "Projects"]})
@@ -236,6 +278,35 @@ class OnServer(OwnBackend):
     def rows(self, folder):
         return sorted(r["uid"] for r in self.b.q("select uid from msgs where folder=?", (folder,)))
 
+    def test_new_subfolder_in_utf7(self):
+        s = self.start()
+        out = self.b.api_folder_new({"name": "印尼订单", "parent": "其他文件夹" + s + "华明印尼"})
+        self.assertEqual(out, {"key": "其他文件夹/华明印尼/印尼订单", "sep": "/"})
+        self.assertIn(A.R.mutf7("其他文件夹/华明印尼/印尼订单"), self.srv.box)
+        self.assertIn(("subscribe", "其他文件夹/华明印尼/印尼订单"), self.srv.calls)
+
+    def test_move_and_rename_with_folders_inside(self):
+        s = self.start(".")
+        top, inner = "其他文件夹.华明印尼", "其他文件夹.华明印尼.2025"
+        cache = A.R.cache_path(inner, 7, 5)
+        A.R.cache_put(cache, b"Subject: kept\r\n\r\nx")
+        out = self.b.api_folder_move({"key": top, "parent": "其他文件夹.归档"})
+        self.assertEqual(out, {"key": "其他文件夹.归档.华明印尼", "was": "其他文件夹", "sep": "."})
+        self.assertIn("其他文件夹.归档.华明印尼.2025", self.srv.folders())
+        self.assertNotIn(top, self.srv.folders())
+        self.assertEqual(self.rows("其他文件夹.归档.华明印尼.2025"), [5])
+        self.assertEqual(self.rows(inner), [])
+        self.assertFalse(os.path.exists(cache))           # the copy on disk moved with its folder
+        self.assertTrue(os.path.exists(A.R.cache_path("其他文件夹.归档.华明印尼.2025", 7, 5)))
+        self.assertIn(("subscribe", "其他文件夹.归档.华明印尼.2025"), self.srv.calls)
+        # the outer one renamed: everything inside follows
+        self.assertEqual(self.b.api_folder_rename({"key": "其他文件夹.归档", "name": "旧项目"})["key"], "其他文件夹.旧项目")
+        self.assertEqual(self.rows("其他文件夹.旧项目.华明印尼.2025"), [5])
+        self.assertEqual(self.rows("其他文件夹.旧项目.华明印尼"), [1, 2])
+        self.assertIn(("其他文件夹.旧项目.华明印尼.2025", "2025", 3), self.b.others())
+        with self.assertRaises(A.ApiError):
+            self.b.api_folder_move({"key": "其他文件夹.旧项目", "parent": "其他文件夹.旧项目.华明印尼"})
+
     def test_rename_with_folders_inside(self):
         self.start(".")
         inner = "其他文件夹.华明印尼.2025"
@@ -300,6 +371,19 @@ class PageCode(unittest.TestCase):
     def test_move_menu_search_is_ime_safe(self):
         body = self.js[self.js.index("function pickMenu("):self.js.index("function noteRecent(")]
         self.assertIn("e.isComposing || e.keyCode === 229", body)
+
+    def test_every_language_has_the_new_words(self):
+        block = self.i18n[self.i18n.index("const MORE_E_FOLDERS"):self.i18n.index("for (const [k, v] of Object.entries(MORE_E_FOLDERS))")]
+        langs = re.split(r'\n  "([a-zA-Z-]+)": \{', block)[1:]
+        names = dict(zip(langs[::2], langs[1::2]))
+        self.assertEqual(sorted(names), sorted(["en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de"]))
+        want = set(re.findall(r"(\w+):", names["en"]))
+        used = {k for k in re.findall(r't\("((?:new_subfolder|top_level|moved_top|del_|folder_gone|empt|err_folder_s|err_folder_i)\w*)"', self.js) if not k.endswith("_")}
+        used |= {"empty_trash", "empty_junk", "empty_q_trash", "empty_q_junk", "emptied_trash", "emptied_junk", "err_folder_self", "err_folder_into"}
+        self.assertLessEqual(used, want)
+        for lang, text in names.items():
+            self.assertEqual(set(re.findall(r"(\w+):", text)), want, lang)
+
 
 if __name__ == "__main__":
     unittest.main()

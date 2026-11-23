@@ -1780,7 +1780,7 @@ class Backend:
             self.server_folders = [n for n, _ in list_folders(m)]
         return self.server_folders
 
-    # ---- the owner's own folders: make, rename, delete (only an empty one)
+    # ---- the owner's own folders: make (inside another too), rename, move, delete, and empty Trash or Junk
 
     def own_folder(self, a):
         key = a.get("key")
@@ -1808,6 +1808,11 @@ class Backend:
         if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
             fail("There is already a folder called %s." % label)
 
+    def subtree(self, key, sep):
+        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
+        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
+                      key=lambda x: -x[0].count(sep))
+
     def rename_rows(self, old, new, sep):
         """The mail already listed follows its folder to the new name (the folders inside it too), and so do
         the copies of it kept on disk, so nothing is fetched again."""
@@ -1827,11 +1832,36 @@ class Backend:
         for f, to, uidv, uid in keep:
             cache_move((f, uidv, uid), (to, uidv, uid))
 
+    def drop_rows(self, folder, uids=None):
+        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
+        with self.dblock:
+            if uids is None:
+                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
+            else:
+                rows = []
+                uids = sorted(set(uids))
+                for k in range(0, len(uids), 500):
+                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
+                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
+            for r in rows:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.commit()
+        for r in rows:
+            self.demo_raw.pop((folder, r["uid"]), None)
+            cache_drop((folder, r["uidv"], r["uid"]))
+        return len(rows)
+
     def api_folder_new(self, a):
+        """{"name", "parent": an own folder to make it in (else beside the others)} -> {"key", "sep"}."""
         label = folder_label(a.get("name"))
+        parent = a.get("parent")
+        if parent is not None:
+            parent = self.own_folder({"key": parent})[0]
         if self.demo:
-            base = self.own_parent("/")
-            name = base + "/" + label if base else label
+            sep = "/"
+            base = parent or self.own_parent(sep)
+            name = base + sep + label if base else label
             self.free_name(name, label)
             self.found.append((name, ""))
         else:
@@ -1840,7 +1870,9 @@ class Backend:
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
-                base = self.own_parent(sep)
+                if parent:
+                    self.own_folder({"key": parent})
+                base = parent or self.own_parent(sep)
                 name = base + sep + label if base else label
                 self.free_name(name, label)
                 typ, data = m.create(R.q(name))
@@ -1849,10 +1881,10 @@ class Backend:
                 with contextlib.suppress(Exception):
                     m.subscribe(R.q(name))
                 self.refresh_folders(m)
-                return name
-            name = self.imap(go)
+                return name, sep
+            name, sep = self.imap(go)
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
 
     def demo_rename(self, key, name):
         self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
@@ -1904,30 +1936,52 @@ class Backend:
         self.bump()
         return {"key": name, "sep": sep}
 
-    def subtree(self, key, sep):
-        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
-        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
-                      key=lambda x: -x[0].count(sep))
+    def move_target(self, key, a, sep):
+        """The new name of an own folder put in a.parent ("" the server's top level), or with a.top where
+        new folders go."""
+        if a.get("top") is True:
+            parent = self.own_parent(sep)
+        elif isinstance(a.get("parent"), str):
+            parent = a["parent"]
+        else:
+            fail("bad request")
+        if parent:
+            if parent.upper() == "INBOX" or parent in [R.CFG.folders.get(k) for k in ("drafts", "sent", "trash", "junk")]:
+                fail("A folder can't go inside %s." % parent)
+            if parent not in [n for n, _ in self.found]:
+                fail("The folder %s is no longer on the server." % parent)
+            if parent == key or parent.startswith(key + sep):
+                fail("A folder can't go inside itself.")
+        leaf = key.rpartition(sep)[2]
+        return (parent + sep + leaf if parent else leaf), leaf
 
-    def drop_rows(self, folder, uids=None):
-        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
-        with self.dblock:
-            if uids is None:
-                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
-            else:
-                rows = []
-                uids = sorted(set(uids))
-                for k in range(0, len(uids), 500):
-                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
-                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
-            for r in rows:
-                self.c.execute("delete from msgs where id=?", (r["id"],))
-                self.c.execute("delete from fts where rowid=?", (r["id"],))
-            self.c.commit()
-        for r in rows:
-            self.demo_raw.pop((folder, r["uid"]), None)
-            cache_drop((folder, r["uidv"], r["uid"]))
-        return len(rows)
+    def api_folder_move(self, a):
+        """{"key": an own folder, "parent": the folder to put it in ("" for the server's top level), or
+        "top": true for where new folders go} -> {"key": its new name, "was": the folder it was in, "sep"}.
+        It is a RENAME: the folders and the mail inside go along."""
+        key, _ = self.own_folder(a)
+        if self.demo:
+            sep = "/"
+            name, leaf = self.move_target(key, a, sep)
+            if name != key:
+                self.free_name(name, leaf)
+                self.demo_rename(key, name)
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                name, leaf = self.move_target(key, a, sep)
+                if name != key:
+                    self.free_name(name, leaf)
+                    self.server_rename(m, key, name, sep)
+                return name, sep
+            name, sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
+        self.bump()
+        return {"key": name, "was": key.rpartition(sep)[0], "sep": sep}
 
     def server_count(self, m, folder):
         typ, data = m.status(R.q(folder), "(MESSAGES)")
@@ -1935,44 +1989,6 @@ class Backend:
         if typ != "OK" or not mo:
             fail("The mail server said: %s" % said(data))
         return int(mo.group(1))
-
-    def api_folder_empty(self, a):
-        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
-        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
-        k = a.get("key")
-        if k not in ("trash", "junk"):
-            fail("can't empty %s" % k)
-        folder = R.CFG.folders.get(k)
-        if not folder:
-            fail("No %s folder is set." % k)
-        if self.demo:
-            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
-            if a.get("check") is not True:
-                self.drop_rows(folder)
-                self.bump()
-            return {"count": n}
-
-        def go(m):
-            if a.get("check") is True:
-                return None, self.server_count(m, folder)
-            R.select(m, folder, readonly=False)
-            uids = R.uids_of(m)
-            for i in range(0, len(uids), 500):
-                batch = ",".join(map(str, uids[i:i + 500]))
-                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                if R.has_cap(m, "UIDPLUS"):
-                    m.uid("EXPUNGE", batch)
-            if uids and not R.has_cap(m, "UIDPLUS"):
-                m.expunge()
-            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-            return uids, len(uids)
-        uids, n = self.imap(go)
-        if uids is not None:
-            self.drop_rows(folder, uids)
-            self.bump()
-        return {"count": n}
 
     def api_folder_delete(self, a):
         """{"key"} deletes a folder with no mail and no folders inside. {"key", "check": true} -> {"mails", "folders"}:
@@ -2046,6 +2062,44 @@ class Backend:
             self.exec("delete from state where folder=?", (n,))
         self.bump()
         return {"deleted": [n for n, _ in names]}
+
+    def api_folder_empty(self, a):
+        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
+        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
+        k = a.get("key")
+        if k not in ("trash", "junk"):
+            fail("can't empty %s" % k)
+        folder = R.CFG.folders.get(k)
+        if not folder:
+            fail("No %s folder is set." % k)
+        if self.demo:
+            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
+            if a.get("check") is not True:
+                self.drop_rows(folder)
+                self.bump()
+            return {"count": n}
+
+        def go(m):
+            if a.get("check") is True:
+                return None, self.server_count(m, folder)
+            R.select(m, folder, readonly=False)
+            uids = R.uids_of(m)
+            for i in range(0, len(uids), 500):
+                batch = ",".join(map(str, uids[i:i + 500]))
+                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
+                if typ != "OK":
+                    fail("The mail server said: %s" % said(data))
+                if R.has_cap(m, "UIDPLUS"):
+                    m.uid("EXPUNGE", batch)
+            if uids and not R.has_cap(m, "UIDPLUS"):
+                m.expunge()
+            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+            return uids, len(uids)
+        uids, n = self.imap(go)
+        if uids is not None:
+            self.drop_rows(folder, uids)
+            self.bump()
+        return {"count": n}
 
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
