@@ -102,6 +102,51 @@ QUOTE_MARKS = ("发件人", "From:", "原始邮件", "wrote:", "Từ:")
 QUOTE_RE = re.compile(
     r"^\s*(-{3,}\s*(原始邮件|Original Message|Forwarded message)|发件人[:：]|From:\s|Từ:\s|"
     r"On .{5,120} wrote:|在 .{5,80}写道[:：])", re.M | re.I)
+# Quoted history, line by line (app.js has the same rules for HTML mail). A separator line or "On ... wrote:" always
+# starts it. A "From:" line starts it only as the head of a real header block: a separator line just above it, or
+# the next lines carry Sent:, or Subject: with Date:/To:/Cc:, or Date: and To: under a From: with an address.
+# A mail's own "From: Shanghai / To: Singapore" is text, not history.
+QUOTE_SEP_RE = re.compile(r"^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件|轉寄郵件|"
+                          r"Ursprüngliche Nachricht|Message d'origine|Mensaje original)|"
+                          r"On .{5,160} wrote:|在\s?.{3,80}写道[:：])", re.I)
+QUOTE_FROM_RE = re.compile(r"^\s*\*?(From|发件人|寄件者|寄件人|Von|De|Từ|差出人|보낸 사람)\*?\s*[:：]", re.I)
+QUOTE_HEAD_RE = re.compile(
+    r"^\s*\*?(?:(?P<sent>Sent|发送时间|發送時間|寄件日期|Gesendet|Envoyé|Enviado|送信日時|보낸 날짜|Gửi lúc)|"
+    r"(?P<date>Date|日期|时间|時間|Datum|Fecha|Ngày|日付|날짜)|(?P<to>To|收件人|收件者|An|À|Para|Đến|宛先|받는 사람)|"
+    r"(?P<cc>Cc|抄送|副本|Kopie|Copie)|(?P<subject>Subject|主题|主題|主旨|Betreff|Objet|Asunto|Chủ đề|件名|제목))"
+    r"\*?\s*[:：]", re.I)
+QUOTE_LINE_RE = re.compile(r"^\s*([-_=*]\s*){5,}$")
+
+
+def quote_line(lines):
+    """The index of the line where quoted history starts (a separator line over its header block included), or -1."""
+    for i, line in enumerate(lines):
+        if QUOTE_SEP_RE.match(line):
+            return i
+        if not QUOTE_FROM_RE.match(line):
+            continue
+        above = next((k for k in range(i - 1, max(-1, i - 3), -1) if lines[k].strip()), None)
+        if above is not None and QUOTE_LINE_RE.match(lines[above]):
+            return above
+        block = []
+        for x in lines[i + 1:i + 8]:
+            if not x.strip() or QUOTE_FROM_RE.match(x):     # the block ends at an empty line or the next block
+                break
+            block.append(x)
+        keys = {m.lastgroup for m in map(QUOTE_HEAD_RE.match, block) if m}
+        if "sent" in keys or ("subject" in keys and keys & {"date", "to", "cc"}) or (
+                {"date", "to"} <= keys and "@" in line):
+            return i
+    return -1
+
+
+def quote_start(text):
+    """Where the quoted history starts in a plain text, or -1."""
+    lines = (text or "").split("\n")
+    i = quote_line(lines)
+    return -1 if i < 0 else sum(len(x) + 1 for x in lines[:i])
+
+
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|aw|wg|tr|trả lời|chuyển tiếp|bls|回复|答复|转发)\s*[:：]\s*)+", re.I)
 INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+(\.(png|jpe?g|gif|bmp|webp))?$", re.I)   # Exmail inline-image names
 WEEK = "一二三四五六日"
@@ -979,8 +1024,8 @@ def body_text(msg):
 
 
 def new_text(text):
-    mo = QUOTE_RE.search(text or "")
-    return (text[:mo.start()] if mo else text or "").strip()
+    at = quote_start(text)
+    return (text[:at] if at >= 0 else text or "").strip()
 
 
 IMAGE_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"),

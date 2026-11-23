@@ -239,6 +239,24 @@ def page_html(html, cids):
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
 
 
+SYNC_EVERY = 60          # seconds between two syncs (sync_loop's wake.wait)
+
+
+def sync_problem(sync):
+    """What the page's problem card needs: error_kind (offline / auth / config / server, or None), last_sync (when
+    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None."""
+    err = sync.get("error")
+    kind = None
+    if err:
+        kind = ("config" if err.startswith(("No password saved.", "No account yet.")) else
+                "auth" if err.startswith("Sign-in failed.") else
+                "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
+                                             "Can't reach the mail server")) else "server")
+    tried = sync.get("tried")
+    return {"error_kind": kind, "last_sync": sync.get("last"),
+            "retry_at": tried + SYNC_EVERY if err and tried and not sync.get("running") else None}
+
+
 def linkify(escaped):
     def one(mo):
         if mo.group(1):
@@ -250,10 +268,11 @@ def linkify(escaped):
 
 def plain_html(text):
     text = (text or "").replace("\r\n", "\n").strip("\n")
-    mo = R.QUOTE_RE.search(text)
-    if not mo:
+    at = R.quote_start(text)
+    if at < 0:
         mo = re.search(r"(?m)^(>.*\n?){2,}\Z", text)
-    main, quoted = (text[:mo.start()], text[mo.start():]) if mo and mo.start() > 0 else (text, "")
+        at = mo.start() if mo else -1
+    main, quoted = (text[:at], text[at:]) if at > 0 else (text, "")
     out = '<div class="rd-plain">%s</div>' % linkify(htmlmod.escape(main.rstrip()))
     if quoted.strip():
         out += '<div class="rd-plain rd-quote">%s</div>' % linkify(htmlmod.escape(quoted.strip()))
@@ -1923,6 +1942,7 @@ class Backend:
                 m = None
             finally:
                 self.sync["running"] = False
+                self.sync["tried"] = int(time.time())       # the next try is a minute on (wake.wait above)
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
         if m is not None:
@@ -2021,7 +2041,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks}
+                "news": self.news, "asks": self.asks, **sync_problem(self.sync)}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2062,6 +2082,20 @@ class Backend:
             p["fmt_bar"] = a["fmt_bar"]
         if isinstance(a.get("notify"), bool):
             p["notify"] = a["notify"]
+        # the window's size and place (keep_window_place)
+        win = a.get("window")
+        if isinstance(win, dict):
+            ok = lambda k, lo, hi, none=False: (none and win.get(k) is None) or (      # noqa: E731
+                type(win.get(k)) is int and lo <= win[k] <= hi)
+            if ok("width", 200, 20000) and ok("height", 200, 20000) and ok("x", -100000, 100000, True) and \
+                    ok("y", -100000, 100000, True) and isinstance(win.get("maximized", False), bool):
+                p["window"] = {k: win.get(k) for k in ("x", "y", "width", "height")} | {"maximized": win.get("maximized", False)}
+        # images from the web: on by default; the senders whose images always load when it is off
+        if isinstance(a.get("remote_images"), bool):
+            p["remote_images"] = a["remote_images"]
+        s = a.get("img_senders")
+        if isinstance(s, list) and len(s) <= 2000 and all(isinstance(x, str) and 0 < len(x) <= 320 and "@" in x for x in s):
+            p["img_senders"] = list(dict.fromkeys(x.strip().lower() for x in s))
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
@@ -2926,7 +2960,7 @@ class Backend:
         return {}
 
     def api_window_theme(self, a):
-        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"))
+        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"), system=a.get("system") is True)
         return {}
 
     def api_contacts(self, a):
@@ -3877,7 +3911,7 @@ def system_dark():
     return False
 
 
-WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
+WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None)
 
 
 def bring_front():
@@ -4086,7 +4120,15 @@ def hex_ref(c):
     return r | g << 8 | b << 16
 
 
-def window_theme(dark, bg=None, text=None):
+def mac_appearance(AppKit, dark, system):
+    """The window's appearance: None follows macOS (theme System), else Aqua or DarkAqua is forced. A forced one
+    is all the page sees, so with System it would never hear macOS switch between light and dark."""
+    if system:
+        return None
+    return AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua)
+
+
+def window_theme(dark, bg=None, text=None, system=False):
     """Match the native title bar to the app theme (it can differ from the system's)."""
     w = WINDOW.w
     if w is None:
@@ -4102,8 +4144,7 @@ def window_theme(dark, bg=None, text=None):
             nw = w.native
             if nw is None:
                 return
-            nw.setAppearance_(AppKit.NSAppearance.appearanceNamed_(
-                AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua))
+            nw.setAppearance_(mac_appearance(AppKit, dark, system))
             ref = (bg or "").lstrip("#")
             if re.fullmatch(r"[0-9a-fA-F]{6}", ref):
                 nw.setBackgroundColor_(AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -4129,12 +4170,148 @@ def window_theme(dark, bg=None, text=None):
                 put(attr, ref)
 
 
+WINDOW_SIZE = (1280, 820)
+WINDOW_MIN = (880, 560)
+
+
+def fit_window(saved, areas):
+    """Where the window opens and how big: the saved place (prefs "window": x, y, width, height, maximized), kept
+    inside the screen it was on, never larger than that screen's work area. areas: the screens' work areas as
+    (x, y, width, height), top-left origin, the main screen first. A window on a screen that is gone opens in the
+    middle of the main one; with nothing saved it opens at the default size, centred. x and y are None when no
+    screen is known (the window system places it)."""
+    saved = saved if isinstance(saved, dict) else {}
+    num = lambda v: v if type(v) in (int, float) else None     # noqa: E731
+    w, h = num(saved.get("width")), num(saved.get("height"))
+    w, h = (int(w), int(h)) if w and h and w >= 200 and h >= 200 else WINDOW_SIZE
+    x, y = num(saved.get("x")), num(saved.get("y"))
+    out = {"width": w, "height": h, "x": None, "y": None, "maximized": saved.get("maximized") is True}
+    areas = [a for a in areas or () if a[2] > 0 and a[3] > 0]
+    if not areas:
+        return out
+
+    def overlap(a):
+        return max(0, min(x + w, a[0] + a[2]) - max(x, a[0])) * max(0, min(y + h, a[1] + a[3]) - max(y, a[1]))
+    area = max(areas, key=overlap) if x is not None and y is not None else None
+    if area is None or overlap(area) == 0:
+        area, x, y = areas[0], None, None
+    ax, ay, aw, ah = (int(v) for v in area)
+    w = max(min(w, aw), min(WINDOW_MIN[0], aw))
+    h = max(min(h, ah), min(WINDOW_MIN[1], ah))
+    if x is None:
+        x, y = ax + (aw - w) // 2, ay + (ah - h) // 2
+    out.update(width=w, height=h, x=int(min(max(x, ax), ax + aw - w)), y=int(min(max(y, ay), ay + ah - h)))
+    return out
+
+
+def screen_areas():
+    """The screens' work areas (no menu bar, Dock or taskbar), top-left origin, the main screen first; [] if unknown."""
+    try:
+        if sys.platform == "darwin":
+            import AppKit
+            screens = AppKit.NSScreen.screens()
+            top = screens[0].frame().size.height
+            return [(v.origin.x, top - v.origin.y - v.size.height, v.size.width, v.size.height)
+                    for v in (s.visibleFrame() for s in screens)]
+        import webview
+        out = []
+        for s in webview.screens:
+            f = getattr(s, "frame", None)        # Windows: the work area
+            out.append((f.X, f.Y, f.Width, f.Height) if hasattr(f, "Width") else (s.x, s.y, s.width, s.height))
+        return out
+    except Exception:       # noqa: BLE001
+        return []
+
+
+def window_place():
+    """The window's place for this start (see fit_window)."""
+    saved = None
+    with contextlib.suppress(Exception):
+        saved = WINDOW.backend.prefs().get("window")
+    return fit_window(saved, screen_areas())
+
+
+def keep_window_place(w, place):
+    """Remember the window's size and place: on resize and move (a second after the last one) and on close.
+    A maximized, full-screen or minimized window keeps the size it had before. Never stops the window closing."""
+    state = {k: place.get(k) for k in ("x", "y", "width", "height", "maximized")}
+    flags = {"max": bool(place.get("maximized")), "min": False, "timer": None}
+
+    def save():
+        with contextlib.suppress(Exception):
+            WINDOW.backend.api_prefs({"window": dict(state)})
+
+    def later():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        flags["timer"] = threading.Timer(1.0, save)
+        flags["timer"].daemon = True
+        flags["timer"].start()
+
+    def resized(width, height):
+        if not (flags["max"] or flags["min"]):
+            state.update(width=int(width), height=int(height))
+            later()
+
+    def moved(x, y):
+        if not (flags["max"] or flags["min"]) and x > -30000 and y > -30000:     # Windows parks a minimized one there
+            state.update(x=int(x), y=int(y))
+            later()
+
+    def maximized():
+        flags["max"] = True
+        if sys.platform != "darwin":           # on a Mac this is full screen, not kept for the next start
+            state["maximized"] = True
+            later()
+
+    def minimized():
+        flags["min"] = True
+
+    def restored():
+        flags["max"] = flags["min"] = False
+        if state["maximized"]:
+            state["maximized"] = False
+            later()
+
+    def closing():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        save()
+
+    ev = w.events
+    ev.resized += resized
+    ev.moved += moved
+    ev.maximized += maximized
+    ev.minimized += minimized
+    ev.restored += restored
+    ev.closing += closing
+    if sys.platform == "darwin" and place.get("x") is not None:
+        ev.before_show += lambda: mac_place(w, place)
+
+
+def mac_place(w, place):
+    """Put the Mac window where it was (pywebview reads x and y against the focused screen, not the main one)."""
+    try:
+        import AppKit
+        nw = w.native
+        top = AppKit.NSScreen.screens()[0].frame().size.height
+        nw.setFrame_display_(AppKit.NSMakeRect(place["x"], top - place["y"] - place["height"],
+                                               place["width"], place["height"]), True)
+    except Exception:       # noqa: BLE001
+        pass
+
+
 def run_window(url, home):
     import webview
     dark = system_dark()
-    w = webview.create_window(APP_NAME, url, width=1280, height=820, min_size=(880, 560),
+    place = window_place()
+    mac = sys.platform == "darwin"
+    w = webview.create_window(APP_NAME, url, width=place["width"], height=place["height"], min_size=WINDOW_MIN,
+                              x=None if mac else place["x"], y=None if mac else place["y"],
+                              maximized=place["maximized"] and not mac,
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
+    keep_window_place(w, place)
     if sys.platform == "darwin":
         mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
@@ -4165,6 +4342,7 @@ def main(argv=None):
         backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
         return too_new(str(e), a.browser)
+    WINDOW.backend = backend                # the window keeps its size and place in the prefs
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()

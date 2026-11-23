@@ -162,15 +162,22 @@ const isDark = () => document.documentElement.dataset.theme === "dark";
 function applyTheme(theme) {
   S.theme = theme || "system";
   const dark = S.theme === "dark" || (S.theme === "system" && darkMQ.matches);
-  const root = document.documentElement, was = root.dataset.theme;
-  if (was && was !== (dark ? "dark" : "light") && !REDUCED.matches) {
-    root.classList.add("theming");
-    clearTimeout(applyTheme.timer);
-    applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  const root = document.documentElement, was = root.dataset.theme, now = dark ? "dark" : "light";
+  const swap = () => {
+    root.dataset.theme = now;
+    if (was && was !== now) restyleFrames();
+    syncWindowTheme();
+  };
+  if (!was || was === now || REDUCED.matches || document.hidden) return swap();
+  // the whole window, open mails included, cross-fades from one picture to the other (WebKit on macOS 15+,
+  // WebView2); elsewhere the colours ease over (.theming)
+  if (document.startViewTransition) {
+    try { document.startViewTransition(swap); return; } catch { /* the fade below */ }
   }
-  root.dataset.theme = dark ? "dark" : "light";
-  if (was && was !== document.documentElement.dataset.theme) refreshFrames();
-  syncWindowTheme();
+  root.classList.add("theming");
+  clearTimeout(applyTheme.timer);
+  applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  swap();
 }
 // the native title bar (Windows caption, macOS traffic lights) follows the app theme, not only the system's
 function syncWindowTheme() {
@@ -178,6 +185,8 @@ function syncWindowTheme() {
   const css = getComputedStyle(document.documentElement);
   api("window_theme", {
     dark: document.documentElement.dataset.theme === "dark",
+    // System: the window follows macOS again, so the page hears it switch (darkMQ below)
+    system: S.theme === "system",
     bg: css.getPropertyValue("--bg").trim(),
     text: css.getPropertyValue("--text").trim(),
   }).catch(() => {});
@@ -1325,13 +1334,26 @@ function renderBody(body, m) {
       body.append(all);
     }
   }
-  const remote = m.remote && S.showImages.has(m.id);
+  // images from the web load unless Settings > Privacy says no (then a sender can be trusted for good);
+  // mail in Junk never loads them by itself
+  const junk = m.id.slice(0, m.id.lastIndexOf(":")) === "junk", addr = (m.from?.addr || "").toLowerCase();
+  const remote = m.remote && (S.showImages.has(m.id) || (!junk && (PREFS.remote_images !== false || imgSenders().includes(addr))));
   if (m.remote && !remote) {
     body.append(el("div", { class: "imgs-bar" }, el("span", { html: icon("image", "small") }), el("span", {}, t("images_hidden")), el("span", { class: "grow" }),
-      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images"))));
+      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images")),
+      junk || !addr ? null : el("button", { class: "link-btn", onclick: () => {
+        savePref({ img_senders: [...imgSenders(), addr].slice(-2000) });
+        rerenderBodies();
+      } }, t("img_always"))));
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
+}
+
+const imgSenders = () => (Array.isArray(PREFS.img_senders) ? PREFS.img_senders : []);
+// the open mails again, after the images setting changed
+function rerenderBodies() {
+  for (const n of $$(".msg")) { const b = n.querySelector(".msg-body"); if (n._msg && b) renderBody(b, n._msg); }
 }
 
 // a mailing list's way out, beside the sender's address, as in Gmail and Apple Mail
@@ -1668,7 +1690,61 @@ function attNode(a, id) {
 const FRAME_FONT = getComputedStyle(document.documentElement).getPropertyValue("--font");
 const QUOTE_SEL = ".gmail_quote, .gmail_extra, #divRplyFwdMsg, blockquote[type=cite], .rd-quote, #appendonsend, .yahoo_quoted, " +
   "#mail-editor-reference-message-container, .moz-cite-prefix, #isForwardContent, #origbody, .protonmail_quote, div[id^=reply-intro]";
-const QUOTE_TEXT = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件)|发件人[:：]|寄件者[:：]|From:\s|Von:\s|De\s?:\s|Từ:\s|在\s?.{3,80}写道[:：]|On .{5,160} wrote:)/i;
+// Quoted history in a mail without known quote markup, line by line (ragdoll.py quote_line has the same rules).
+// A separator line or "On ... wrote:" always starts it. A "From:" line starts it only as the head of a real header
+// block: a separator line just above it, or the next lines carry Sent:, or Subject: with Date:/To:/Cc:, or Date: and
+// To: under a From: with an address. A mail's own "From: Shanghai / To: Singapore" is text, not history.
+const QUOTE_SEP = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件|轉寄郵件|Ursprüngliche Nachricht|Message d'origine|Mensaje original)|On .{5,160} wrote:|在\s?.{3,80}写道[:：])/i;
+const QUOTE_FROM = /^\s*\*?(From|发件人|寄件者|寄件人|Von|De|Từ|差出人|보낸 사람)\*?\s*[:：]/i;
+const QUOTE_HEAD = /^\s*\*?(?:(?<sent>Sent|发送时间|發送時間|寄件日期|Gesendet|Envoyé|Enviado|送信日時|보낸 날짜|Gửi lúc)|(?<date>Date|日期|时间|時間|Datum|Fecha|Ngày|日付|날짜)|(?<to>To|收件人|收件者|An|À|Para|Đến|宛先|받는 사람)|(?<cc>Cc|抄送|副本|Kopie|Copie)|(?<subject>Subject|主题|主題|主旨|Betreff|Objet|Asunto|Chủ đề|件名|제목))\*?\s*[:：]/i;
+const QUOTE_LINE = /^\s*([-_=*]\s*){5,}$/;
+function quoteLine(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (QUOTE_SEP.test(line)) return i;
+    if (!QUOTE_FROM.test(line)) continue;
+    let above = -1;
+    for (let k = i - 1; k >= 0 && k >= i - 2; k--) if (lines[k].trim()) { above = k; break; }
+    if (above >= 0 && QUOTE_LINE.test(lines[above])) return above;
+    const keys = new Set();
+    for (const l of lines.slice(i + 1, i + 8)) {
+      if (!l.trim() || QUOTE_FROM.test(l)) break;     // the block ends at an empty line or the next block
+      const m = l.match(QUOTE_HEAD);
+      if (m) keys.add(Object.keys(m.groups).find((g) => m.groups[g] !== undefined));
+    }
+    if (keys.has("sent") || (keys.has("subject") && (keys.has("date") || keys.has("to") || keys.has("cc"))) ||
+        (keys.has("date") && keys.has("to") && line.includes("@"))) return i;
+  }
+  return -1;
+}
+// a mail's text as the lines a reader sees, each with the first node on it: a block or a <br> ends a line,
+// an <hr> is a separator line; source line breaks count only where the text keeps them (plain text, <pre>)
+const LINE_BLOCK = /^(P|DIV|TR|LI|UL|OL|DL|DT|DD|TABLE|TBODY|THEAD|H[1-6]|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|PRE|CENTER)$/;
+function textLines(root) {
+  const lines = [{ text: "", node: null }];
+  const cut = () => { const l = lines[lines.length - 1]; if (l.text || l.node) lines.push({ text: "", node: null }); };
+  const add = (text, node) => { const l = lines[lines.length - 1]; if (!l.node && text.trim()) l.node = node; l.text += text; };
+  const walk = (n, pre) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        if (!pre) { add(c.nodeValue.replace(/\s+/g, " "), c); continue; }
+        c.nodeValue.split("\n").forEach((part, k) => { if (k) cut(); add(part, c); });
+      } else if (c.nodeType === 1) {
+        const tag = c.tagName;
+        if (tag === "BR") { cut(); continue; }
+        if (tag === "HR") { cut(); add("-----", c); cut(); continue; }
+        if (/^(STYLE|SCRIPT|TITLE|HEAD|TEMPLATE)$/.test(tag)) continue;
+        const block = LINE_BLOCK.test(tag);
+        if (block) cut();
+        walk(c, pre || tag === "PRE" || c.classList.contains("rd-plain"));
+        if (block) cut();
+        else if (tag === "TD" || tag === "TH") add(" ", null);
+      }
+    }
+  };
+  walk(root, false);
+  return lines;
+}
 const frames = new Set();
 // WebKit (the Mac app) runs no listener inside a sandboxed frame that lacks allow-scripts, not even one this page
 // attaches: a click on a link or a picture did nothing there. The mail's own scripts stay off either way: the
@@ -1698,6 +1774,10 @@ function fitColumn(d) {
 
 function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style id="rd-style">${frameCss({ plain, dark })}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+}
+// the frame's own look; a new theme changes it in place (restyleFrames), without loading the mail again
+function frameCss({ plain, dark }) {
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
   let css = CJK_FACES + `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
 .rd-root{max-width:44em}.rd-root.rd-wide{max-width:none}p,li{text-wrap:pretty}
@@ -1709,7 +1789,7 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
     css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+  return css;
 }
 
 // a picture worth enlarging: not an icon, a spacer or a tracking pixel
@@ -1770,8 +1850,11 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d || !d.documentElement) return;
     if (!d.body) return;
     // the body's own height: the document's grows with the frame and would never shrink
-    const root = d.querySelector(".rd-root") || d.body;
-    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (d.defaultView?.scrollY || 0)));
+    const root = d.querySelector(".rd-root") || d.body, view = d.defaultView;
+    // a wide mail scrolls sideways: its scrollbar (shown always on Windows, and on a Mac with a mouse) takes room
+    // at the bottom, so the frame is that much taller and the last line is not under it
+    const bar = view ? Math.max(0, view.innerHeight - d.documentElement.clientHeight, d.body.offsetHeight - d.body.clientHeight) : 0;
+    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (view?.scrollY || 0)) + bar);
     if (frame.style.height !== h + "px") frame.style.height = h + "px";
   };
   st.fit = fit;
@@ -1869,18 +1952,27 @@ function refreshFrames() {
     st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() });
   }
 }
+// a new theme: every open mail takes the new colours where it is (no blank frame, the folded quote stays folded);
+// a frame not loaded yet is loaded again
+function restyleFrames() {
+  for (const st of frames) {
+    if (!st.wrap.isConnected) { frames.delete(st); continue; }
+    const s = st.frame.contentDocument?.getElementById("rd-style");
+    if (s) s.textContent = frameCss({ plain: st.plain, dark: isDark() });
+    else { st.toggle?.remove(); st.toggle = null; st.hidden = []; st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() }); }
+  }
+}
 
 function collapseQuote(st) {
   const d = st.frame.contentDocument, root = d.querySelector(".rd-root") || d.body;
   let q = root.querySelector(QUOTE_SEL);
   if (!q) {
-    const w = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let n = w.nextNode(); n; n = w.nextNode()) {
-      if (QUOTE_TEXT.test(n.nodeValue)) {
-        q = n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
-        break;
-      }
-    }
+    const lines = textLines(root), at = quoteLine(lines.map((l) => l.text));
+    const n = at >= 0 && lines.slice(at).find((l) => l.node)?.node;
+    if (n) q = n.nodeType === 1 && n.tagName === "HR" ? n : n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
+    // the box the header block opens (Outlook's line above it) goes with it
+    const first = (x) => { let p = x.previousSibling; while (p && !p.textContent.trim() && !p.querySelector?.("img")) p = p.previousSibling; return !p; };
+    while (q && q.parentElement && q.parentElement !== root && first(q)) q = q.parentElement;
   }
   if (!q || q === root) return;
   const r = d.createRange();
@@ -2483,11 +2575,13 @@ window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); })
 
 // ---------------------------------------------------------------- settings
 
-async function openSettings() {
+// opts (all optional): tab, the page to open on; focus, the account field to put the cursor in
+async function openSettings(opts) {
+  opts = opts && !(opts instanceof Event) ? opts : {};
   let s;
   try { s = await api("settings"); } catch (e) { return fail(e); }
   const v = { ...s, password: "", theme: S.theme };
-  let tab = "account";
+  let tab = opts.tab || "account";
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
@@ -2495,7 +2589,7 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"],
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["privacy", "shield", "privacy"], ["region", "languages", "region"],
     ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
@@ -2536,23 +2630,23 @@ async function openSettings() {
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
       body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
     } else if (tab === "sending") {
-      const seg = el("div", { class: "seg" });
-      for (const n of UNDO_CHOICES) {
-        seg.append(el("button", { class: undoSeconds() === n ? "on" : "", onclick: () => { setPref({ undo: n }); draw(); } }, n ? t("seconds", n) : t("undo_off")));
-      }
+      const seg = segmented(UNDO_CHOICES.map((n) => [n, n ? t("seconds", n) : t("undo_off")]), undoSeconds(), (n) => setPref({ undo: n }));
       const font = selectBox(FONTS.map(([k]) => [k, fontLabel(k)]), PREFS.font || "system", (val) => { setPref({ font: val }); draw(); });
-      const sizes = el("div", { class: "seg" });
-      for (const n of FONT_SIZES) sizes.append(el("button", { class: mailSize() === n ? "on" : "", onclick: () => { setPref({ font_size: n }); draw(); } }, String(n)));
       const sample = el("div", { class: "font-sample", style: `font-family:${mailFont()};font-size:${mailSize()}px` }, t("font_sample"));
+      const sizes = segmented(FONT_SIZES.map((n) => [n, String(n)]), mailSize(), (n) => { setPref({ font_size: n }); sample.style.fontSize = n + "px"; });
       body.append(el("h2", {}, t("composing")), el("div", { class: "form" },
         el("label", {}, el("span", { class: "lab" }, t("default_font")), font),
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("default_size")), sizes), sample,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("undo_send")), seg), el("div", { class: "note" }, t("undo_note"))));
     } else if (tab === "notify") {
-      const seg = el("div", { class: "seg" });
-      for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
-        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } } draw(); } }, t(lab)));
-      }
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.notify !== false, (on) => {
+        setPref({ notify: on });
+        if (!on) { $(".notice-off", form)?.remove(); return; }
+        askNotice();
+        if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); }
+        setTimeout(check, noticeAsked ? 1500 : 0);
+        noticeAsked = false;
+      });
       const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg));
       body.append(el("h2", {}, t("notifications")), form);
       // macOS keeps its own switch for the app; when it is off, say so and lead to it
@@ -2572,6 +2666,19 @@ async function openSettings() {
       // a moment after the switch here: macOS may be asking its question right now
       setTimeout(check, noticeAsked ? 1500 : 0);
       noticeAsked = false;
+    } else if (tab === "privacy") {
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.remote_images !== false, (on) => {
+        setPref({ remote_images: on });
+        rerenderBodies();
+      });
+      const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("remote_images")), seg),
+        el("div", { class: "note" }, t("remote_note")));
+      if (imgSenders().length) {
+        const row = el("div", { class: "img-senders" }, el("span", {}, t("img_senders_n", imgSenders().length)),
+          el("button", { class: "btn", onclick: () => { setPref({ img_senders: [] }); row.remove(); rerenderBodies(); } }, t("img_forget")));
+        form.append(row);
+      }
+      body.append(el("h2", {}, t("privacy")), form);
     } else if (tab === "cli") {
       const form = el("div", { class: "form" });
       body.append(el("h2", {}, t("cli")), form);
@@ -2604,12 +2711,10 @@ async function openSettings() {
         el("label", {}, el("span", { class: "lab" }, t("language")), lang),
         el("label", {}, el("span", { class: "lab" }, t("time_zone")), tz)));
     } else {
-      const seg = el("div", { class: "seg" });
-      for (const [k, ic] of [["system", "monitor"], ["light", "sun"], ["dark", "moon"]]) {
-        seg.append(el("button", { class: v.theme === k ? "on" : "", onclick: () => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); draw(); }, html: icon(ic, "small") + esc(t(k)) }));
-      }
-      const ts = el("div", { class: "seg" });
-      for (const n of [13, 14, 16, 18]) ts.append(el("button", { class: textSize() === n ? "on" : "", onclick: () => { setTextSize(n); draw(); } }, String(n)));
+      // the sheet stays as it is: the picked item slides over and the whole window fades to the new theme
+      const seg = segmented([["system", t("system"), "monitor"], ["light", t("light"), "sun"], ["dark", t("dark"), "moon"]], v.theme,
+        (k) => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); });
+      const ts = segmented([13, 14, 16, 18].map((n) => [n, String(n)]), textSize(), (n) => setTextSize(n));
       body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts)));
     }
@@ -2633,9 +2738,39 @@ async function openSettings() {
   }
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
+  if (opts.focus) $(`input[data-k="${opts.focus}"]`, body)?.focus();
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];
+
+// a segmented control: [value, label, icon?] items; the picked one sits on a thumb that slides to the next pick
+// (the control is changed in place, never drawn again, so the slide can be seen)
+function segmented(items, value, pick) {
+  const thumb = el("span", { class: "seg-thumb", "aria-hidden": "true" });
+  const seg = el("div", { class: "seg", role: "radiogroup" }, thumb);
+  const place = (slide) => {
+    const on = $("button.on", seg);
+    if (!on || !on.offsetWidth) return;
+    seg.classList.toggle("seg-slide", slide && !REDUCED.matches);
+    const a = seg.getBoundingClientRect(), b = on.getBoundingClientRect();     // exact, not rounded like offsetLeft
+    seg.style.setProperty("--seg-x", b.left - a.left - seg.clientLeft + "px");
+    seg.style.setProperty("--seg-w", b.width + "px");
+    seg.classList.add("seg-ready");
+  };
+  for (const [v, label, ic] of items) {
+    const b = el("button", { class: v === value ? "on" : "", role: "radio", "aria-checked": String(v === value),
+      html: (ic ? icon(ic, "small") : "") + esc(label), onclick: () => {
+        if (b.classList.contains("on")) return;
+        for (const x of $$("button", seg)) { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", String(x === b)); }
+        place(true);
+        pick(v);
+      } });
+    seg.append(b);
+  }
+  // placed once it is laid out (it is made before it is shown), and again when its size changes
+  if (window.ResizeObserver) new ResizeObserver(() => place(false)).observe(seg);
+  return seg;
+}
 
 // a native select in our own frame, with a chevron
 function selectBox(options, value, onchange) {
@@ -2968,32 +3103,94 @@ function applyStatus(st) {
   const wasSyncing = S.syncing;
   S.syncing = st.syncing;
   renderNav();
-  const b = $("#banner");
-  if (st.error && !S.boot.demo) {
-    // known problems get a short title, what it means, and a button named for the fix;
-    // anything else shows its first sentence as the title and the rest below
-    const known = [[/^No password saved\./, "b_pw"], [/^No account yet\./, "b_acct"], [/^Sign-in failed\./, "b_signin"]]
-      .find(([re]) => re.test(st.error));
-    let title, sub, act;
-    if (known) {
-      const k = known[1];
-      title = t(k + "_title"); sub = STR[k + "_sub"] || ""; act = t(k + "_btn");
-    } else {
-      const text = tr(st.error), m = text.match(/^(.+?[.。])\s*(.*)$/s);
-      title = m ? m[1].replace(/[.。]$/, "") : text; sub = m ? m[2] : ""; act = t("b_fix");
-    }
-    $("#banner-title").textContent = title;
-    $("#banner-sub").textContent = sub;
-    $("#banner-sub").hidden = !sub;
-    $("#banner-btn").textContent = act;
-    b.hidden = false;
-  } else b.hidden = true;
+  S.status = st;
+  drawProblem();
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
   showAsks(st.asks);
 }
-$("#banner-btn").addEventListener("click", openSettings);
+
+// ---- a problem with the mailbox: a small card floating at the foot of the list (it never pushes the list),
+// shaped by what the person can do about it:
+//   offline / server not answering (fixes itself): a quiet line, when mail last came in, the next try, "Try now"
+//   sign-in, no password, no account (needs the person): what is wrong and one button straight to the field
+//   anything else the server said: a neutral card, "Retry" and "Copy details" (the server's own words)
+// The backend's status says which (error_kind), when mail last came in (last_sync) and the next try (retry_at).
+const PROBLEM_KIND = [[/^(Sign-in failed)/, "auth"], [/^(No password saved|No account yet)/, "config"],
+  [/^(Can't find the mail server|The mail server did not answer|Can't reach the mail server)/, "offline"]];
+const problemKind = (st) => st.error_kind || PROBLEM_KIND.find(([re]) => re.test(st.error))?.[1] || "server";
+const prob = { key: null, dismissed: null, tryAt: 0, timer: 0 };
+function syncedAt(ts) { return dayKey(ts * 1000) === dayKey(Date.now()) ? fmt(ts, HM) : shortTime(ts); }
+function retryNow() {
+  prob.tryAt = Date.now();
+  drawProblem();
+  api("sync").catch(() => {});
+  setTimeout(refreshCounts, 1500);
+  setTimeout(refreshCounts, 4000);
+}
+function drawProblem() {
+  const st = S.status || {}, b = $("#banner"), col = $("#list-col");
+  const kind = st.error ? problemKind(st) : null;
+  const key = st.error ? kind + "|" + st.error : null;
+  $("#account").classList.toggle("alert", !!key);
+  clearTimeout(prob.timer);
+  if (!key || prob.dismissed === key) {
+    if (!b.hidden && !b.classList.contains("out")) {
+      b.classList.add("out");
+      col.classList.remove("has-banner");
+      setTimeout(() => { if (b.classList.contains("out")) { b.hidden = true; b.classList.remove("out"); } }, REDUCED.matches ? 0 : 180);
+    }
+    prob.key = prob.sig = null;
+    return;
+  }
+  // the next try, counted down; a spinner while it runs
+  const busy = st.syncing || Date.now() - prob.tryAt < 2500;
+  const left = st.retry_at ? Math.ceil(st.retry_at - Date.now() / 1000) : null;
+  const next = busy ? t("st_retrying") : left > 0 ? t("st_retry_in", left) : left != null ? t("st_retrying") : "";
+  const meta = [st.last_sync ? t("st_last", syncedAt(st.last_sync)) : "", kind === "offline" || kind === "server" ? next : ""].filter(Boolean).join(" · ");
+  let ic, tone = "", title, sub = "", acts = [];
+  const settingsAt = (focus) => () => openSettings({ tab: "account", focus });
+  if (kind === "offline") {
+    const net = !navigator.onLine || /^Can't find the mail server/.test(st.error);
+    ic = net ? "wifi-off" : "cloud-off"; tone = "quiet";
+    title = t(net ? "st_offline" : "st_noreply"); sub = t("st_still");
+    acts = [el("button", { class: "link-btn", onclick: retryNow, disabled: busy }, t("st_try_now"))];
+  } else if (kind === "auth" || kind === "config") {
+    const k = /^No account yet/.test(st.error) ? "b_acct" : /^No password saved/.test(st.error) ? "b_pw" : "b_signin";
+    ic = k === "b_acct" ? "circle-user-round" : "key-round"; tone = "warn";
+    title = t(k + "_title"); sub = STR[k + "_sub"] || "";
+    acts = [el("button", { class: "btn primary", onclick: settingsAt(k === "b_acct" ? "user" : "password") }, k === "b_acct" ? t("b_acct_btn") : t("st_enter_pw"))];
+  } else {
+    ic = "triangle-alert";
+    title = t("st_server"); sub = tr(st.error);
+    acts = [el("button", { class: "btn", onclick: retryNow, disabled: busy }, t("st_retry")),
+      iconBtn("copy", t("st_details"), () => copyText(st.error), { cls: "tiny" })];
+  }
+  if (st.retry_at || busy) prob.timer = setTimeout(drawProblem, 1000);
+  // drawn again only when more than the countdown changed (a hovered button stays as it is)
+  const sig = JSON.stringify([key, title, sub, !!meta, busy, LANG]);
+  if (sig === prob.sig && !b.hidden && !b.classList.contains("out")) {
+    const m = $(".banner-meta", b);
+    if (m) m.textContent = " · " + meta;
+    col.style.setProperty("--banner-h", b.offsetHeight + "px");
+    return;
+  }
+  prob.sig = sig;
+  b.className = "banner" + (tone ? " " + tone : "");
+  b.replaceChildren(
+    el("span", { class: "banner-ic", html: icon(busy && kind !== "auth" && kind !== "config" ? "loader-circle" : ic, busy && kind !== "auth" && kind !== "config" ? "spin" : "") }),
+    el("div", { class: "banner-text", title: kind === "server" ? tr(st.error) : null },
+      el("div", { class: "banner-title" }, el("b", {}, title), meta ? el("span", { class: "banner-meta" }, " · " + meta) : null),
+      sub ? el("span", { class: "banner-sub" }, sub) : null),
+    el("div", { class: "banner-acts" }, ...acts),
+    iconBtn("x", t("st_dismiss"), () => { prob.dismissed = key; drawProblem(); }, { cls: "tiny banner-x" }));
+  if (b.hidden) { b.hidden = false; if (!REDUCED.matches) b.classList.add("in"); setTimeout(() => b.classList.remove("in"), 260); }
+  prob.key = key;
+  // the list keeps room for the card at its foot, so the last mail can scroll out from under it
+  col.classList.add("has-banner");
+  col.style.setProperty("--banner-h", b.offsetHeight + "px");
+}
 $("#update").addEventListener("click", () => {
   if (S.update?.url) api("open_url", { url: S.update.url }).catch(fail);
   else toast(t("run_update"), { ms: 8000 });
