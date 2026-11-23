@@ -62,9 +62,22 @@ const MSGS = [
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
 ];
+// 0.11 group D_SYNC: sync, connection, sign-in and settings messages
+MSGS.push(
+  [/^Waiting for another sync to finish\./, "err_busy"], [/^The settings file can't be read\. Sign in/, "err_cfg"],
+  [/^The settings file (.*) can't be read, and no copy/s, "err_cfg_nocopy"],
+  [/^Secure connection failed\. Check/, "err_ssl2"], [/^Can't reach the mail server\. Check/, "err_reach2"],
+  [/^The connection to the mail server dropped\./, "err_dropped"], [/^The mail server refused the request\./, "err_refused_req"],
+  [/^Can't open the folder (.*) on the server\.$/s, "err_folder_open"],
+  [/^The server refused to move the mail \((\d+) moved/, "err_move_refused"],
+  [/^Enter a full email address\./, "err_need_addr"], [/^Enter the password\./, "err_need_pw"],
+  [/^Incoming server: sign-in failed\./, "err_in_signin"], [/^Outgoing server: sign-in failed\./, "err_out_signin"],
+  [/^Incoming server: (.*)$/s, "err_in"], [/^Outgoing server: (.*)$/s, "err_out"],
+);
 function tr(msg) {
   msg = String(msg ?? "");
-  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1)); }
+  // a part it holds ("Incoming server: <a known sentence>") is put in the chosen language too
+  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1).map((x) => (x && x.length < msg.length ? tr(x) : x ?? ""))); }
   return msg;
 }
 
@@ -3530,7 +3543,7 @@ function relabel() {
 
 // ---------------------------------------------------------------- setup (no account yet)
 
-function showSetup() {
+function showSetup(boot = {}) {
   $("#app").hidden = true;
   const box = $("#setup");
   box.hidden = false;
@@ -3558,6 +3571,12 @@ function showSetup() {
         lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host", "text", { "data-host": "smtp_host" }), inp("smtp_port", "number"))));
     }
     if (err) f.append(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
+    const bad = boot.config_error;     // the settings file has a typo: say so, and where it is (#49)
+    if (bad && !err) {
+      f.append(el("div", { class: "msg-err cfg-broken" }, el("span", { html: icon("triangle-alert") }),
+        el("span", {}, t("cfg_broken", bad.path), " ",
+          el("button", { class: "link", onclick: () => api("reveal", { path: bad.path }).catch(fail) }, t("cfg_show")))));
+    }
     const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
     f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
@@ -3964,5 +3983,5 @@ function start(boot) {
   setLocale(PREFS);
   if (PREFS.list_width) $("#app").style.setProperty("--list-w", PREFS.list_width + "px");
   if (PREFS.side_width) $("#app").style.setProperty("--side-pick", PREFS.side_width + "px");
-  if (!b.configured) showSetup(); else start(b);
+  if (!b.configured) showSetup(b); else start(b);
 })();

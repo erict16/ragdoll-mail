@@ -218,6 +218,8 @@ def move_old_setup(path=None, home=None):
             raw = json.load(f)
     except (OSError, ValueError):
         raw = {}                                           # load_config reports a broken file
+    if not isinstance(raw, dict):
+        return path, over                                  # likewise; and it is never written over
     changed = False
     old_data = os.path.join(home, ".local", "share", "hmail")
     new_data = os.path.join(home, ".local", "share", "ragdoll-mail")
@@ -251,19 +253,36 @@ def move_old_setup(path=None, home=None):
     return path, over
 
 
+CONFIG_ERROR = None     # {"path", "error"} when the settings file could not be read (#49)
+
+
 def load_config(path=None):
+    """The settings: config.json over the defaults. A file that can't be read (a stray comma after a
+    hand edit) must not stop the app from opening: the defaults are used, the file is left as it is,
+    and CONFIG_ERROR says what is wrong so the app can show it."""
+    global CONFIG_ERROR
     path, over = move_old_setup(path or env("CONFIG"))
     d = json.loads(json.dumps(DEFAULTS))
+    CONFIG_ERROR = None
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            user = json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                user = json.load(f)
+            if not isinstance(user, dict):
+                raise ValueError("the settings are not a JSON object")
+            for k, v in user.items():
+                if isinstance(d.get(k), dict) and not isinstance(v, dict):
+                    raise ValueError("%r must be an object like {...}" % k)
+        except (OSError, ValueError) as e:      # json.JSONDecodeError is a ValueError
+            CONFIG_ERROR = {"path": path, "error": str(e)}
+            user = {}
         for k, v in user.items():
             if isinstance(v, dict) and isinstance(d.get(k), dict):
                 d[k].update(v)
             else:
                 d[k] = v
     d.update(over)
-    d["user"] = (d.get("user") or "").strip().lower()
+    d["user"] = (d.get("user") if isinstance(d.get("user"), str) else "").strip().lower()
     return Cfg(d)
 
 
@@ -272,6 +291,13 @@ CFG = load_config()
 
 def die(msg):
     sys.exit(msg)
+
+
+class Refused(SystemExit):
+    """die() for a server that stopped part way: `done` says how many went before it stopped."""
+    def __init__(self, msg, done):
+        super().__init__(msg)
+        self.done = done
 
 
 _SHELL_ENV = {}
@@ -452,6 +478,9 @@ def keychain_delete(account, service=KEYCHAIN_SERVICE):
 
 
 def need_account():
+    if CONFIG_ERROR:
+        die("the settings file %s can't be read (%s): fix it, or move it away and set up again"
+            % (CONFIG_ERROR["path"], CONFIG_ERROR["error"]))
     if not (CFG.user and CFG.imap["host"]):
         die("no account configured: copy config.example.json to ~/.config/ragdoll-mail/config.json")
 
@@ -487,13 +516,20 @@ def q(folder):
     return '"' + mutf7(folder).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def imap():
+# Seconds one read from the server may wait. It counts from the last byte that came in, so a big
+# mail that keeps arriving never runs out of it; a connection that died during sleep or a Wi-Fi
+# change does, instead of holding the sync (and its file lock) for good (#40).
+IMAP_TIMEOUT = 60
+BIG_WAIT = 180      # the wait before the first byte of a big mail or file, which the server builds first
+
+
+def imap(timeout=None):
     need_account()
     # a server that does not answer must not hold the caller (the app's one connection) for minutes
     m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], timeout=15)
     m.login(CFG.user, password())
     with contextlib.suppress(Exception):
-        m.sock.settimeout(None)         # signing in is quick, a big mail is not: reads wait as before
+        m.sock.settimeout(timeout or IMAP_TIMEOUT)
     try:        # imaplib keeps the pre-login list; MOVE and UIDPLUS often appear only after login
         typ, data = m.capability()
         if typ == "OK" and data and data[0]:
@@ -508,15 +544,42 @@ def has_cap(m, name):
 
 
 @contextlib.contextmanager
-def session():
-    m = imap()
+def patient(m, secs=None):
+    """A longer read timeout for one known-big answer; the connection's own one after it."""
+    sock = getattr(m, "sock", None)
+    try:
+        old = sock.gettimeout()
+        sock.settimeout(max(old or 0, secs or BIG_WAIT))
+    except Exception:
+        yield m
+        return
     try:
         yield m
     finally:
-        try:
-            m.logout()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            sock.settimeout(old)
+
+
+def quit_imap(m, quick=False):
+    """LOGOUT. quick: the connection may be dead, so LOGOUT must not wait out the whole timeout."""
+    if m is None:
+        return
+    if quick:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(3)
+    with contextlib.suppress(Exception):
+        m.logout()
+
+
+@contextlib.contextmanager
+def session():
+    m = imap()
+    ok = False
+    try:
+        yield m
+        ok = True
+    finally:
+        quit_imap(m, quick=not ok)
 
 
 def select(m, folder, readonly=True):
@@ -601,7 +664,8 @@ def fetch_one(m, uid, items):
 def fetch_raw(m, folder, uid):
     use(m, folder)
     for again in (False, True):
-        typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        with patient(m):
+            typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
         for item in data:
             if isinstance(item, tuple):
                 return item[1]
@@ -781,7 +845,8 @@ def fetch_part_raw(m, folder, uid, sec):
     if not SECTION_RE.fullmatch(str(sec)):      # it goes into the IMAP command as it is
         die("bad part number %r" % (sec,))
     use(m, folder)
-    got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
+    with patient(m):
+        got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
     mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
     if not isinstance(mime, bytes) or not isinstance(body, bytes):
         die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
@@ -962,26 +1027,71 @@ def b64_cut(p):
         return None
 
 
+META_CHARSET_RE = re.compile(rb"""(?i)<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""")
+HIGH_PAIR_RE = re.compile(rb"[\x80-\xff]{2}")
+# tried in turn when the part names no charset or the wrong one: Chinese first (most of this
+# mail), then the other East Asian ones; GB18030 also reads GBK and GB2312
+GUESS_CHARSETS = ("utf-8", "gb18030", "big5", "shift_jis", "euc-kr")
+
+
+def decode_strict(b, cs):
+    """b in charset cs, strictly; a character cut off at the very end (the index reads only the start
+    of a mail) is dropped. None when cs does not fit."""
+    try:
+        return b.decode(cs)
+    except LookupError:
+        return None
+    except UnicodeDecodeError as e:
+        if e.end >= len(b) and e.start >= len(b) - 4:
+            try:
+                return b[:e.start].decode(cs)
+            except UnicodeDecodeError:
+                return None
+        return None
+
+
+def decode_text(b, declared=None, html=False):
+    """Bytes of a text part to text: the declared charset when it fits, then an HTML part's own
+    <meta charset>, then UTF-8 and the East Asian charsets in turn. Text whose 8-bit bytes all stand
+    alone cannot be multi-byte: Western (cp1252, Latin-1). Last, GB18030 with replacement (#46)."""
+    tries = [declared] if declared else []
+    if html:
+        mo = META_CHARSET_RE.search(b[:8192])
+        if mo:
+            tries.append(mo.group(1).decode("ascii", "ignore").lower())
+    if re.search(rb"[\x80-\xff]", b) and not HIGH_PAIR_RE.search(b):
+        tries += ["utf-8", "cp1252", "latin-1"]
+    tries += GUESS_CHARSETS
+    seen = set()
+    for cs in tries:
+        if cs in seen:
+            continue
+        seen.add(cs)
+        s = decode_strict(b, cs)
+        if s is not None:
+            return s
+    return b.decode("gb18030", "replace")
+
+
 def part_text(p):
-    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...)."""
+    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...).
+    The bytes are decoded here: get_content() reads a part without a charset as ASCII and turned
+    every Chinese character into "�" (#46)."""
     payload = b64_cut(p)
     if payload is None:
         try:
-            return nfc(p.get_content())
+            payload = p.get_payload(decode=True)
         except Exception:
-            pass
-        payload = p.get_payload(decode=True) or b""
-    else:
-        try:        # the cut can also split the last character: drop it rather than fail on it
-            return nfc(payload.decode(p.get_content_charset() or "utf-8", "ignore"))
-        except LookupError:
-            pass
-    for cs, err in ((p.get_content_charset() or "utf-8", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
-        try:
-            return nfc(payload.decode(cs, err))
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return ""
+            payload = None
+        if not isinstance(payload, bytes):
+            try:
+                return nfc(p.get_content())
+            except Exception:
+                return ""
+    declared = p.get_content_charset()
+    if declared in ("unknown-8bit", "x-unknown", "us-ascii", "ascii") and re.search(rb"[\x80-\xff]", payload):
+        declared = None         # 8-bit bytes the label cannot be right about
+    return nfc(decode_text(payload, declared, p.get_content_type() == "text/html"))
 
 
 def leaf_parts(msg):
@@ -1228,6 +1338,14 @@ def db():
             n += 1
         c.execute("insert or replace into meta values('body_fix', ?)", (str(n),))
         c.commit()
+    if not c.execute("select 1 from meta where k='charset_fix2'").fetchone():
+        # 0.10 and older read a text part without a charset as ASCII: "报价单" was stored as "���"
+        bad = c.execute("select id from msgs where has_body=1 and instr(body, char(65533))>0").fetchall()
+        for r in bad:
+            c.execute("update msgs set body='', has_body=0 where id=?", (r["id"],))
+            c.execute("update fts set body='' where rowid=?", (r["id"],))
+        c.execute("insert or replace into meta values('charset_fix2', ?)", (str(len(bad)),))
+        c.commit()
     if have < SCHEMA_VERSION:
         c.execute("insert or replace into meta values('schema', ?)", (str(SCHEMA_VERSION),))
         c.commit()
@@ -1357,10 +1475,11 @@ def header_row(seg):
             "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
 
 
-def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
+def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=False):
     """New mail headers, flags and deletions for one folder. Returns new row count.
     held(folder, since) -> {uid: {"seen": 1, ...}}: flags the caller has changed that the server may
-    not have had when it was asked at `since`; they stay as the caller set them."""
+    not have had when it was asked at `since`; they stay as the caller set them.
+    deep: the flags of older mail too (deep_flags), not only of the newest 300."""
     try:
         uidv = select(m, folder)
     except LookupError:
@@ -1373,27 +1492,19 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
     c.execute("insert or replace into state values(?,?)", (folder, uidv))
     c.commit()
     server = set(uids_of(m))
-    local = {r["uid"]: r["id"] for r in c.execute(
-        "select uid, id from msgs where folder=? and uidv=?", (folder, uidv))}
-    for uid, rid in local.items():
+    local = {r["uid"]: r for r in c.execute(
+        "select uid, id, seen, flagged, answered from msgs where folder=? and uidv=?", (folder, uidv))}
+    for uid, r in local.items():
         if uid not in server:
-            c.execute("delete from msgs where id=?", (rid,))
-            c.execute("delete from fts where rowid=?", (rid,))
+            c.execute("delete from msgs where id=?", (r["id"],))
+            c.execute("delete from fts where rowid=?", (r["id"],))
+    flags = Flags(c, folder, local, held)
     # flags: all of them on a full sync, the newest 300 otherwise
     known = sorted(u for u in server if u in local)
     check = known if full_flags else known[-300:]
-    for i in range(0, len(check), 500):
-        asked = time.time()
-        typ, data = m.uid("FETCH", ",".join(map(str, check[i:i + 500])), "(UID FLAGS)")
-        mine = held(folder, asked) if held else {}
-        for seg in segments(data):
-            uid = seg_uid(seg)
-            if uid in local:
-                seen, flagged, answered = flags_of(b"".join(seg))
-                if uid in mine:     # a mail just read in the app must not turn unread again
-                    seen, flagged = mine[uid].get("seen", seen), mine[uid].get("flagged", flagged)
-                c.execute("update msgs set seen=?, flagged=?, answered=? where id=?",
-                          (seen, flagged, answered, local[uid]))
+    fetch_flags(m, check, flags)
+    if deep and not full_flags and len(known) > 300:
+        deep_flags(m, c, folder, uidv, known[:-300], flags)
     c.commit()
     new = sorted((u for u in server if u not in local), reverse=True)
     chunks = [new[i:i + 100] for i in range(0, len(new), 100)]
@@ -1429,6 +1540,101 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
     return len(new)
 
 
+class Flags:
+    """Puts the server's flags into the index rows of one folder; a row is written only when they
+    differ, and a flag the caller holds (held) stays as the caller set it."""
+    def __init__(self, c, folder, local, held):
+        self.c, self.folder, self.local, self.held = c, folder, local, held
+
+    def mine(self, asked):
+        return self.held(self.folder, asked) if self.held else {}
+
+    def put(self, uid, mine, seen=None, flagged=None, answered=None):
+        r = self.local.get(uid)
+        if r is None:
+            return
+        if uid in mine:     # a mail just read in the app must not turn unread again
+            seen = mine[uid].get("seen", seen)
+            flagged = mine[uid].get("flagged", flagged)
+        new = [r["seen"] if seen is None else int(seen), r["flagged"] if flagged is None else int(flagged),
+               r["answered"] if answered is None else int(answered)]
+        if new != [r["seen"], r["flagged"], r["answered"]]:
+            self.c.execute("update msgs set seen=?, flagged=?, answered=? where id=?", (*new, r["id"]))
+
+
+def fetch_flags(m, uids, flags, extra=""):
+    """FLAGS of these UIDs (or of "1:*" with a modifier in extra) into the index."""
+    sets = [uids] if isinstance(uids, str) else [",".join(map(str, uids[i:i + 500])) for i in range(0, len(uids), 500)]
+    for s in sets:
+        if not s:
+            continue
+        asked = time.time()
+        typ, data = m.uid("FETCH", s, "(UID FLAGS)" + extra)
+        if typ != "OK":
+            continue            # e.g. a mail expunged a moment ago: the next pass asks again
+        mine = flags.mine(asked)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                flags.put(uid, mine, *flags_of(b"".join(seg)))
+
+
+SWEEP = 2000        # older mails whose flags are asked for on each pass, in turn, when CONDSTORE is missing
+
+
+def search_set(m, key):
+    typ, data = m.uid("SEARCH", None, key)
+    if typ != "OK":
+        return None
+    return {int(x) for x in b" ".join(x for x in data if isinstance(x, bytes)).split() if x.isdigit()}
+
+
+def highest_modseq(m, folder):
+    try:
+        v = m.untagged_responses.pop("HIGHESTMODSEQ", None)
+        if not v:
+            typ, data = m.status(q(folder), "(HIGHESTMODSEQ)")
+            mo = re.search(rb"HIGHESTMODSEQ (\d+)", b" ".join(x for x in data if isinstance(x, bytes))) if typ == "OK" else None
+            return int(mo.group(1)) if mo else None
+        return int(v[-1])
+    except (imaplib.IMAP4.abort, OSError):
+        raise
+    except Exception:       # noqa: BLE001 - a server that does not say: the other way is used
+        return None
+
+
+def deep_flags(m, c, folder, uidv, older, flags):
+    """Read / unread and the other flags of mail older than the newest 300, which were never asked
+    for again (#47). With CONDSTORE: only the flags changed since the last pass (CHANGEDSINCE).
+    Without: UID SEARCH UNSEEN and FLAGGED give seen and flagged of every mail in two commands, and
+    a rolling sweep of SWEEP mails per pass brings in the rest (answered) in turn."""
+    if has_cap(m, "CONDSTORE"):
+        key = "modseq:" + folder
+        r = c.execute("select v from meta where k=?", (key,)).fetchone()
+        was = (r[0].split() + ["", ""])[:2] if r else ["", ""]
+        now = highest_modseq(m, folder)
+        if now is not None:
+            if was[0] == str(uidv) and was[1].isdigit():
+                if int(was[1]) != now:
+                    fetch_flags(m, "1:*", flags, " (CHANGEDSINCE %d)" % int(was[1]))
+                c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+                return
+            c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+            # the first pass: everything once, the way below; from the next pass on only changes
+    asked = time.time()
+    unseen, flagged = search_set(m, "UNSEEN"), search_set(m, "FLAGGED")
+    mine = flags.mine(asked)
+    for u in older:
+        flags.put(u, mine, None if unseen is None else u not in unseen, None if flagged is None else u in flagged)
+    key = "sweep:" + folder
+    r = c.execute("select v from meta where k=?", (key,)).fetchone()
+    at = int(r[0]) if r and str(r[0]).isdigit() else None
+    below = [u for u in older if at is None or u < at] or older     # the oldest reached: from the top again
+    turn = below[-SWEEP:]
+    fetch_flags(m, turn, flags)
+    c.execute("insert or replace into meta values(?, ?)", (key, str(turn[0])))
+
+
 HEADER_ITEMS = "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])"
 
 
@@ -1443,19 +1649,28 @@ def fetch_headers(folder, uids, m=None):
         return segments(data)
 
 
+BODY_BATCH = 50     # mails per FETCH command: one command for many mails, never one each
+
+
+def fetch_bodies_on(m, folder, uids, per=BODY_BATCH):
+    """{uid: the start of its body} for these UIDs, on a connection the caller keeps (and keeps the
+    folder open on: the next batch of the same folder needs no SELECT)."""
+    use(m, folder)
+    out = {}
+    for i in range(0, len(uids), per):
+        typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + per])),
+                          "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                out[uid] = literal_after(seg, rb"BODY\[\]<0>")
+    return out
+
+
 def fetch_bodies(folder, uids):
     """Worker: the start of each body for these UIDs, on its own connection."""
-    out = {}
     with session() as m:
-        select(m, folder)
-        for i in range(0, len(uids), 25):
-            typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + 25])),
-                              "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
-            for seg in segments(data):
-                uid = seg_uid(seg)
-                if uid is not None:
-                    out[uid] = literal_after(seg, rb"BODY\[\]<0>")
-    return out
+        return fetch_bodies_on(m, folder, uids, per=25)
 
 
 def store_bodies(c, folder, got):
@@ -2498,7 +2713,7 @@ def move_uids(m, folder, uids, dest):
                 else:
                     m.expunge()
         if typ != "OK":
-            die("the server refused the move after %d mails: %s" % (moved, data))
+            raise Refused("the server refused the move after %d mails: %s" % (moved, data), moved)
         moved += len(uids[i:i + 200])
     return moved
 

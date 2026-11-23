@@ -89,11 +89,13 @@ PROVIDERS = {       # domain -> (imap host, smtp host[, smtp port]); IMAP on 993
 
 
 class ApiError(Exception):
-    pass
+    def __init__(self, msg, detail=None):
+        super().__init__(msg)
+        self.detail = detail        # the server's own words: for "copy details", never the title
 
 
-def fail(msg):
-    raise ApiError(msg)
+def fail(msg, detail=None):
+    raise ApiError(msg, detail)
 
 
 LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
@@ -103,34 +105,104 @@ FONT_SIZES = (12, 13, 14, 16, 18)
 TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 
-def friendly(e):
-    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+GONE_MSG = "This mail is no longer here. It may have been moved or deleted."
+CONFIG_MSG = "The settings file can't be read. Sign in again to make a new one."
+
+
+def explain(e):
+    """(a sentence a person can act on, the kind of problem, the raw text) for an exception from
+    IMAP, SMTP or ragdoll. The sentence never carries the server's raw words (#58); the kind is
+    "auth", "offline", "server" or "config" (#54)."""
     s = str(e.code if isinstance(e, SystemExit) else e) or e.__class__.__name__
     low = s.lower()
-    if isinstance(e, (smtplib.SMTPAuthenticationError,)) or (
-            isinstance(e, imaplib.IMAP4.error) and re.search(r"login|auth|password|credentials|invalid", low)):
-        return "Sign-in failed. Check the email address and password in Settings."
+    if isinstance(e, ApiError):
+        return s, "server", e.detail
+    if isinstance(e, smtplib.SMTPAuthenticationError) or (
+            isinstance(e, imaplib.IMAP4.error) and not isinstance(e, imaplib.IMAP4.abort)
+            and re.search(r"login|auth|password|credentials|invalid", low)):
+        return "Sign-in failed. Check the email address and password in Settings.", "auth", s
     if "is not set and no password is saved" in s:
-        return "No password saved. Add it in Settings."
+        return "No password saved. Add it in Settings.", "config", s
     if "no account configured" in s:
-        return "No account yet. Add one in Settings."
+        return "No account yet. Add one in Settings.", "config", s
+    if s.startswith("the settings file ") and "can't be read" in s:
+        return CONFIG_MSG, "config", s
+    if isinstance(e, R.IndexTooNew):
+        return s, "config", s
+    mo = re.match(r"no mail \S+ \(moved or deleted", s)
+    if mo:
+        return GONE_MSG, "server", s
+    mo = re.match(r"cannot open folder (.*?): \[", s, re.S)
+    if mo:
+        return "Can't open the folder %s on the server." % mo.group(1), "server", s
+    mo = re.match(r"the server refused the move after (\d+) mails", s)
+    if mo:
+        return "The server refused to move the mail (%s moved before it stopped)." % mo.group(1), "server", s
     if isinstance(e, socket.gaierror):
-        return "Can't find the mail server. Check the server name and the internet connection."
+        return "Can't find the mail server. Check the server name and the internet connection.", "offline", s
     if isinstance(e, (socket.timeout, TimeoutError)):
-        return "The mail server did not answer in time."
+        return "The mail server did not answer in time.", "offline", s
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return "Secure connection failed. Check the server name and port.", "server", s
     if isinstance(e, ssl.SSLError):
-        return "Secure connection failed (%s). Check the server name and port." % s
+        return "Secure connection failed. Check the server name and port.", "offline", s
     if isinstance(e, ConnectionRefusedError):
-        return "The mail server refused the connection. Check the port."
+        return "The mail server refused the connection. Check the port.", "offline", s
+    if isinstance(e, imaplib.IMAP4.abort):
+        return "The connection to the mail server dropped.", "offline", s
     if isinstance(e, OSError) and not isinstance(e, FileNotFoundError):
-        return "Can't reach the mail server (%s)." % s
-    if isinstance(e, imaplib.IMAP4.error):
-        return "The mail server said: %s" % s
-    return s
+        return "Can't reach the mail server. Check the internet connection.", "offline", s
+    if isinstance(e, (imaplib.IMAP4.error, smtplib.SMTPException)):
+        return "The mail server refused the request.", "server", s
+    return s, "server", s
+
+
+def friendly(e):
+    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+    return explain(e)[0]
+
+
+def error_reply(e):
+    """The page's answer for a call that failed: the sentence, and the raw text as detail."""
+    msg, _, detail = explain(e)
+    if detail and detail != msg:
+        print("%s (%s)" % (msg, detail), file=sys.stderr)
+        return {"ok": False, "error": msg, "detail": detail}
+    return {"ok": False, "error": msg}
 
 
 def config_path():
     return R.move_old_setup(R.env("CONFIG"))[0]
+
+
+def cut(m):
+    """Shut a connection's socket from another thread: a read that waits on it ends at once, and
+    whoever waited gets an error and connects again (#40, #56)."""
+    sock = getattr(m, "sock", None)
+    if sock is not None:
+        with contextlib.suppress(Exception):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
+BUSY_MSG = "Waiting for another sync to finish. New mail comes in when it is done."
+
+IDLE_CHECK = 60     # seconds a kept connection may sit unused before it is asked whether it is still there
+
+
+def still_there(m, used, timeout):
+    """After sleep or a network change a kept connection is dead, and its first command would wait
+    out the whole timeout: past IDLE_CHECK a NOOP with a short wait says whether it lives (#56)."""
+    if time.time() - used <= IDLE_CHECK:
+        return True
+    try:
+        m.sock.settimeout(6)
+        m.noop()
+        return True
+    except Exception:           # noqa: BLE001 - whatever it is, the connection is not usable
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(timeout)
 
 
 def configured():
@@ -245,17 +317,23 @@ SYNC_EVERY = 60          # seconds between two syncs (sync_loop's wake.wait)
 
 def sync_problem(sync):
     """What the page's problem card needs: error_kind (offline / auth / config / server, or None), last_sync (when
-    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None."""
+    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None.
+    The sync loop records the kind and the next try itself (Backend.note_error, from the exception: explain());
+    a sentence without them (an older state) is sorted by its words, and tried again a minute on."""
     err = sync.get("error")
     kind = None
     if err:
-        kind = ("config" if err.startswith(("No password saved.", "No account yet.")) else
-                "auth" if err.startswith("Sign-in failed.") else
-                "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
-                                             "Can't reach the mail server")) else "server")
-    tried = sync.get("tried")
+        kind = sync.get("kind") or (
+            "config" if err.startswith(("No password saved.", "No account yet.", "The settings file")) else
+            "auth" if err.startswith("Sign-in failed.") else
+            "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
+                                         "Can't reach the mail server", "The connection to the mail server dropped",
+                                         "The mail server refused the connection")) else "server")
+    retry = sync.get("retry_at")
+    if retry is None and "kind" not in sync and sync.get("tried"):
+        retry = sync["tried"] + SYNC_EVERY
     return {"error_kind": kind, "last_sync": sync.get("last"),
-            "retry_at": tried + SYNC_EVERY if err and tried and not sync.get("running") else None}
+            "retry_at": retry if err and not sync.get("running") else None}
 
 
 def linkify(escaped):
@@ -1527,11 +1605,34 @@ class Backend:
         self.demo = demo
         self.demo_set = DEMO_SETS[demo_lang if demo_lang in DEMO_SETS else "en"]
         self.lock = threading.RLock()           # the action IMAP connection
+        self.dlock = threading.RLock()          # the download connection: big mails and files (#55)
+        self.dm = None
+        self.dm_used = 0
         self.dblock = threading.RLock()         # the request db connection
         self.m = None
         self.m_used = 0
         self.rev = 1
-        self.sync = {"running": False, "error": None, "last": None}
+        # error: the sentence; kind / detail / retry_at: what status_fields() hands the page (#54)
+        self.sync = {"running": False, "error": None, "last": None, "kind": None, "detail": None, "retry_at": None}
+        self.fails = 0                          # sync passes in a row that failed: the retry waits longer
+        self.gen = 0                            # goes up when the account or server changes (#59)
+        self.pass_gen = 0                       # the generation the sync pass under way began with
+        self.redetect = False                   # the folder names are to be found again on the next pass
+        self.lock_busy = None                   # since when another process has held the headers lock
+        self.sync_m = None                      # the sync's own connection
+        self.pre_m = None                       # the head start's own connection
+        self.pass_at = None                     # when the sync pass under way began (time.monotonic)
+        self.pass_cut = False                   # the watchdog has cut that pass's connection
+        self.sync_used = self.pre_used = 0      # when those connections last answered
+        self.clock = None                       # (time.time(), time.monotonic()) at the watchdog's last look
+        self.woke_at = None                     # when the computer last woke from sleep
+        self.body_m = None                      # the body download's own connection (#57)
+        self.body_used = 0
+        self.body_thread = None
+        self.body_wake = threading.Event()
+        self.bodies = None                      # {"done": n, "left": n} while mail text is downloading
+        self.active_at = 0                      # when the user last did something that is not a poll
+        self.watch_thread = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
         self.contacts = (0, {})
@@ -1540,6 +1641,7 @@ class Backend:
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
         self.extra_now = False
+        self.folder_status = {}                 # folder -> its STATUS when it was last synced (#39)
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
         self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
@@ -1565,6 +1667,7 @@ class Backend:
         self.flag_thread = None
         self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
         self.marklock = threading.Lock()
+        self.preflock = threading.Lock()        # app.json: read, change, write as one step (#61)
         self.badge_n = None                     # the unread count the Dock icon shows
         if demo:
             self.make_demo()                    # opens self.c on the demo's own index
@@ -1576,6 +1679,9 @@ class Backend:
                 r = self.q("select v from meta where k='folders'")
                 self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
             self.prune_cache()
+            with contextlib.suppress(Exception):     # the last good sync, by the app or the ragdoll command
+                r = self.q("select v from meta where k='last_sync'")
+                self.sync["last"] = int(r[0]["v"]) if r else None
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -1590,17 +1696,22 @@ class Backend:
             return 404, {"ok": False, "error": "unknown call %s" % name}
         if args is not None and not isinstance(args, dict):
             return 400, {"ok": False, "error": "bad request"}
+        if name not in self.PASSIVE:
+            self.active_at = time.time()        # the body download makes way (#57)
         try:
             return 200, {"ok": True, "data": fn(args or {})}
         except ApiError as e:
-            return 200, {"ok": False, "error": str(e)}
-        except SystemExit as e:
-            return 200, {"ok": False, "error": friendly(e)}
-        except (imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
-            return 200, {"ok": False, "error": friendly(e)}
+            return 200, ({"ok": False, "error": str(e), "detail": e.detail} if e.detail
+                         else {"ok": False, "error": str(e)})
+        except (SystemExit, imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
+            return 200, error_reply(e)
         except Exception as e:      # noqa: BLE001 - a bug must not take the page down with it
             traceback.print_exc(file=sys.stderr)
             return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
+
+    # calls the page makes by itself, not because the user did something
+    PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme",
+                         "settings", "senders", "contacts"))
 
     def q(self, sql, params=()):
         with self.dblock:
@@ -1645,6 +1756,34 @@ class Backend:
                 m.sock.settimeout(3)            # a dead connection would keep LOGOUT waiting its whole timeout
             with contextlib.suppress(Exception):
                 m.logout()
+
+    DOWNLOAD_IDLE = 120     # seconds the download connection stays open with nothing to fetch
+
+    def download(self, fn):
+        """Run fn(m) on a second kept connection, for a big mail or file. That may take minutes, and
+        opening other mail, marks and moves go on meanwhile on the first one (#55)."""
+        if self.demo:
+            fail("not in the demo")
+        with self.dlock:
+            for attempt in (0, 1):
+                try:
+                    if self.dm is not None and not still_there(self.dm, self.dm_used, 90):
+                        self.drop_download()
+                    if self.dm is None:
+                        self.dm = R.imap()
+                        with contextlib.suppress(Exception):
+                            self.dm.sock.settimeout(90)
+                    r = fn(self.dm)
+                    self.dm_used = time.time()
+                    return r
+                except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout, BrokenPipeError):
+                    self.drop_download()
+                    if attempt:
+                        raise
+
+    def drop_download(self):
+        m, self.dm = self.dm, None
+        R.quit_imap(m, quick=True)
 
     def bump(self):
         self.rev += 1
@@ -1696,11 +1835,29 @@ class Backend:
                 time.sleep(0.05)
             raw = R.cache_get(path)
             if not raw:
-                raw = self.imap(lambda m: R.fetch_raw(m, folder, uid))
+                # a big one may take minutes: on its own connection, so other mail opens meanwhile
+                go = self.download if (r["size"] or 0) > R.LIGHT_MIN else self.imap
+                raw = self.gone_check(r, lambda: go(lambda m: R.fetch_raw(m, folder, uid)))
                 R.cache_put(path, raw)
         finally:
             self.fg -= 1
         return raw
+
+    def gone_check(self, r, fetch):
+        """fetch(); a mail the server no longer has (deleted on the phone a moment ago) leaves the
+        list at once, and the page is told so in plain words (#58)."""
+        try:
+            return fetch()
+        except SystemExit as e:
+            if not str(e.code).startswith("no mail "):
+                raise
+            with self.dblock:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+                self.c.commit()
+            self.bump()
+            self.wake.set()
+            fail(GONE_MSG, str(e.code))
 
     def view_raw(self, i):
         return self.view(i)[0]
@@ -1756,16 +1913,14 @@ class Backend:
         self.pre_wake.set()
 
     def prefetch_loop(self):
-        m = None
         while not self.stopping.is_set():
             try:
                 k = self.pre.popleft()
             except IndexError:
                 self.pre_wake.clear()
-                if not self.pre_wake.wait(90) and m is not None:    # idle: let the connection go
-                    with contextlib.suppress(Exception):
-                        m.logout()
-                    m = None
+                if not self.pre_wake.wait(90) and self.pre_m is not None:    # idle: let the connection go
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
                 continue
             k, size = k[:3], k[3]
             path = R.cache_path(*k)
@@ -1774,30 +1929,33 @@ class Backend:
             while self.fg > 0 and not self.stopping.is_set():   # a mail is being opened: stay out of its way
                 time.sleep(0.1)
             try:
-                if m is None:
-                    m = R.imap()
+                if self.pre_m is not None and not still_there(self.pre_m, self.pre_used, 60):
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
+                if self.pre_m is None:
+                    self.pre_m = R.imap()
                     with contextlib.suppress(Exception):
-                        m.sock.settimeout(60)
+                        self.pre_m.sock.settimeout(60)
+                m = self.pre_m
                 self.pre_now = k
                 raw = R.fetch_light(m, k[0], k[2]) if size > R.LIGHT_MIN else None
                 if raw:
                     R.cache_put(R.light_path(*k), raw)
                 elif size <= self.PRE_MAX:
                     R.cache_put(path, R.fetch_raw(m, k[0], k[2]))
+                self.pre_used = time.time()
             except SystemExit:
                 pass                            # moved or deleted since
             except Exception:                   # noqa: BLE001 - only a head start; opening the mail fetches it
                 self.pre_now = None
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                m, self.pre_m = self.pre_m, None
+                R.quit_imap(m, quick=True)
                 self.pre.clear()
                 time.sleep(5)
             finally:
                 self.pre_now = None
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.pre_m = self.pre_m, None
+        R.quit_imap(m, quick=True)
 
     def prune_cache(self, days=90):
         root = os.path.join(R.CFG.home, "cache")
@@ -1844,6 +2002,8 @@ class Backend:
             c.execute("insert or replace into meta values('folders', ?)", (json.dumps(found),))
             c.commit()
             self.bump()
+        if drop_gone_folders(c, self.server_folders):
+            self.bump()
 
     def note_new(self, c):
         """Unread inbox mail that came in since the last pass becomes news. The first pass only sets the mark."""
@@ -1880,75 +2040,308 @@ class Backend:
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.sync_loop, daemon=True)
             self.thread.start()
+        if self.watch_thread is None or not self.watch_thread.is_alive():
+            self.watch_thread = threading.Thread(target=self.watch_loop, daemon=True)
+            self.watch_thread.start()
         self.wake.set()
 
+    # ---- the watchdog: a pass that hangs is cut off, so the sync never waits for good (#40)
+
+    SYNC_STUCK = 300    # seconds a sync pass may take before its connection is cut and made again
+    WATCH_EVERY = 2     # seconds between the watchdog's looks
+    WAKE_GAP = 20       # seconds the clock may jump between two looks before it counts as a wake from sleep
+
+    def watch_loop(self):
+        while not self.stopping.wait(self.WATCH_EVERY):
+            try:
+                self.watch_tick()
+            except Exception:           # noqa: BLE001 - the watchdog must live on
+                traceback.print_exc(file=sys.stderr)
+
+    def watch_tick(self, mono=None, wall=None):
+        mono = time.monotonic() if mono is None else mono
+        wall = time.time() if wall is None else wall
+        last, self.clock = self.clock, (wall, mono)
+        if last is not None:
+            # macOS stops the monotonic clock in sleep, so the wall clock runs ahead of it; Windows
+            # keeps both running, so only the long gap between two looks shows it
+            dw, dm = wall - last[0], mono - last[1]
+            if dw - dm > self.WAKE_GAP or dm > self.WATCH_EVERY + self.WAKE_GAP:
+                self.woke()
+        if self.pass_at is not None and not self.pass_cut and mono - self.pass_at > self.SYNC_STUCK:
+            # a read that waits on a connection that died while it waited: end it, so the pass
+            # connects again (or fails and says so) instead of hanging for good
+            self.pass_cut = True
+            print("a sync pass took over %d s: its connection was cut" % self.SYNC_STUCK, file=sys.stderr)
+            cut(self.sync_m)
+        if self.dm is not None and time.time() - self.dm_used > self.DOWNLOAD_IDLE and self.dlock.acquire(blocking=False):
+            try:
+                self.drop_download()            # nothing to download for a while: let it go
+            finally:
+                self.dlock.release()
+
+    def woke(self):
+        """The computer woke (or the app was stopped a long while): every kept connection is dead.
+        Cut them all, so nobody waits out a timeout on one, and look for new mail now (#56)."""
+        self.woke_at = time.time()
+        print("woke from sleep: connecting again", file=sys.stderr)
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
+        self.wake.set()
+
+    EXTRA_EVERY = 300   # seconds between full syncs of Junk and the owner's folders; in between, only changed ones
+
+    def sync_pass(self, m, c):
+        """One look at the server: the folder list, then the sync folders, then each of the owner's
+        folders (and Junk) whose STATUS changed since it was last synced (#39), or all of them now and then."""
+        self.note_folders(m, c)
+        if self.redetect:
+            self.redetect = False
+            self.use_detected(detect_folders(self.found))
+        todo = self.sync_folders()
+        extras = self.extra_folders()
+        if self.server_folders:
+            extras = [f for f in extras if f in self.server_folders]
+        full = self.extra_now or time.time() - self.extra_at > self.EXTRA_EVERY
+        self.extra_now = False
+        now = {}
+        for f in extras:
+            now[f] = folder_status(m, f)
+            if full or now[f] is None or now[f] != self.folder_status.get(f):
+                todo.append(f)
+        for f in todo:
+            if self.gen != self.pass_gen:
+                raise Restart()             # the settings changed: this pass belongs to the old ones
+            try:
+                R.sync_headers(m, c, f, held=self.held, deep=True)
+            except LookupError:
+                if f in self.sync_folders():
+                    raise
+                continue        # one of the owner's folders, renamed or deleted a moment ago
+            if f in now:
+                self.folder_status[f] = now[f]
+            if f == (R.CFG.folders.get("inbox") or "INBOX"):
+                self.note_new(c)
+        if full:
+            self.extra_at = time.time()
+
+    # seconds before the next try after 1, 2, 3, ... failed passes: soon while the network comes
+    # back, then less and less often; signing in again with the same password does not help soon
+    RETRY = {"offline": (15, 30, 60, 120, 300), "server": (60, 120, 300, 600), "auth": (300, 900),
+             "config": (300,)}
+
+    def note_error(self, e):
+        """A failed pass: the sentence, its kind and the raw text for the page; when to try again."""
+        msg, kind, detail = explain(e)
+        self.fails += 1
+        steps = self.RETRY.get(kind, self.RETRY["server"])
+        wait = steps[min(self.fails, len(steps)) - 1]
+        self.sync.update(error=msg, kind=kind, detail=detail if detail != msg else None,
+                         retry_at=int(time.time() + wait))
+        return wait
+
+    def clear_error(self):
+        self.fails = 0
+        self.sync.update(error=None, kind=None, detail=None, retry_at=None)
+
+    def status_fields(self):
+        """The problem fields of the status the page polls (#54), from the real sync state:
+        error_kind  "offline" (no network, DNS, refused, timed out, dropped), "auth" (sign-in failed),
+                    "server" (the server said no, another sync holds the index), "config" (no account,
+                    no password saved, the settings file can't be read), or None: no problem;
+        last_sync   epoch seconds of the last sync that went through, or None;
+        retry_at    epoch seconds of the next automatic try while there is a problem, else None;
+        error_detail the raw text behind the error, for "copy details", or None."""
+        s = self.sync
+        if self.demo:
+            return {"error_kind": None, "last_sync": s["last"], "retry_at": None, "error_detail": None}
+        return dict(sync_problem(s), error_detail=s["detail"] if s["error"] else None)
+
+    LOCK_RETRY = 10     # seconds before the sync tries again while another process syncs
+    LOCK_WARN = 180     # seconds of that before the page is told
+
     def sync_loop(self):
-        c, m = None, None
+        c = None
+        wait = 0
         while not self.stopping.is_set():
-            self.wake.wait(60)
+            self.wake.wait(wait or 60)
             self.wake.clear()
+            wait = 0
             if self.stopping.is_set():
                 break
             if not configured():
+                self.config_problem()
                 continue
             self.sync["running"] = True
-            extra = False
+            self.pass_at, self.pass_cut = time.monotonic(), False
+            self.pass_gen = self.gen
             try:
-                c = c or R.db()
+                c = own_db(c)
                 with R.file_lock("headers", wait=False) as got:
                     if got:
                         for attempt in (0, 1):
                             try:
-                                if m is None:
-                                    m = R.imap()
+                                if self.sync_m is not None and not still_there(self.sync_m, self.sync_used, 120):
+                                    m, self.sync_m = self.sync_m, None
+                                    R.quit_imap(m, quick=True)
+                                if self.sync_m is None:
+                                    self.sync_m = R.imap()
                                     with contextlib.suppress(Exception):
-                                        m.sock.settimeout(120)
-                                self.note_folders(m, c)
-                                todo = self.sync_folders()
-                                if self.extra_now or time.time() - self.extra_at > 300:
-                                    self.extra_now = False
-                                    todo = todo + self.extra_folders()
-                                    extra = True
-                                for f in todo:
-                                    try:
-                                        R.sync_headers(m, c, f, held=self.held)
-                                    except LookupError:
-                                        if f in self.sync_folders():
-                                            raise
-                                        continue        # one of the owner's folders, renamed or deleted a moment ago
-                                    if f == (R.CFG.folders.get("inbox") or "INBOX"):
-                                        self.note_new(c)
-                                if extra:
-                                    self.extra_at = time.time()
+                                        self.sync_m.sock.settimeout(120)
+                                self.sync_pass(self.sync_m, c)
+                                self.sync_used = time.time()
                                 break
-                            except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout):
-                                with contextlib.suppress(Exception):
-                                    m.logout()
-                                m = None
+                            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                                m, self.sync_m = self.sync_m, None
+                                R.quit_imap(m, quick=True)
+                                if self.gen != self.pass_gen:
+                                    raise Restart() from None
                                 if attempt:
                                     raise
                         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
                         c.commit()
-                self.sync["error"] = None
-                self.sync["last"] = int(time.time())
-                with R.file_lock("bodies", wait=False) as got:
-                    if got:
-                        R.sync_bodies(c, self.sync_folders() + self.extra_folders(), limit=50, workers=2, quiet=True)   # short passes: new mail and a folder just made are not kept waiting
-                        if c.execute("select 1 from msgs where has_body=0 limit 1").fetchone():
-                            threading.Timer(3, self.wake.set).start()     # keep going until all are in
+                if got:
+                    self.lock_busy = None
+                    self.clear_error()
+                    self.sync["last"] = int(time.time())
+                else:
+                    # the ragdoll command (or one that hangs) has the index: nothing was synced, so
+                    # nothing says it was; ask again soon, and say so when it lasts (#53)
+                    now = time.time()
+                    self.lock_busy = self.lock_busy or now
+                    wait = self.LOCK_RETRY
+                    if now - self.lock_busy > self.LOCK_WARN:
+                        self.sync.update(error=BUSY_MSG, kind="server", detail=None, retry_at=int(now + wait))
+                self.start_bodies()
+            except Restart:                     # settings saved: start over with the new ones at once
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
+                wait = 0.01
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
-                self.sync["error"] = friendly(e)
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                wait = self.note_error(e)
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
             finally:
                 self.sync["running"] = False
-                self.sync["tried"] = int(time.time())       # the next try is a minute on (wake.wait above)
+                self.pass_at = None
+                self.sync["tried"] = int(time.time())
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.sync_m = self.sync_m, None
+        R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
+
+    # ---- the text of mail that has only its headers: one worker, its own connection (#57)
+
+    BODY_ROUND = 400        # rows taken per round, newest first
+    BODY_PAUSE = 0.2        # seconds between two FETCH commands: the server serves a whole company
+    BODY_QUIET = 2          # seconds after the user's last action before the download goes on
+    BODY_IDLE = 300         # seconds with nothing to download before its connection is let go
+
+    def body_folders(self):
+        """The folders whose mail text is fetched: only ones the server still has (#48)."""
+        fs = self.sync_folders() + self.extra_folders()
+        there = self.server_folders
+        return [f for f in fs if f in there] if there else fs
+
+    def start_bodies(self):
+        if self.demo:
+            return
+        if self.body_thread is None or not self.body_thread.is_alive():
+            self.body_thread = threading.Thread(target=self.bodies_loop, daemon=True)
+            self.body_thread.start()
+        self.body_wake.set()
+
+    def bodies_loop(self):
+        c = None
+        while not self.stopping.is_set():
+            if not self.body_wake.wait(self.BODY_IDLE):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                continue
+            self.body_wake.clear()
+            if self.stopping.is_set() or not configured():
+                continue
+            try:
+                c = own_db(c)
+                with R.file_lock("bodies", wait=False) as got:
+                    if got:                     # else the ragdoll command is at it
+                        self.fetch_bodies_now(c)
+            except BaseException as e:          # noqa: B036 - R.imap() dies with SystemExit; the next pass tries again
+                print("mail text download stopped: %s" % friendly(e), file=sys.stderr)
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+            finally:
+                self.bodies = None
+        m, self.body_m = self.body_m, None
+        R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
+
+    def quiet_wait(self, gen):
+        """Wait while somebody opens a mail or has just done something: they go first."""
+        while not self.stopping.is_set() and gen == self.gen and (
+                self.fg > 0 or time.time() - self.active_at < self.BODY_QUIET):
+            self.stopping.wait(0.2)
+
+    def body_fetch(self, folder, uids):
+        for attempt in (0, 1):
+            try:
+                if self.body_m is not None and not still_there(self.body_m, self.body_used, 90):
+                    m, self.body_m = self.body_m, None
+                    R.quit_imap(m, quick=True)
+                if self.body_m is None:
+                    self.body_m = R.imap()
+                    with contextlib.suppress(Exception):
+                        self.body_m.sock.settimeout(90)
+                got = R.fetch_bodies_on(self.body_m, folder, uids)
+                self.body_used = time.time()
+                return got
+            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                if attempt:
+                    raise
+
+    def fetch_bodies_now(self, c):
+        """Newest first, many mails per command, one SELECT per folder, at a polite pace, making way
+        for the user; no folder or flag work in between (that was a whole sync per 50 mails)."""
+        gen = self.gen
+        folders = self.body_folders()
+        if not folders:
+            return
+        marks = ",".join("?" * len(folders))
+        count = "select count(*) from msgs where has_body=0 and folder in (%s)" % marks
+        left = c.execute(count, folders).fetchone()[0]
+        skip = set()                    # asked this time and not given: tried again on a later pass
+        self.bodies = {"done": 0, "left": left}
+        while left > len(skip) and not self.stopping.is_set():
+            rows = c.execute("select folder, uid from msgs where has_body=0 and folder in (%s) order by ts desc "
+                             "limit ?" % marks, folders + [self.BODY_ROUND + len(skip)]).fetchall()
+            rows = [r for r in rows if (r["folder"], r["uid"]) not in skip][:self.BODY_ROUND]
+            if not rows:
+                break
+            by = {}
+            for r in rows:
+                by.setdefault(r["folder"], []).append(r["uid"])
+            for f, uids in by.items():
+                for k in range(0, len(uids), R.BODY_BATCH):
+                    part = uids[k:k + R.BODY_BATCH]
+                    self.quiet_wait(gen)
+                    if self.stopping.is_set() or gen != self.gen:
+                        return              # quitting, or the account changed (#59)
+                    try:
+                        got = self.body_fetch(f, part)
+                    except LookupError:     # the folder went (renamed or deleted elsewhere): not again this time
+                        skip.update((f, u) for u in uids)
+                        break
+                    R.store_bodies(c, f, got)
+                    skip.update((f, u) for u in part if u not in got)
+                    self.bodies = {"done": self.bodies["done"] + len(got), "left": max(0, left - len(got))}
+                    left = self.bodies["left"]
+                    self.stopping.wait(self.BODY_PAUSE)
+            left = c.execute(count, folders).fetchone()[0]
 
     def look(self):
         """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
@@ -1978,8 +2371,19 @@ class Backend:
 
     # ---- api: app state
 
+    def config_problem(self):
+        """The settings file could not be read (#49): {path, error}, and the page may show the file."""
+        e = R.CONFIG_ERROR
+        if not e or self.demo:
+            return None
+        self.made.add(e["path"])
+        if not self.sync["error"]:
+            self.sync.update(error=CONFIG_MSG, kind="config", detail="%s: %s" % (e["path"], e["error"]),
+                             retry_at=None)
+        return {"path": e["path"], "error": e["error"]}
+
     def api_boot(self, a):
-        return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
+        return {"config_error": self.config_problem(), "configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
                 "prefs": self.prefs(), "news": self.news, "asks": self.asks,
@@ -2042,7 +2446,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks, **sync_problem(self.sync)}
+                "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2052,11 +2456,17 @@ class Backend:
     def prefs(self):
         try:
             with open(os.path.join(R.CFG.home, "app.json"), encoding="utf-8") as f:
-                return json.load(f)
+                p = json.load(f)
+            return p if isinstance(p, dict) else {}
         except (OSError, ValueError):
             return {}
 
     def api_prefs(self, a):
+        # one change at a time, each on top of the one before: two at once lost the language (#61)
+        with self.preflock:
+            return self.change_prefs(a)
+
+    def change_prefs(self, a):
         p = self.prefs()
         p.update({k: v for k, v in a.items() if k in ("theme", "sidebar")})
         # widths in pixels (the page puts them in its style): whole numbers in a sane range; 0 is the default width
@@ -2106,8 +2516,11 @@ class Backend:
             if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
                 p[k] = f
         os.makedirs(R.CFG.home, exist_ok=True)
-        with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
+        path = os.path.join(R.CFG.home, "app.json")
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:     # a reader never sees half a file
             json.dump(p, f)
+        os.replace(tmp, path)
         return p
 
     # ---- api: lists and reading
@@ -2552,8 +2965,33 @@ class Backend:
                     if dest not in R.CFG.sync_folders and dest_key == "archive":
                         R.CFG.folders["archive"] = dest
                 for f, uids in by.items():
-                    R.move_uids(m, f, sorted(set(uids)), dest)
-            self.imap(go)
+                    todo = sorted(set(uids))
+                    try:
+                        R.move_uids(m, f, todo, dest)
+                    except R.Refused as e:  # the mail moved before the server stopped leaves the list too (#58)
+                        moved[f] = todo[:e.done]
+                        raise
+                    moved[f] = todo
+            moved = {}
+            try:
+                self.imap(go)
+            except BaseException:           # noqa: B036 - re-raised once the index has the part that went
+                self.forget_moved(moved)
+                if moved:
+                    self.wake.set()
+                raise
+        self.forget_moved(by)
+        self.bump()
+        if not self.demo:
+            if (set(by) | {dest}) - set(self.sync_folders()):
+                self.extra_now = True
+            self.wake.set()
+        return {"moved": sum(len(x) for x in by.values())}
+
+    def forget_moved(self, by):
+        """Rows of mail that is no longer in its folder on the server leave the index."""
+        if not any(by.values()):
+            return
         with self.dblock:
             for f, uids in by.items():
                 for u in uids:
@@ -2562,11 +3000,6 @@ class Backend:
                         self.c.execute("delete from fts where rowid=?", (r["id"],))
             self.c.commit()
         self.bump()
-        if not self.demo:
-            if (set(by) | {dest}) - set(self.sync_folders()):
-                self.extra_now = True
-            self.wake.set()
-        return {"moved": sum(len(x) for x in by.values())}
 
     def folders(self, m):
         if self.server_folders is None:
@@ -2909,7 +3342,7 @@ class Backend:
         path = R.part_path(r["folder"], r["uidv"], r["uid"], sec)
         raw = R.cache_get(path)
         if not raw:
-            raw = self.imap(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
+            raw = self.gone_check(r, lambda: self.download(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec)))
             R.cache_put(path, raw)
         return R.to_msg(raw)
 
@@ -3588,12 +4021,13 @@ class Backend:
         try:
             m = imaplib.IMAP4_SSL(ihost, iport, timeout=20)
         except Exception as e:
-            fail("Incoming server: " + friendly(e))
+            fail("Incoming server: " + friendly(e), str(e))
         try:
             try:
                 m.login(user, pw)
             except imaplib.IMAP4.error as e:
-                fail("Incoming server: sign-in failed (%s). Some providers need an app password." % e)
+                fail("Incoming server: sign-in failed. Check the address and password; some providers "
+                     "need an app password.", str(e))
             found = detect_folders(list_folders(m))
         finally:
             with contextlib.suppress(Exception):
@@ -3606,9 +4040,10 @@ class Backend:
                 with contextlib.suppress(Exception):
                     s.quit()
         except smtplib.SMTPAuthenticationError as e:
-            fail("Outgoing server: sign-in failed (%s)." % e.smtp_error.decode(errors="replace")[:200])
+            fail("Outgoing server: sign-in failed. Check the address and password; some providers "
+                 "need an app password.", e.smtp_error.decode(errors="replace")[:200])
         except Exception as e:
-            fail("Outgoing server: " + friendly(e))
+            fail("Outgoing server: " + friendly(e), str(e))
         return {"folders": found}
 
     def api_save_settings(self, a):
@@ -3618,10 +4053,20 @@ class Backend:
         try:
             with open(path, encoding="utf-8") as f:
                 raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
         except FileNotFoundError:
             raw = {}
         except ValueError:
-            fail("The settings file %s is broken; fix or remove it first." % path)
+            # a file that can't be read is not written over: a copy of it stays beside the new one (#49)
+            keep = "%s.broken-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            try:
+                shutil.copy2(path, keep)
+            except OSError as e:
+                fail("The settings file %s can't be read, and no copy of it could be kept." % path, str(e))
+            print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
+            self.made.add(keep)
+            raw = {}
         user = (a.get("user") or R.CFG.user or "").strip().lower()
         if a.get("account", True):
             raw["user"] = user
@@ -3648,24 +4093,75 @@ class Backend:
                 R.keychain_set(user, a["password"])
             except OSError as e:
                 fail("Could not save the password in the system keychain: %s" % e)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(raw, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-        old_home = R.CFG.home
+        write_config(path, raw)
+        old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
         R.CFG = R.load_config(path)
-        if R.CFG.home != old_home:
+        new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
+        if new[3] != old[3]:
             with self.dblock:
                 self.c = R.db()
+        if new != old:
+            # another account or server: no connection, loop or cached mail of the old one goes on (#59)
+            self.restart_sync(clear=bool(old[0]) and new[0] != old[0] and new[3] == old[3],
+                              redetect=not a.get("folders"))
         self.drop()
         self.server_folders = None
         self.contacts = (0, {})
-        self.sync["error"] = None
+        self.clear_error()
         self.start_sync()
         self.bump()
         return self.api_boot({})
+
+    def restart_sync(self, clear, redetect):
+        """The account or server changed: every loop drops its connection and starts again with the
+        new settings. clear: another account in the same index; its mail, folders and cache go."""
+        self.gen += 1
+        self.pre.clear()
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
+        end = time.time() + 10      # the pass and the text download under way end at their next step
+        while (self.sync["running"] or self.bodies is not None) and time.time() < end:
+            time.sleep(0.02)
+        self.drop()
+        with self.dlock:
+            self.drop_download()
+        self.folder_status, self.extra_at, self.redetect = {}, 0, redetect
+        if not clear:
+            return
+        with self.dblock:
+            c = self.c
+            c.execute("delete from msgs")
+            c.execute("delete from fts")
+            c.execute("delete from state")
+            c.execute("delete from links")
+            c.execute("delete from meta where k in ('folders', 'last_sync') or k like 'modseq:%' or k like 'sweep:%'")
+            c.commit()
+        shutil.rmtree(os.path.join(R.CFG.home, "cache"), ignore_errors=True)
+        self.found, self.news, self.news_mark, self.counts = [], [], None, None
+        self.built.clear()
+        with self.marklock:
+            self.marks.clear()
+        self.sync["last"] = None
+
+    def use_detected(self, fs):
+        """The special folders found on the server after a change of account or server, saved without
+        a "Test connection" (which finds them itself): the old provider's names would fail (#59)."""
+        path = config_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        folders = dict(R.DEFAULTS["folders"], **fs)
+        sync = [folders["inbox"], folders["sent"], folders["drafts"]]
+        if raw.get("folders") == folders and raw.get("sync_folders") == sync:
+            return
+        raw["folders"], raw["sync_folders"] = folders, sync
+        write_config(path, raw)
+        R.CFG = R.load_config(path)
+        self.bump()
 
     # ---- demo
 
@@ -3730,7 +4226,10 @@ class Backend:
         self.wake.set()
         self.sched_wake.set()
         self.pre_wake.set()
+        self.body_wake.set()
         self.drop()
+        for m in (self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
 
 
 def ids_in(a):
@@ -3781,6 +4280,76 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
                    R.hdr(msg, "To") + " " + R.hdr(msg, "Cc"), " | ".join(names), body))
     c.commit()
+
+
+class Restart(Exception):
+    """The settings changed while a sync pass ran: it stops, and the next one uses the new ones."""
+
+
+def own_db(c):
+    """A loop's own index connection, made again when the index moved (another data_dir)."""
+    want = os.path.realpath(os.path.join(R.CFG.home, "index.db"))
+    if c is not None:
+        try:
+            if os.path.realpath(c.execute("pragma database_list").fetchone()[2]) == want:
+                return c
+        except Exception:       # noqa: BLE001 - closed or broken: made again
+            pass
+        with contextlib.suppress(Exception):
+            c.close()
+    return R.db()
+
+
+def write_config(path, raw):
+    """config.json written whole or not at all: to a file beside it, then put in its place."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+STATUS_RE = re.compile(rb"\b(MESSAGES|UIDNEXT|UNSEEN|UIDVALIDITY) (\d+)")
+
+
+def folder_status(m, folder):
+    """(messages, uidnext, unseen, uidvalidity) from STATUS: cheap, and it changes when mail comes,
+    goes or is read elsewhere. None when the server does not say: the folder is then synced."""
+    try:
+        typ, data = m.status(R.q(folder), "(MESSAGES UIDNEXT UNSEEN UIDVALIDITY)")
+    except (imaplib.IMAP4.abort, OSError):
+        raise                                   # the connection: the pass connects again
+    except Exception:                           # noqa: BLE001 - a server without STATUS for it
+        return None
+    if typ != "OK":
+        return None
+    got = dict(STATUS_RE.findall(b" ".join(x for x in data if isinstance(x, bytes))))
+    if not got:
+        return None
+    return tuple(int(got.get(k, -1)) for k in (b"MESSAGES", b"UIDNEXT", b"UNSEEN", b"UIDVALIDITY"))
+
+
+def drop_gone_folders(c, names):
+    """Mail of folders the server no longer has (renamed or deleted in webmail or on the phone) leaves
+    the index, so it shows in no search and keeps no sync busy (#48). Returns how many rows went.
+    Only after a LIST that has the inbox: a failed or empty answer removes nothing."""
+    if not names or not any(n.upper() == "INBOX" for n in names):
+        return 0
+    have = set(names)
+    gone = [r[0] for r in c.execute("select folder from msgs union select folder from state").fetchall()
+            if r[0] not in have and r[0].upper() != "INBOX"]
+    n = 0
+    for f in gone:
+        ids = [r[0] for r in c.execute("select id from msgs where folder=?", (f,)).fetchall()]
+        for i in ids:
+            c.execute("delete from fts where rowid=?", (i,))
+        c.execute("delete from msgs where folder=?", (f,))
+        c.execute("delete from state where folder=?", (f,))
+        n += len(ids)
+    if gone:
+        c.commit()
+    return n
 
 
 def folder_label(v):
