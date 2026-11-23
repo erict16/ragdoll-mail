@@ -2,8 +2,8 @@
 #   brew install --cask erict16/tap/ragdoll-mail
 # packaging/bump.py fills in version and sha256 from a release.
 cask "ragdoll-mail" do
-  version "0.10.0"
-  sha256 "1e8bcf4f3647378e2ee8e0b35744443e9f7c0059ff1c1baebfc362eb08da396e"
+  version "0.11.0"
+  sha256 "32ba596d6a139049748ce669d2b4b418e189a234475fee55f7e8226533d67be9"
 
   url "https://github.com/erict16/ragdoll-mail/releases/download/v#{version}/ragdoll-mail-mac.dmg"
   name "Ragdoll Mail"
