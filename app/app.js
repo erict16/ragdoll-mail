@@ -65,10 +65,18 @@ const MSGS = [
 // 0.11 group D_SYNC: sync, connection, sign-in and settings messages
 MSGS.push(
   [/^Waiting for another sync to finish\./, "err_busy"],
+  [/^Secure connection failed\. Check/, "err_ssl2"], [/^Can't reach the mail server\. Check/, "err_reach2"],
+  [/^The connection to the mail server dropped\./, "err_dropped"], [/^The mail server refused the request\./, "err_refused_req"],
+  [/^Can't open the folder (.*) on the server\.$/s, "err_folder_open"],
+  [/^The server refused to move the mail \((\d+) moved/, "err_move_refused"],
+  [/^Enter a full email address\./, "err_need_addr"], [/^Enter the password\./, "err_need_pw"],
+  [/^Incoming server: sign-in failed\./, "err_in_signin"], [/^Outgoing server: sign-in failed\./, "err_out_signin"],
+  [/^Incoming server: (.*)$/s, "err_in"], [/^Outgoing server: (.*)$/s, "err_out"],
 );
 function tr(msg) {
   msg = String(msg ?? "");
-  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1)); }
+  // a part it holds ("Incoming server: <a known sentence>") is put in the chosen language too
+  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1).map((x) => (x && x.length < msg.length ? tr(x) : x ?? ""))); }
   return msg;
 }
 

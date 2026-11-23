@@ -88,11 +88,13 @@ PROVIDERS = {       # domain -> (imap host, smtp host[, smtp port]); IMAP on 993
 
 
 class ApiError(Exception):
-    pass
+    def __init__(self, msg, detail=None):
+        super().__init__(msg)
+        self.detail = detail        # the server's own words: for "copy details", never the title
 
 
-def fail(msg):
-    raise ApiError(msg)
+def fail(msg, detail=None):
+    raise ApiError(msg, detail)
 
 
 LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
@@ -102,30 +104,67 @@ FONT_SIZES = (12, 13, 14, 16, 18)
 TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 
-def friendly(e):
-    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+GONE_MSG = "This mail is no longer here. It may have been moved or deleted."
+
+
+def explain(e):
+    """(a sentence a person can act on, the kind of problem, the raw text) for an exception from
+    IMAP, SMTP or ragdoll. The sentence never carries the server's raw words (#58); the kind is
+    "auth", "offline", "server" or "config" (#54)."""
     s = str(e.code if isinstance(e, SystemExit) else e) or e.__class__.__name__
     low = s.lower()
-    if isinstance(e, (smtplib.SMTPAuthenticationError,)) or (
-            isinstance(e, imaplib.IMAP4.error) and re.search(r"login|auth|password|credentials|invalid", low)):
-        return "Sign-in failed. Check the email address and password in Settings."
+    if isinstance(e, ApiError):
+        return s, "server", e.detail
+    if isinstance(e, smtplib.SMTPAuthenticationError) or (
+            isinstance(e, imaplib.IMAP4.error) and not isinstance(e, imaplib.IMAP4.abort)
+            and re.search(r"login|auth|password|credentials|invalid", low)):
+        return "Sign-in failed. Check the email address and password in Settings.", "auth", s
     if "is not set and no password is saved" in s:
-        return "No password saved. Add it in Settings."
+        return "No password saved. Add it in Settings.", "auth", s
     if "no account configured" in s:
-        return "No account yet. Add one in Settings."
+        return "No account yet. Add one in Settings.", "config", s
+    if isinstance(e, R.IndexTooNew):
+        return s, "config", s
+    mo = re.match(r"no mail \S+ \(moved or deleted", s)
+    if mo:
+        return GONE_MSG, "server", s
+    mo = re.match(r"cannot open folder (.*?): \[", s, re.S)
+    if mo:
+        return "Can't open the folder %s on the server." % mo.group(1), "server", s
+    mo = re.match(r"the server refused the move after (\d+) mails", s)
+    if mo:
+        return "The server refused to move the mail (%s moved before it stopped)." % mo.group(1), "server", s
     if isinstance(e, socket.gaierror):
-        return "Can't find the mail server. Check the server name and the internet connection."
+        return "Can't find the mail server. Check the server name and the internet connection.", "offline", s
     if isinstance(e, (socket.timeout, TimeoutError)):
-        return "The mail server did not answer in time."
+        return "The mail server did not answer in time.", "offline", s
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return "Secure connection failed. Check the server name and port.", "server", s
     if isinstance(e, ssl.SSLError):
-        return "Secure connection failed (%s). Check the server name and port." % s
+        return "Secure connection failed. Check the server name and port.", "offline", s
     if isinstance(e, ConnectionRefusedError):
-        return "The mail server refused the connection. Check the port."
+        return "The mail server refused the connection. Check the port.", "offline", s
+    if isinstance(e, imaplib.IMAP4.abort):
+        return "The connection to the mail server dropped.", "offline", s
     if isinstance(e, OSError) and not isinstance(e, FileNotFoundError):
-        return "Can't reach the mail server (%s)." % s
-    if isinstance(e, imaplib.IMAP4.error):
-        return "The mail server said: %s" % s
-    return s
+        return "Can't reach the mail server. Check the internet connection.", "offline", s
+    if isinstance(e, (imaplib.IMAP4.error, smtplib.SMTPException)):
+        return "The mail server refused the request.", "server", s
+    return s, "server", s
+
+
+def friendly(e):
+    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+    return explain(e)[0]
+
+
+def error_reply(e):
+    """The page's answer for a call that failed: the sentence, and the raw text as detail."""
+    msg, _, detail = explain(e)
+    if detail and detail != msg:
+        print("%s (%s)" % (msg, detail), file=sys.stderr)
+        return {"ok": False, "error": msg, "detail": detail}
+    return {"ok": False, "error": msg}
 
 
 def config_path():
@@ -872,11 +911,10 @@ class Backend:
         try:
             return 200, {"ok": True, "data": fn(args or {})}
         except ApiError as e:
-            return 200, {"ok": False, "error": str(e)}
-        except SystemExit as e:
-            return 200, {"ok": False, "error": friendly(e)}
-        except (imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
-            return 200, {"ok": False, "error": friendly(e)}
+            return 200, ({"ok": False, "error": str(e), "detail": e.detail} if e.detail
+                         else {"ok": False, "error": str(e)})
+        except (SystemExit, imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
+            return 200, error_reply(e)
         except Exception as e:      # noqa: BLE001 - a bug must not take the page down with it
             traceback.print_exc(file=sys.stderr)
             return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
@@ -1009,11 +1047,27 @@ class Backend:
             if not raw:
                 # a big one may take minutes: on its own connection, so other mail opens meanwhile
                 go = self.download if (r["size"] or 0) > R.LIGHT_MIN else self.imap
-                raw = go(lambda m: R.fetch_raw(m, folder, uid))
+                raw = self.gone_check(r, lambda: go(lambda m: R.fetch_raw(m, folder, uid)))
                 R.cache_put(path, raw)
         finally:
             self.fg -= 1
         return raw
+
+    def gone_check(self, r, fetch):
+        """fetch(); a mail the server no longer has (deleted on the phone a moment ago) leaves the
+        list at once, and the page is told so in plain words (#58)."""
+        try:
+            return fetch()
+        except SystemExit as e:
+            if not str(e.code).startswith("no mail "):
+                raise
+            with self.dblock:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+                self.c.commit()
+            self.bump()
+            self.wake.set()
+            fail(GONE_MSG, str(e.code))
 
     def view_raw(self, i):
         return self.view(i)[0]
@@ -2027,8 +2081,33 @@ class Backend:
                     if dest not in R.CFG.sync_folders and dest_key == "archive":
                         R.CFG.folders["archive"] = dest
                 for f, uids in by.items():
-                    R.move_uids(m, f, sorted(set(uids)), dest)
-            self.imap(go)
+                    todo = sorted(set(uids))
+                    try:
+                        R.move_uids(m, f, todo, dest)
+                    except R.Refused as e:  # the mail moved before the server stopped leaves the list too (#58)
+                        moved[f] = todo[:e.done]
+                        raise
+                    moved[f] = todo
+            moved = {}
+            try:
+                self.imap(go)
+            except BaseException:           # noqa: B036 - re-raised once the index has the part that went
+                self.forget_moved(moved)
+                if moved:
+                    self.wake.set()
+                raise
+        self.forget_moved(by)
+        self.bump()
+        if not self.demo:
+            if (set(by) | {dest}) - set(self.sync_folders()):
+                self.extra_now = True
+            self.wake.set()
+        return {"moved": sum(len(x) for x in by.values())}
+
+    def forget_moved(self, by):
+        """Rows of mail that is no longer in its folder on the server leave the index."""
+        if not any(by.values()):
+            return
         with self.dblock:
             for f, uids in by.items():
                 for u in uids:
@@ -2037,11 +2116,6 @@ class Backend:
                         self.c.execute("delete from fts where rowid=?", (r["id"],))
             self.c.commit()
         self.bump()
-        if not self.demo:
-            if (set(by) | {dest}) - set(self.sync_folders()):
-                self.extra_now = True
-            self.wake.set()
-        return {"moved": sum(len(x) for x in by.values())}
 
     def folders(self, m):
         if self.server_folders is None:
@@ -2205,7 +2279,7 @@ class Backend:
         path = R.part_path(r["folder"], r["uidv"], r["uid"], sec)
         raw = R.cache_get(path)
         if not raw:
-            raw = self.download(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
+            raw = self.gone_check(r, lambda: self.download(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec)))
             R.cache_put(path, raw)
         return R.to_msg(raw)
 
@@ -2763,12 +2837,13 @@ class Backend:
         try:
             m = imaplib.IMAP4_SSL(ihost, iport, timeout=20)
         except Exception as e:
-            fail("Incoming server: " + friendly(e))
+            fail("Incoming server: " + friendly(e), str(e))
         try:
             try:
                 m.login(user, pw)
             except imaplib.IMAP4.error as e:
-                fail("Incoming server: sign-in failed (%s). Some providers need an app password." % e)
+                fail("Incoming server: sign-in failed. Check the address and password; some providers "
+                     "need an app password.", str(e))
             found = detect_folders(list_folders(m))
         finally:
             with contextlib.suppress(Exception):
@@ -2781,9 +2856,10 @@ class Backend:
                 with contextlib.suppress(Exception):
                     s.quit()
         except smtplib.SMTPAuthenticationError as e:
-            fail("Outgoing server: sign-in failed (%s)." % e.smtp_error.decode(errors="replace")[:200])
+            fail("Outgoing server: sign-in failed. Check the address and password; some providers "
+                 "need an app password.", e.smtp_error.decode(errors="replace")[:200])
         except Exception as e:
-            fail("Outgoing server: " + friendly(e))
+            fail("Outgoing server: " + friendly(e), str(e))
         return {"folders": found}
 
     def api_save_settings(self, a):

@@ -229,6 +229,13 @@ def die(msg):
     sys.exit(msg)
 
 
+class Refused(SystemExit):
+    """die() for a server that stopped part way: `done` says how many went before it stopped."""
+    def __init__(self, msg, done):
+        super().__init__(msg)
+        self.done = done
+
+
 _SHELL_ENV = {}
 
 
@@ -2584,7 +2591,7 @@ def move_uids(m, folder, uids, dest):
                 else:
                     m.expunge()
         if typ != "OK":
-            die("the server refused the move after %d mails: %s" % (moved, data))
+            raise Refused("the server refused the move after %d mails: %s" % (moved, data), moved)
         moved += len(uids[i:i + 200])
     return moved
 

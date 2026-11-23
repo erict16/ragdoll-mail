@@ -673,5 +673,79 @@ class OtherSync(OwnBackend):
         self.assertIsNone(b.lock_busy)
 
 
+class PlainErrors(OwnBackend):
+    """#58: errors in plain words the page can translate; the server's raw text only as detail."""
+
+    def test_sentences_and_kinds(self):
+        cases = [
+            (imaplib.IMAP4.error("[AUTHENTICATIONFAILED] Invalid credentials"), "auth"),
+            (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "auth"),
+            (SystemExit("no account configured: copy config.example.json"), "config"),
+            (socket.gaierror(8, "nodename nor servname provided"), "offline"),
+            (socket.timeout("timed out"), "offline"),
+            (ConnectionRefusedError(61, "Connection refused"), "offline"),
+            (OSError(51, "Network is unreachable"), "offline"),
+            (imaplib.IMAP4.abort("socket error: EOF"), "offline"),
+            (LookupError("cannot open folder 华明印尼: [b'Folder not exist']"), "server"),
+            (SystemExit("no mail INBOX:123 (moved or deleted? run search again)"), "server"),
+            (R.Refused("the server refused the move after 200 mails: [b'quota']", 200), "server"),
+            (imaplib.IMAP4.error("[b'Mailbox is full']"), "server"),
+        ]
+        for e, kind in cases:
+            msg, k, detail = A.explain(e)
+            self.assertEqual(k, kind, msg)
+            self.assertNotIn("[b'", msg)
+            self.assertNotIn("run search again", msg)
+        self.assertEqual(A.friendly(cases[8][0]), "Can't open the folder 华明印尼 on the server.")
+        out = self.b.call("mark", {"ids": "INBOX:1", "flag": "nope"})[1]
+        self.assertFalse(out["ok"])
+
+    def test_call_gives_the_raw_text_as_detail(self):
+        def boom(a):
+            raise LookupError("cannot open folder X: [b'gone']")
+        self.b.api_boom = boom
+        out = self.b.call("boom", {})[1]
+        self.assertEqual(out["error"], "Can't open the folder X on the server.")
+        self.assertIn("[b'gone']", out["detail"])
+
+    def test_mail_deleted_elsewhere_leaves_the_list(self):
+        b = self.b
+        b.demo = False
+        i = self.ids()[0]
+        b.imap = b.download = lambda fn: fn(FakeServer())
+        self.patch(A.R, "fetch_raw", lambda m, f, u: A.R.die("no mail %s (moved or deleted? run search again)" % i))
+        rev = b.rev
+        with self.assertRaises(A.ApiError) as cm:
+            b.raw(i)
+        self.assertEqual(str(cm.exception), A.GONE_MSG)
+        self.assertFalse(b.q("select 1 from msgs where folder=? and uid=?", A.R.parse_id(i)))
+        self.assertGreater(b.rev, rev)
+
+    def test_part_of_a_move_that_went_leaves_the_old_folder(self):
+        b = self.b
+        b.demo = False
+        b.imap = lambda fn: fn(FakeServer())
+        b.folders = lambda m: ["INBOX", "Archive", "Sent Messages"]
+        self.patch(A.R.CFG, "folders", dict(A.R.CFG.folders, archive="Archive"))
+        inbox = self.ids(seen=1)[:2]
+        sent = [A.R.make_id("Sent Messages", r["uid"]) for r in b.q("select uid from msgs where folder='Sent Messages'")][:1]
+
+        def move_uids(m, folder, uids, dest):
+            if folder == "Sent Messages":
+                raise A.R.Refused("the server refused the move after 0 mails: [b'no']", 0)
+            raise A.R.Refused("the server refused the move after 1 mails: [b'no']", 1)
+        self.patch(A.R, "move_uids", move_uids)
+        out = b.call("move", {"ids": inbox + sent, "to": "archive"})[1]
+        self.assertFalse(out["ok"])
+        self.assertNotIn("[b'", out["error"])
+        left = [A.R.make_id("INBOX", r["uid"]) for r in b.q("select uid from msgs where folder='INBOX'")]
+        first = sorted(inbox, key=lambda x: A.R.parse_id(x)[1])[0]
+        self.assertNotIn(first, left)                               # it went: not shown in the inbox any more
+        self.assertIn(sorted(inbox, key=lambda x: A.R.parse_id(x)[1])[1], left)
+
+    def test_setup_messages(self):
+        self.assertEqual(self.b.call("test", {"user": "nope"})[1]["error"], "Enter a full email address.")
+
+
 if __name__ == "__main__":
     unittest.main()
