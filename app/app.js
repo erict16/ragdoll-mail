@@ -313,7 +313,7 @@ document.addEventListener("mouseover", (e) => {
   if (side) return;
   tipTimer = setTimeout(() => {
     const r = b.getBoundingClientRect();
-    tipEl = el("div", { class: "tip", html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
+    tipEl = el("div", { class: "tip" + (b.dataset.tip ? "" : " key-only"), html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
     document.body.append(tipEl);
     const w = tipEl.offsetWidth;
     tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
@@ -982,14 +982,31 @@ function markRow(id, patch) {
 const isSel = (id) => (S.multi.size > 1 ? S.multi.has(id) : id === S.sel);
 function syncSel() {
   let prev = null;
+  const joined = [];
   for (const n of $$("#rows .row")) {
     const on = isSel(n.dataset.id);
+    if (on && S.multi.size > 1 && !n.classList.contains("on") && n._h) joined.push(n);
     n.classList.toggle("on", on);
     prev?.classList.toggle("on-next", on);
     prev = n;
   }
   prev?.classList.remove("on-next");
+  joinRows(joined);
 }
+// a row that joins a selection of several: its grey grows out from inside the row to the block's edges, with the
+// corners it shares with a selected neighbour already square, so the rows read as merging into one block
+function joinRows(nodes) {
+  if (REDUCED.matches || nodes.length > 40) return;
+  for (const n of nodes) {
+    const up = n.previousElementSibling?.classList.contains("on"), down = n.classList.contains("on-next");
+    const r = (a, b) => `${a ? 0 : 9}px ${a ? 0 : 9}px ${b ? 0 : 9}px ${b ? 0 : 9}px`;
+    n.animate([{ clipPath: `inset(${up ? 0 : 5}px 5px ${down ? 0 : 5}px 5px round ${r(up, down)})` },
+      { clipPath: `inset(0px 0px 0px 0px round ${r(up, down)})` }], { duration: 180, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  }
+}
+// the mail E, # and V (and their toolbar buttons) move: the row selected in the list, not an older message of
+// its conversation that was opened in the pane
+const moveId = () => (S.sel && S.thread?.rows.some((x) => x.id === S.sel) ? S.sel : S.focus || S.sel);
 // the mails the next action works on: the selection, or the open mail
 function targets() {
   if (S.multi.size > 1) return [...S.multi];
@@ -1036,18 +1053,67 @@ function showMulti() {
   const anyUnread = rows.some((r) => r.unread), allFlagged = rows.length && rows.every((r) => r.flagged);
   const inTrash = rows.length && rows.every((r) => r.folder === "trash");
   const inJunk = rows.length && rows.every((r) => r.folder === "junk");
-  const b = (ic, label, run) => el("button", { class: "btn", onclick: run, html: icon(ic, "small") + esc(label) });
-  const stack = el("div", { class: "multi-stack" });
-  for (let k = Math.min(3, ids.length) - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
-  $("#pane").replaceChildren(el("div", { class: "multi" }, stack,
-    el("h2", {}, t("n_selected", ids.length)),
-    el("div", { class: "multi-acts" },
-      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
-      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
-      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids)),
-      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
-      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
+  // moves first, as equal buttons on one line; the marks below them, quieter; the key shows on hover
+  const b = (ic, label, run, key, cls = "btn") => el("button", { class: cls, onclick: run, "data-tip": key ? "" : null, "data-key": key,
+    html: icon(ic, "small") + `<span>${esc(label)}</span>` });
+  const acts = el("div", { class: "multi-acts" },
+    el("div", { class: "multi-moves" },
+      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive"), "E"),
+      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash"), "#"),
+      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), "V")),
+    el("div", { class: "multi-marks" },
+      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread), "U", "btn quiet"),
+      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged), "S", "btn quiet")));
+  const title = t("n_selected", ids.length), cards = Math.min(3, ids.length);
+  const was = $("#pane > .multi:not(.pane-ghost)");
+  if (was) {
+    // more or fewer selected: the count ticks and a card joins or leaves the stack; the rest stays
+    const h2 = $("h2", was), stack = $(".multi-stack", was);
+    if (h2.textContent !== title) {
+      const up = ids.length > (parseInt(h2.dataset.n, 10) || 0);
+      h2.textContent = title; h2.dataset.n = ids.length;
+      if (!REDUCED.matches) h2.animate([{ opacity: 0.2, transform: `translateY(${up ? 5 : -5}px)` }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
+    }
+    for (let k = stack.children.length; k < cards; k++) stack.prepend(el("span", { class: "multi-card", style: `--k:${k}` }));
+    while (stack.children.length > cards) stack.firstElementChild.remove();
+    $(".multi-acts", was).replaceWith(acts);
+  } else {
+    const stack = el("div", { class: "multi-stack" });
+    for (let k = cards - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
+    swapPane(el("div", { class: "multi" }, stack, el("h2", { "data-n": ids.length }, title), acts));
+  }
+  fitMoves();
   renderToolbar();
+}
+// the three move buttons stand side by side, all as wide as the widest; when the pane is too narrow for that line
+// in this language they stand one above the other, full width
+function fitMoves() {
+  const box = $("#pane > .multi:not(.pane-ghost)"), moves = box && $(".multi-moves", box);
+  if (!moves) return;
+  moves.classList.remove("stack");
+  moves.style.width = "max-content";
+  const w = moves.offsetWidth;
+  moves.style.width = "";
+  moves.classList.toggle("stack", w > box.clientWidth - 48);
+}
+new ResizeObserver(() => fitMoves()).observe($("#pane"));
+// the reading pane changes between one mail and several selected: the old view fades and draws back a little
+// while the new one comes in (only the fade with reduced motion). The old view keeps its place in the page (an
+// open mail's frames would load again if they were moved) and goes once it has faded.
+function swapPane(node) {
+  const pane = $("#pane"), old = [...pane.children].find((n) => !n.classList.contains("pane-ghost"));
+  const kind = (n) => (n?.classList.contains("multi") ? "multi" : n?.classList.contains("doc") ? "doc" : null);
+  const a = kind(old), b = kind(node);
+  if (!a || !b || a === b) { pane.replaceChildren(node); return; }
+  const top = pane.scrollTop;
+  for (const g of $$(":scope > .pane-ghost", pane)) g.remove();
+  old.classList.add("pane-ghost");
+  old.style.top = -top + "px";
+  old.style.transformOrigin = `50% ${top + pane.clientHeight / 2}px`;
+  pane.insertBefore(node, old);
+  pane.scrollTop = 0;
+  old.animate(REDUCED.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.97)" }],
+    { duration: 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" }).finished.then(() => old.remove(), () => old.remove());
 }
 
 // read / unread and flags, for one mail or many
@@ -1305,7 +1371,9 @@ function showEmpty() {
 
 function renderToolbar() {
   const tools = $("#tools"), end = $("#tools-end");
+  const wasU = unreadState();
   tools.replaceChildren(); end.replaceChildren();
+  queueMicrotask(() => easeUnread(wasU));
   $("#toolbar").classList.toggle("lined", $("#pane").scrollTop > 0);
   $("#app").classList.toggle("reading", !!(S.compose || S.sched || S.thread || S.multi.size > 1));
   tools.append(iconBtn("arrow-left", t("back"), goBack, { key: "Esc", cls: "back-btn" }));
@@ -1359,6 +1427,24 @@ function renderToolbar() {
   );
 }
 
+// "Mark as unread" carries a dot on the envelope's corner; "Mark as read" has none. When the button turns from one
+// into the other, the new button starts as the old one looked and the dot (and the cut round it) grows or shrinks
+// away, with the envelope settling, instead of the toolbar swapping it in one frame (style.css, group C1).
+function unreadState() {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  return b ? { dot: b.classList.contains("unread-mark"), multi: S.multi.size > 1, id: S.focus || S.sel } : null;
+}
+function easeUnread(was) {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  const now = b && b.classList.contains("unread-mark");
+  // only the same mail (or the same selection) changing its mark: a new mail opening just shows its button
+  if (!b || !was || was.dot === now || was.multi !== S.multi.size > 1 || (!was.multi && was.id !== (S.focus || S.sel))) return;
+  b.classList.toggle("unread-mark", was.dot);
+  void b.offsetWidth;
+  b.classList.toggle("unread-mark", now);
+  if (!REDUCED.matches) $(".i", b)?.animate([{ opacity: 0.4, transform: "scale(.86)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
+}
+
 let threadSeq = 0;
 async function openThread(id) {
   const seq = ++threadSeq;
@@ -1376,10 +1462,10 @@ async function openThread(id) {
     doc.append(msgNode(r, r.id === openId));
     if (r.id === openId) doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
   }
-  $("#pane").replaceChildren(doc);
+  swapPane(doc);
   $("#pane").scrollTop = 0;
   renderToolbar();
-  const open = $(`.msg[data-id="${CSS.escape(id)}"]`);
+  const open = $(`.msg[data-id="${CSS.escape(id)}"]`, doc);
   if (open && openId !== rows[0].id) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
 }
 

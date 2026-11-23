@@ -649,6 +649,41 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 /* rows out of sight are counted at a row's measured height (app.js measureRow), so the view does not jump */
 .rows .row { contain-intrinsic-size: auto var(--row-h, 59px); }
 
+/* a thin line of list between two grey rows (hovered, selected, right-clicked), as in the folder list; rows of one
+   selection stay one block. The border is see-through and takes no extra room from the layout's point of view. */
+.row { border-top: 1px solid transparent; background-clip: padding-box; }
+.row::before { top: -1px; }
+.row.on + .row.on { background-clip: border-box; }
+
+/* "Mark as unread": the dot and the cut round it come and go with the mark, press with the envelope (scaled about
+   the button's centre, as the icon is) and darken with it on hover */
+@property --cut { syntax: "<length>"; inherits: false; initial-value: 0px; }
+.icon-btn[data-key="U"] .i { --cut: 0px; -webkit-mask: radial-gradient(circle var(--cut) at 14.5px 2.5px, transparent 96%, #000 100%);
+  mask: radial-gradient(circle var(--cut) at 14.5px 2.5px, transparent 96%, #000 100%); transition: transform .18s var(--ease), --cut .22s var(--ease); }
+.icon-btn.unread-mark .i { --cut: 4.5px; }
+.icon-btn[data-key="U"]::after { content: ""; position: absolute; left: 19.5px; top: 7.5px; width: 6px; height: 6px; border-radius: 50%; pointer-events: none;
+  background: var(--text-2); opacity: 0; transform: scale(0); transition: transform .22s var(--ease), opacity .16s, background-color .15s; }
+.icon-btn.unread-mark::after { opacity: 1; transform: none; }
+.icon-btn[data-key="U"]:hover:not(:disabled)::after { background: var(--text); }
+.icon-btn.unread-mark:active:not(:disabled)::after { transform: translate(-6.5px, 5.5px) scale(.9) translate(6.5px, -5.5px); transition-duration: .18s; }
+
+/* the view going away while the next one comes in (app.js swapPane) */
+.pane-ghost { position: absolute !important; left: 0; right: 0; margin-inline: auto; pointer-events: none; animation: none !important; z-index: 1; }
+
+/* several selected: the moves as three equal buttons, the marks below as quiet ones */
+.multi { gap: 12px; }
+.multi h2 { margin: 10px 0 4px; font-variant-numeric: tabular-nums; }
+.multi-acts { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: none; flex-wrap: nowrap; width: 100%; }
+.multi-moves { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.multi-moves .btn { min-width: 0; padding: 0 14px; }
+.multi-moves.stack { display: grid; grid-auto-flow: row; width: min(100%, 300px); }
+.multi-moves .btn span, .multi-marks .btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.multi-marks { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px; }
+.btn.quiet { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); font-weight: 500; }
+.btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.btn.quiet:hover:not(:disabled) .i { color: var(--text); }
+.tip.key-only kbd { margin-left: 0; }
+
 /* ---- 0.11 group C2_READ: new rules for this group only ---- */
 
 
