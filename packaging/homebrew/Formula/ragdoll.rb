@@ -4,8 +4,8 @@
 class Ragdoll < Formula
   desc "Search, read and draft IMAP mail from the terminal, for you and AI agents"
   homepage "https://erict16.github.io/ragdoll-mail/"
-  url "https://github.com/erict16/ragdoll-mail/archive/refs/tags/v0.11.0.tar.gz"
-  sha256 "e045b49bd368149c6657acc238f984ff15d64991b5ed8a498a888fe2d3056fc7"
+  url "https://github.com/erict16/ragdoll-mail/archive/refs/tags/v0.11.1.tar.gz"
+  sha256 "169744c3d7c46bf087d3a069640e292599e14c570af09a0fa08bcb75f7452972"
   license "MIT"
 
   livecheck do
