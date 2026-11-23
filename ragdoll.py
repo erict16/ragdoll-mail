@@ -2450,6 +2450,20 @@ def in_folder(m, folder, mid, last=15):
     return (mid.strip().strip("<>") + ">").encode() in blob
 
 
+def uid_of_mid(m, folder, mid, last=30):
+    """The UID of the mail with this Message-ID among the folder's last ones, or 0."""
+    select(m, folder)
+    u = uids_of(m)[-last:]
+    want = (mid or "").strip().strip("<>").encode()
+    if not u or not want:
+        return 0
+    typ, data = m.uid("FETCH", ",".join(map(str, u)), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    for seg in segments(data or []):
+        if b"<" + want + b">" in b"".join(p for p in seg if isinstance(p, bytes)):
+            return seg_uid(seg) or 0
+    return 0
+
+
 def sent_log():
     return os.path.join(CFG.home, "sent.log")
 

@@ -536,5 +536,89 @@ class OriginalMoved(DemoBackend):
         self.assertEqual(R.hdr(msg_of(self.b.raw(out["data"]["id"])), "In-Reply-To"), "<outlook-0@cust.vn>")
 
 
+class DraftServer:
+    """The Drafts folder on a server whose connection can drop: `drop` names the step that breaks
+    once (after the APPEND was taken, during it with or without the server keeping it)."""
+    def __init__(self, test, drop):
+        import imaplib
+        self.drafts, self.drop, self.next, self.conns = {}, drop, 100, 0
+        srv = self
+
+        class Conn:
+            sock = None
+
+            def noop(self):
+                return "OK", [b""]
+
+            def logout(self):
+                pass
+
+        def imap():
+            srv.conns += 1
+            return Conn()
+
+        def append_draft(m, raw):
+            if srv.drop == "append-lost":
+                srv.drop = None
+                raise imaplib.IMAP4.abort("socket error: EOF")
+            srv.next += 1
+            srv.drafts[srv.next] = raw
+            if srv.drop == "append-kept":
+                srv.drop = None
+                raise imaplib.IMAP4.abort("socket error: EOF")
+            return srv.next
+
+        def select(m, folder, readonly=True):
+            if srv.drop == "select":
+                srv.drop = None
+                raise imaplib.IMAP4.abort("socket error: EOF")
+            return 1
+
+        def uid_of_mid(m, folder, mid, last=30):
+            return next((u for u, raw in srv.drafts.items() if R.hdr(msg_of(raw), "Message-ID").strip() == mid), 0)
+
+        for name, value in (("imap", imap), ("append_draft", append_draft), ("select", select),
+                            ("uid_of_mid", uid_of_mid), ("delete_uid", lambda m, f, u: srv.drafts.pop(u, None))):
+            test.patch(R, name, value)
+
+
+class DraftSavedOnce(DemoBackend):
+    """#15: a dropped connection while a draft is saved leaves one copy in Drafts, not two."""
+    def save(self, drop):
+        srv = DraftServer(self, drop)
+        self.b.demo = False
+        i, _ = self.b.save(compose(self.b))
+        self.assertEqual(len(srv.drafts), 1, drop)
+        self.assertEqual(i, R.make_id(R.CFG.folders["drafts"], next(iter(srv.drafts))))
+        self.assertEqual(srv.conns, 2)          # it did reconnect
+        return srv
+
+    def test_drop_after_the_append(self):
+        self.save("select")
+
+    def test_drop_during_an_append_the_server_kept(self):
+        self.save("append-kept")
+
+    def test_drop_during_an_append_the_server_lost(self):
+        self.save("append-lost")
+
+    def test_draft_is_found_by_its_message_id(self):
+        class M:
+            def select(self, name, readonly=True):
+                return "OK", [b"3"]
+
+            def response(self, code):
+                return code, [b"1"]
+
+            def uid(self, cmd, *args):
+                if cmd == "SEARCH":
+                    return "OK", [b"5 8 9"]
+                return "OK", [(b"1 (UID 8 BODY[HEADER.FIELDS (MESSAGE-ID)] {24}", b"Message-ID: <a@b.c>\r\n\r\n"), b")",
+                              (b"2 (UID 9 BODY[HEADER.FIELDS (MESSAGE-ID)] {24}", b"Message-ID: <x@y.z>\r\n\r\n"), b")"]
+        self.assertEqual(R.uid_of_mid(M(), "Drafts", "<x@y.z>"), 9)
+        self.assertEqual(R.uid_of_mid(M(), "Drafts", "<a@b.c>"), 8)
+        self.assertEqual(R.uid_of_mid(M(), "Drafts", "<q@b.c>"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

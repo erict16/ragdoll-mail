@@ -2303,13 +2303,24 @@ class Backend:
             if old:
                 self.demo_delete(old)
         else:
+            mid, done = R.hdr(msg, "Message-ID").strip(), {}
+
             def go(m):
-                uid = R.append_draft(m, raw)
+                # self.imap runs this again on a new connection when the old one dropped: a draft the
+                # server already took is found by its Message-ID, not saved a second time
+                if "uid" not in done and done.get("sent"):
+                    found = R.uid_of_mid(m, drafts, mid)
+                    if found:
+                        done["uid"] = found
+                if "uid" not in done:
+                    done["sent"] = True
+                    done["uid"] = R.append_draft(m, raw)
                 uidv = R.select(m, drafts)
-                if old:
+                if old and not done.get("old_gone"):
                     with contextlib.suppress(Exception):
                         R.delete_uid(m, *self.parse(old))
-                return uid, uidv
+                    done["old_gone"] = True
+                return done["uid"], uidv
             uid, uidv = self.imap(go)
             with self.dblock:
                 if old:
