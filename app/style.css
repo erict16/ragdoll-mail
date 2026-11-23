@@ -173,17 +173,37 @@ input, textarea, select { font: inherit; color: inherit; }
 .search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; font-size: 13px; }
 .search input::placeholder { color: var(--text-3); }
 kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; flex: none; font: 11px/1 var(--font); color: var(--text-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
-/* a warning over the list: a soft card lined up with the rows (box 10px in, text 24px inside it, the sign
-   centred in those 24px), what is wrong in bold, what it means below, and a button named for the fix */
-.banner { margin: 2px 10px 8px; padding: 10px 10px 11px 0; border-radius: 10px; display: grid; grid-template-columns: 24px 1fr auto;
-  align-items: center; column-gap: 0; background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%, transparent);
-  font-size: 12.5px; line-height: 1.4; animation: enter .28s var(--ease); }
-.banner > .i { align-self: start; justify-self: center; width: 15px; height: 15px; margin-top: 1px; color: var(--warn-text); }
+/* a problem with the mailbox (app.js drawProblem): a small card in the app's own card style floating at the foot
+   of the list, lined up with the rows (box 10px in, text 24px inside it, the sign centred in those 24px). It never
+   pushes the list: the list keeps its height as room at the bottom (.has-banner). Colour only on the sign:
+   amber when the person has to act, grey when it fixes itself. */
+.banner { position: absolute; left: 10px; right: 20px; bottom: 12px; z-index: 6; padding: 9px 6px 10px 0; border-radius: 10px;
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center;
+  background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.08);
+  font-size: 12.5px; line-height: 1.4; }
+:root[data-theme="dark"] .banner { box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35); }
+.banner.in { animation: banner-in .24s var(--ease); }
+.banner.out { animation: banner-out .18s ease-in forwards; pointer-events: none; }
+@keyframes banner-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes banner-out { to { opacity: 0; transform: translateY(6px); } }
+.banner-ic { display: grid; place-items: center; align-self: start; height: 18px; color: var(--text-2); }
+.banner-ic .i { width: 15px; height: 15px; }
+.banner.warn .banner-ic { color: var(--warn-text); }
+.banner.quiet .banner-ic { color: var(--text-3); }
 .banner-text { min-width: 0; user-select: text; display: flex; flex-direction: column; gap: 1px; }
-.banner-text b { font-weight: 600; color: var(--text); }
-.banner-text span { color: var(--text-2); }
-.banner .btn { height: 26px; padding: 0 11px; margin-left: 10px; font-size: 12px; border-radius: 7px; background: var(--bg); border-color: color-mix(in srgb, var(--warn-text) 22%, var(--line-2)); }
-.banner .btn:hover { border-color: color-mix(in srgb, var(--warn-text) 40%, var(--line-2)); }
+.banner-title b { font-weight: 600; color: var(--text); }
+.banner-meta { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.banner-sub { color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.banner-acts { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
+.banner .btn { height: 26px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
+.banner .link-btn { font-size: 12px; color: var(--text); padding: 0 4px; white-space: nowrap; }
+.banner .link-btn:disabled { opacity: .45; }
+.banner-x { align-self: start; margin: -3px 0 0 2px; color: var(--text-3); }
+.list-col.has-banner .rows { padding-bottom: calc(var(--banner-h, 64px) + 28px); }
+/* a problem is waiting: a small dot on the account button, seen also when the list is out of view */
+.account { position: relative; }
+.account.alert::after { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warn-text); box-shadow: 0 0 0 2px var(--side); }
 .link-btn { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 /* the scrollbar's 10px is always kept (overflow-y: scroll), so nothing shifts when a list grows past the window */
 .rows { flex: 1; overflow-y: scroll; outline: 0; padding: 2px 0 24px 10px; }
@@ -456,9 +476,18 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .disclose .i { transition: transform .2s var(--ease); }
 .disclose.open .i { transform: rotate(90deg); }
 .sig-edit { min-height: 120px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line-2); outline: 0; user-select: text; background: var(--bg); line-height: 1.5; }
-.seg { display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
-.seg button { height: 28px; padding: 0 12px; border-radius: 7px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
-.seg button.on { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+/* a segmented control: 2px padding + 1px border = 3px around the picked item, so its corners are 9 - 3 = 6px.
+   The picked item is drawn by a thumb (app.js segmented) that slides to the next pick; until it is placed,
+   the button itself carries the same look. The shadow is even all round, so the gap looks the same above and below. */
+.seg { position: relative; display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
+.seg button { position: relative; z-index: 1; height: 28px; padding: 0 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
+.seg button:not(.on):hover { color: var(--text); }
+.seg button.on { background: var(--seg-on); color: var(--text); box-shadow: var(--seg-shadow); }
+.seg-thumb { position: absolute; top: 2px; left: 0; height: 28px; width: var(--seg-w, 0); transform: translateX(var(--seg-x, 0)); border-radius: 6px;
+  background: var(--seg-on); box-shadow: var(--seg-shadow); opacity: 0; pointer-events: none; }
+.seg.seg-ready .seg-thumb { opacity: 1; }
+.seg.seg-ready button.on { background: transparent; box-shadow: none; }
+.seg.seg-slide .seg-thumb { transition: transform .24s var(--ease), width .24s var(--ease); }
 .settings-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .settings { display: grid; grid-template-columns: 188px 1fr; flex: 1; min-height: 0; }
 .settings-nav { padding: 18px 10px; border-right: 1px solid var(--line); background: var(--side); border-radius: 14px 0 0 0; display: flex; flex-direction: column; gap: 1px; }
@@ -692,6 +721,21 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group C2_READ: new rules for this group only ---- */
+/* the segmented control's picked item: clearly lighter than its track in both themes */
+:root { --seg-on: #ffffff; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.07), 0 .5px 2.5px rgba(0,0,0,.09); }
+:root[data-theme="dark"] { --seg-on: #3a3a3a; --seg-shadow: 0 0 0 .5px rgba(0,0,0,.45), 0 .5px 2.5px rgba(0,0,0,.3), inset 0 .5px 0 rgba(255,255,255,.06); }
+/* light/dark: the window cross-fades as one picture (app.js applyTheme, View Transitions) */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .32s; animation-timing-function: ease; }
+/* where that is missing, every colour eases over, the dots, marks and shadows too; the segmented thumb still slides */
+.theming *::before, .theming *::after { transition: background-color .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease !important; }
+.theming * { transition-property: background-color, border-color, color, fill, box-shadow, outline-color !important; }
+/* Settings > Privacy: the senders whose images always show, and a way to clear them */
+.form .img-senders { display: flex; align-items: center; gap: 12px; color: var(--text-2); font-size: 12.5px; }
+.form .img-senders .btn { height: 26px; padding: 0 11px; font-size: 12px; }
+.imgs-bar { flex-wrap: wrap; row-gap: 4px; }
+.imgs-bar .link-btn { white-space: nowrap; }
+.imgs-bar .link-btn + .link-btn { margin-left: 4px; }
+.theming .seg-thumb { transition: transform .24s var(--ease), width .24s var(--ease), background-color .3s ease, box-shadow .3s ease !important; }
 
 
 /* ---- 0.11 group D_SYNC: new rules for this group only ---- */
@@ -702,3 +746,76 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 /* ---- 0.11 group F_INVITES: new rules for this group only ---- */
 
+/* a reply to an invitation: who answered, and the note they added */
+.inv-text .inv-note { color: var(--text); font-style: italic; }
+/* the invitation's own lines: a tag beside the title, what changed, who comes, what it is about */
+.invite { grid-template-columns: 42px minmax(0, 1fr) auto; align-items: start; margin-bottom: 14px; }
+.invite .inv-day { margin-top: 2px; transition: box-shadow .25s var(--ease); }
+.invite .inv-day b { transition: background-color .25s var(--ease), color .25s var(--ease); }
+.inv-side { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.inv-side .btn .i { width: 15px; height: 15px; }
+.inv-tag { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px;
+  background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent-ink); }
+.inv-text .inv-was { color: var(--text-3); text-decoration: line-through; }
+.inv-people { margin-top: 2px; font-size: 12.5px; }
+.inv-ptoggle { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 0; color: var(--text-2); text-align: left; }
+.inv-ptoggle span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-ptoggle:hover { color: var(--text); }
+.inv-ptoggle .i { flex: none; width: 14px; height: 14px; transition: transform .2s var(--ease); }
+.inv-people.open .inv-ptoggle .i { transform: rotate(180deg); }
+.inv-list { display: none; grid-template-columns: 16px minmax(0, auto) 1fr; column-gap: 6px; row-gap: 3px; margin: 6px 0 2px; }
+.inv-people.open .inv-list { display: grid; animation: fade .18s ease-out; }
+.inv-person { display: contents; color: var(--text-2); }
+.inv-pmark { display: inline-flex; align-items: center; color: var(--text-3); }
+.inv-pmark .i { width: 13px; height: 13px; }
+.inv-person.yes .inv-pmark { color: var(--accent-ink); }
+.inv-pname { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-pst { color: var(--text-3); }
+.inv-about { margin-top: 4px; font-size: 12.5px; color: var(--text-2); }
+.inv-about-t { white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.inv-about.open .inv-about-t { display: block; }
+.inv-more { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.inv-more:hover { color: var(--text); }
+
+/* Accept / Maybe / Decline and the line they fold into: both in one grid cell, so the card keeps its height */
+.inv-rsvp { grid-column: 2 / -1; display: grid; margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
+.inv-btns, .inv-done { grid-area: 1 / 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.inv-btns { transition: opacity .2s var(--ease), transform .22s var(--ease), visibility 0s; }
+.inv-done { opacity: 0; visibility: hidden; transform: translateY(4px); transition: opacity .2s var(--ease), transform .22s var(--ease), visibility 0s .22s; }
+.inv-rsvp.done .inv-btns { opacity: 0; visibility: hidden; transform: translateY(-4px) scale(.98); transition: opacity .18s var(--ease), transform .22s var(--ease), visibility 0s .22s; }
+.inv-rsvp.done .inv-done { opacity: 1; visibility: visible; transform: none; transition: opacity .22s var(--ease) .06s, transform .24s var(--ease) .06s, visibility 0s; }
+.inv-rsvp.still .inv-btns, .inv-rsvp.still .inv-done { transition: none !important; }
+.rsvp-btn { height: 28px; padding: 0 11px; gap: 6px; transition: background-color .22s var(--ease), border-color .22s var(--ease), color .22s var(--ease), opacity .2s var(--ease), transform .12s var(--ease); }
+.rsvp-btn .i { width: 15px; height: 15px; transition: color .22s var(--ease); }
+.inv-btns.busy .rsvp-btn:not(.chosen), .inv-btns.busy .inv-note-in { opacity: .35; pointer-events: none; }
+.inv-btns.busy .rsvp-btn.chosen { pointer-events: none; }
+.rsvp-btn.press { animation: inv-press .24s var(--ease); }
+.rsvp-btn.chosen.accept { background: var(--accent); border-color: transparent; color: var(--accent-text); }
+.rsvp-btn.chosen.maybe { background: var(--sel); }
+.rsvp-btn.chosen.decline { background: color-mix(in srgb, var(--danger) 12%, var(--raised)); border-color: color-mix(in srgb, var(--danger) 30%, var(--line-2)); color: var(--danger); }
+.rsvp-btn.chosen .i { color: inherit; }
+.inv-note-in { flex: 1 1 120px; min-width: 0; height: 28px; margin-left: 4px; padding: 0 9px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; transition: border-color .15s, box-shadow .15s, opacity .2s; }
+.inv-note-in::placeholder { color: var(--text-3); }
+.inv-note-in:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+.inv-btns.shake { animation: inv-shake .34s var(--ease); }
+.inv-done { height: 28px; font-size: 13px; font-weight: 500; }
+.inv-mark { display: inline-flex; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--text-2); }
+.inv-mark .i { width: 17px; height: 17px; }
+.inv-mark.accepted { color: var(--accent-ink); }
+.inv-mark.draw svg :is(path, line) { stroke-dasharray: 24; stroke-dashoffset: 24; }
+.inv-rsvp.done .inv-mark.draw svg :is(path, line) { animation: inv-draw .32s var(--ease) .12s forwards; }
+.inv-rsvp.still .inv-mark.draw svg :is(path, line) { animation: none; stroke-dashoffset: 0; }
+.inv-change { font-size: 12.5px; font-weight: 500; color: var(--text-2); margin-left: 4px; }
+.inv-change:hover { color: var(--text); }
+.invite.ans-accepted .inv-day { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.invite.ans-accepted .inv-day b { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); color: var(--accent-ink); }
+.invite.ans-declined > :not(.inv-rsvp) { opacity: .62; transition: opacity .25s var(--ease); }
+.invite > :not(.inv-rsvp) { transition: opacity .25s var(--ease); }
+@keyframes inv-press { 40% { transform: scale(.97); } }
+@keyframes inv-shake { 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }
+@keyframes inv-draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .inv-btns, .inv-done, .inv-rsvp.done .inv-btns, .inv-rsvp.done .inv-done { transform: none !important; }
+  .rsvp-btn.press, .inv-btns.shake { animation: none; }
+  .inv-mark.draw svg :is(path, line), .inv-rsvp.done .inv-mark.draw svg :is(path, line) { animation: none; stroke-dashoffset: 0; }
+}
