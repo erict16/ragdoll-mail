@@ -831,7 +831,9 @@ class Backend:
         self.m = None
         self.m_used = 0
         self.rev = 1
-        self.sync = {"running": False, "error": None, "last": None}
+        # error: the sentence; kind / detail / retry_at: what status_fields() hands the page (#54)
+        self.sync = {"running": False, "error": None, "last": None, "kind": None, "detail": None, "retry_at": None}
+        self.fails = 0                          # sync passes in a row that failed: the retry waits longer
         self.lock_busy = None                   # since when another process has held the headers lock
         self.sync_m = None                      # the sync's own connection
         self.pre_m = None                       # the head start's own connection
@@ -892,6 +894,9 @@ class Backend:
                 r = self.q("select v from meta where k='folders'")
                 self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
             self.prune_cache()
+            with contextlib.suppress(Exception):     # the last good sync, by the app or the ragdoll command
+                r = self.q("select v from meta where k='last_sync'")
+                self.sync["last"] = int(r[0]["v"]) if r else None
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -1330,6 +1335,39 @@ class Backend:
         if full:
             self.extra_at = time.time()
 
+    # seconds before the next try after 1, 2, 3, ... failed passes: soon while the network comes
+    # back, then less and less often; signing in again with the same password does not help soon
+    RETRY = {"offline": (15, 30, 60, 120, 300), "server": (60, 120, 300, 600), "auth": (300, 900),
+             "config": (300,)}
+
+    def note_error(self, e):
+        """A failed pass: the sentence, its kind and the raw text for the page; when to try again."""
+        msg, kind, detail = explain(e)
+        self.fails += 1
+        steps = self.RETRY.get(kind, self.RETRY["server"])
+        wait = steps[min(self.fails, len(steps)) - 1]
+        self.sync.update(error=msg, kind=kind, detail=detail if detail != msg else None,
+                         retry_at=int(time.time() + wait))
+        return wait
+
+    def clear_error(self):
+        self.fails = 0
+        self.sync.update(error=None, kind=None, detail=None, retry_at=None)
+
+    def status_fields(self):
+        """The problem fields of the status the page polls (#54), from the real sync state:
+        error_kind  "offline" (no network, DNS, refused, timed out, dropped), "auth" (sign-in failed,
+                    no password), "server" (the server said no, another sync holds the index),
+                    "config" (no account, the settings file can't be read), or None: no problem;
+        last_sync   epoch seconds of the last sync that went through, or None;
+        retry_at    epoch seconds of the next automatic try while there is a problem, else None;
+        error_detail the raw text behind the error, for "copy details", or None."""
+        s = self.sync
+        err = s["error"] if not self.demo else None
+        return {"error_kind": (s["kind"] or "server") if err else None, "last_sync": s["last"],
+                "retry_at": s["retry_at"] if err and not s["running"] else None,
+                "error_detail": s["detail"] if err else None}
+
     LOCK_RETRY = 10     # seconds before the sync tries again while another process syncs
     LOCK_WARN = 180     # seconds of that before the page is told
 
@@ -1371,19 +1409,19 @@ class Backend:
                         c.commit()
                 if got:
                     self.lock_busy = None
-                    self.sync["error"] = None
+                    self.clear_error()
                     self.sync["last"] = int(time.time())
                 else:
                     # the ragdoll command (or one that hangs) has the index: nothing was synced, so
                     # nothing says it was; ask again soon, and say so when it lasts (#53)
                     now = time.time()
                     self.lock_busy = self.lock_busy or now
-                    if now - self.lock_busy > self.LOCK_WARN:
-                        self.sync["error"] = BUSY_MSG
                     wait = self.LOCK_RETRY
+                    if now - self.lock_busy > self.LOCK_WARN:
+                        self.sync.update(error=BUSY_MSG, kind="server", detail=None, retry_at=int(now + wait))
                 self.start_bodies()
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
-                self.sync["error"] = friendly(e)
+                wait = self.note_error(e)
                 m, self.sync_m = self.sync_m, None
                 R.quit_imap(m, quick=True)
             finally:
@@ -1597,7 +1635,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks, "bodies": self.bodies}
+                "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2913,7 +2951,7 @@ class Backend:
         self.drop()
         self.server_folders = None
         self.contacts = (0, {})
-        self.sync["error"] = None
+        self.clear_error()
         self.start_sync()
         self.bump()
         return self.api_boot({})

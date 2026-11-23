@@ -747,5 +747,66 @@ class PlainErrors(OwnBackend):
         self.assertEqual(self.b.call("test", {"user": "nope"})[1]["error"], "Enter a full email address.")
 
 
+class StatusFields(OwnBackend):
+    """#54: the status the page polls says what kind of problem, when it last synced, when it retries."""
+
+    def run_pass(self, imap):
+        b = self.b
+        b.demo = False
+        b.stopping.clear()
+        self.patch(A.R, "imap", imap)
+        b.start_bodies = lambda: None
+        b.sync_pass = lambda m, c: b.stopping.set()
+        b.wake.set()
+        t = time.time()
+        if imap is not Works:
+            b.wake.set()
+            threading.Timer(0.05, b.stopping.set).start()
+            threading.Timer(0.08, b.wake.set).start()
+        b.sync_loop()
+        return t
+
+    def fields(self):
+        st = self.b.api_status({})
+        return {k: st[k] for k in ("error_kind", "last_sync", "retry_at", "error_detail")}
+
+    def failing(self, e):
+        def imap():
+            raise e
+        return imap
+
+    def test_kinds_from_real_failures(self):
+        for e, kind in ((socket.gaierror(8, "nodename nor servname"), "offline"),
+                        (ConnectionRefusedError(61, "refused"), "offline"),
+                        (socket.timeout("timed out"), "offline"),
+                        (imaplib.IMAP4.error("LOGIN failed: invalid password"), "auth"),
+                        (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "auth"),
+                        (SystemExit("no account configured"), "config"),
+                        (imaplib.IMAP4.error("[b'Server busy']"), "server")):
+            self.b.clear_error()
+            t = self.run_pass(self.failing(e))
+            f = self.fields()
+            self.assertEqual(f["error_kind"], kind, e)
+            self.assertGreaterEqual(f["retry_at"], int(t))
+            self.assertTrue(f["error_detail"])
+
+    def test_retry_waits_longer_each_time(self):
+        b = self.b
+        waits = [b.note_error(OSError(51, "Network is unreachable")) for _ in range(7)]
+        self.assertEqual(waits, [15, 30, 60, 120, 300, 300, 300])
+
+    def test_good_sync_clears_it(self):
+        self.run_pass(self.failing(OSError(51, "unreachable")))
+        self.assertEqual(self.fields()["error_kind"], "offline")
+        t = int(time.time())
+        self.run_pass(Works)
+        f = self.fields()
+        self.assertEqual((f["error_kind"], f["retry_at"], f["error_detail"]), (None, None, None))
+        self.assertGreaterEqual(f["last_sync"], t)
+
+    def test_no_problem_no_fields(self):
+        self.assertEqual(self.fields(), {"error_kind": None, "last_sync": None, "retry_at": None, "error_detail": None})
+
+
 if __name__ == "__main__":
     unittest.main()
