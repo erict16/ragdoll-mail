@@ -1653,11 +1653,20 @@ def demo_ics(name, ts, event=DEMO_SETS["en"]["event"], to=()):
 DEMO_BERLIN = "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"
 
 
+def demo_zone(name, hours):
+    """The demo's own time zones; a fixed offset where the system has no time zone database
+    (Windows without the tzdata package)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:       # noqa: BLE001
+        return dt.timezone(dt.timedelta(hours=hours), name)
+
+
 def demo_ics_teams(to):
     """A weekly Teams meeting from Outlook in Berlin: a Windows zone name with its VTIMEZONE, a repeat rule,
     the Teams link, people who answered."""
-    from zoneinfo import ZoneInfo
-    berlin = ZoneInfo("Europe/Berlin")
+    berlin = demo_zone("Europe/Berlin", 1)
     d = dt.datetime.now(berlin) + dt.timedelta(days=1)
     d = (d + dt.timedelta(days=(1 - d.weekday()) % 7)).replace(hour=10, minute=0, second=0, microsecond=0)
     until = (d + dt.timedelta(days=120)).astimezone(dt.timezone.utc)
@@ -1688,8 +1697,7 @@ def demo_ics_teams(to):
 
 def demo_ics_tencent(to):
     """A Tencent Meeting invitation in Chinese, in Shanghai time with its VTIMEZONE."""
-    from zoneinfo import ZoneInfo
-    d = (dt.datetime.now(ZoneInfo("Asia/Shanghai")) + dt.timedelta(days=2)).replace(hour=15, minute=0, second=0,
+    d = (dt.datetime.now(demo_zone("Asia/Shanghai", 8)) + dt.timedelta(days=2)).replace(hour=15, minute=0, second=0,
                                                                                    microsecond=0)
     people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
         ("张伟", "zhang.wei@acme-industrial.cn", "ACCEPTED"), ("赵磊", "zhao.lei@acme-industrial.cn", "NEEDS-ACTION"),

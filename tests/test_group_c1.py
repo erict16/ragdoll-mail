@@ -82,7 +82,7 @@ class ListLogic(unittest.TestCase):
             src = f.read()
         start, end = src.index("// ---- C1 pure: start"), src.index("// ---- C1 pure: end")
         out = subprocess.run([NODE, "-e", src[start:end] + "\nconsole.log(JSON.stringify((() => {" + code + "})()));"],
-                             capture_output=True, text=True, timeout=30)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         return json.loads(out.stdout)
 

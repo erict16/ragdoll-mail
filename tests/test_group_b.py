@@ -259,7 +259,7 @@ class EncodedWords(unittest.TestCase):
             self.assertLessEqual(max(len(x) for x in raw.split(b"\r\n")), 998)
             back = msg_of(raw)
             self.assertEqual(str(back["Subject"]), subject)
-            self.assertEqual(R.addrs(str(back["To"])), [("张三" * 30, "a@b.com")])
+            self.assertEqual(R.addrs(R.hdr(back, "To")), [("张三" * 30, "a@b.com")])   # how the app reads it
 
     def test_file_names_have_a_name_fallback(self):
         names = ["很长的文件名" * 20 + ".xlsx", "PO#123: 最终版?.pdf", "plain name.txt"]

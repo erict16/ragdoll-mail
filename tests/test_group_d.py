@@ -839,12 +839,12 @@ class BrokenConfig(OwnBackend):
     def test_app_starts_with_a_broken_file(self):
         import subprocess
         self.write('{"user": "a@b.c",,}')
-        env = dict(os.environ, HOME=self.home, RAGDOLL_CONFIG=self.path, RAGDOLL_PASSWORD="x")
+        env = dict(os.environ, HOME=self.home, RAGDOLL_CONFIG=self.path, RAGDOLL_PASSWORD="x", PYTHONUTF8="1")
         code = "import ragdoll_app as A; print(A.R.CONFIG_ERROR['path'])"
-        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30, cwd=ROOT)
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=ROOT)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.strip(), self.path)
-        cli = subprocess.run([sys.executable, "ragdoll.py", "sync"], env=env, capture_output=True, text=True,
+        cli = subprocess.run([sys.executable, "ragdoll.py", "sync"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                              timeout=30, cwd=ROOT)
         self.assertNotEqual(cli.returncode, 0)
         self.assertIn("can't be read", cli.stderr)
@@ -1050,7 +1050,7 @@ class Translations(unittest.TestCase):
         js = ("const { LANGS } = await import(%s);"
               "console.log(JSON.stringify(Object.fromEntries(Object.entries(LANGS).map(([k, v]) => [k, Object.keys(v)]))));"
               % json.dumps("file://" + os.path.join(ROOT, "app", "i18n.js")))
-        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         cls.keys = json.loads(out.stdout)
 
     def test_no_language_misses_a_key(self):

@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pywebview pyinstaller pillow
+      - run: pip install pywebview pyinstaller pillow tzdata   # Windows has no time zone database of its own (invites)
       - run: pyinstaller --noconfirm ragdoll-mail.spec
       - run: Compress-Archive -Path "dist/Ragdoll Mail.exe", "dist/ragdoll.exe" -DestinationPath ragdoll-mail-windows.zip
       - name: Add to the release

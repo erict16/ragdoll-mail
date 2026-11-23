@@ -60,7 +60,7 @@ class QuoteHistory(unittest.TestCase):
         cases = [[t.split("\n"), -1 if n is None else n] for t, n in QUOTE_CASES]
         script = js[start:end] + "\nconst cases = " + json.dumps(cases) + ";\n" + \
             "console.log(JSON.stringify(cases.map(([l, n]) => quoteLine(l) === n)));"
-        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout), [True] * len(cases))
         self.assertNotIn("QUOTE_TEXT", js)
@@ -89,7 +89,7 @@ console.log(JSON.stringify([
   run(h("DIV", "", h("DIV", "rd-plain", "a\\nFrom: x\\nTo: y\\nz"))),
   run(h("DIV", "", "From:\\n   Tan Eric", h("BR"), "Sent: today")),
 ]));"""
-        out = subprocess.run(["node", "-e", js[start:end] + dom], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["node", "-e", js[start:end] + dom], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout), [None, "From:", "HR", None, "From:\n   Tan Eric"])
 

@@ -956,12 +956,19 @@ def fix_8bit(s):
         return b.decode("gb18030", "replace")
 
 
+ADJACENT_EW = re.compile(r"\?=\s+(?==\?[^?\s]+\?[bBqQ]\?)")
+
+
 def hdr(msg, name):
     try:
         raw = next((v for k, v in msg.raw_items() if k.lower() == name.lower()), None)
         if raw is not None and re.search("[\udc80-\udcff]", raw):
             # unencoded GBK header bytes: policy.default would turn them into U+FFFD
             return nfc(str(msg.policy.header_fetch_parse(name, fix_8bit(raw))))
+        if raw is not None and ADJACENT_EW.search(raw):
+            # the space between two encoded words means nothing (RFC 2047), but Python before 3.14
+            # keeps it in a name: a long Chinese name split by the sender reads "张三 张三"
+            return nfc(str(msg.policy.header_fetch_parse(name, ADJACENT_EW.sub("?=", raw))))
         v = msg.get(name)
         return nfc(str(v)) if v is not None else ""
     except Exception:

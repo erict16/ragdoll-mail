@@ -15,7 +15,7 @@ def js(expr):
     """The value of a JavaScript expression with the kit loaded as K (JSON round trip)."""
     code = "import * as K from %s; console.log(JSON.stringify(await (async () => (%s))()));" % (
         json.dumps("file://" + os.path.abspath(KIT)), expr)
-    out = subprocess.run([NODE, "--input-type=module", "-e", code], capture_output=True, text=True, timeout=20)
+    out = subprocess.run([NODE, "--input-type=module", "-e", code], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     if out.returncode:
         raise AssertionError(out.stderr)
     return json.loads(out.stdout)

@@ -12,6 +12,18 @@ VTZ_BERLIN = ('BEGIN:VTIMEZONE\r\nTZID:%s\r\nBEGIN:STANDARD\r\nDTSTART:16010101T
               'RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\n')
 
 
+def _has_tz():
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Europe/Berlin")
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+
+
+HAS_TZ = _has_tz()
+
+
 def utc(*a):
     return calendar.timegm(dt.datetime(*a).timetuple())
 
@@ -56,6 +68,7 @@ class TimeZones(unittest.TestCase):
         self.assertEqual(v["zone"]["label"], "Amsterdam")
         self.assertEqual((v["title"], v["where"], v["organizer"]), ("Supplier sync", "Room 4, Plant 2", "Ong, Gerrick"))
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_display_name_alone(self):
         for tzid, want in ((OUTLOOK_TZ, utc(2026, 11, 24, 9)), ("W. Europe Standard Time", utc(2026, 11, 24, 9)),
                            ("Europe/Berlin", utc(2026, 11, 24, 9)),
@@ -92,6 +105,7 @@ class TimeZones(unittest.TestCase):
         self.assertIsNone(A.ics_when("20261125T060000Z", {}, {})[2])
         self.assertIsNone(A.ics_when("20261125T060000", {}, {})[2])
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_every_windows_zone_is_known(self):
         from zoneinfo import ZoneInfo
         for win, iana in A.WIN_TZ.items():
@@ -378,6 +392,7 @@ class DemoAnswer(unittest.TestCase):
         finally:
             b.close()
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_not_asked_cannot_answer(self):
         b = A.Backend(demo=True, demo_lang="zh")
         try:
@@ -394,6 +409,7 @@ class DemoAnswer(unittest.TestCase):
         finally:
             b.close()
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_updated_invitation_says_what_changed(self):
         b = A.Backend(demo=True, demo_lang="en")
         try:
