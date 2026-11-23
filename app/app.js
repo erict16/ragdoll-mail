@@ -2337,11 +2337,13 @@ window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); })
 
 // ---------------------------------------------------------------- settings
 
-async function openSettings() {
+// opts (all optional): tab, the page to open on; focus, the account field to put the cursor in
+async function openSettings(opts) {
+  opts = opts && !(opts instanceof Event) ? opts : {};
   let s;
   try { s = await api("settings"); } catch (e) { return fail(e); }
   const v = { ...s, password: "", theme: S.theme };
-  let tab = "account";
+  let tab = opts.tab || "account";
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
@@ -2498,6 +2500,7 @@ async function openSettings() {
   }
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
+  if (opts.focus) $(`input[data-k="${opts.focus}"]`, body)?.focus();
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];
@@ -2862,32 +2865,94 @@ function applyStatus(st) {
   const wasSyncing = S.syncing;
   S.syncing = st.syncing;
   renderNav();
-  const b = $("#banner");
-  if (st.error && !S.boot.demo) {
-    // known problems get a short title, what it means, and a button named for the fix;
-    // anything else shows its first sentence as the title and the rest below
-    const known = [[/^No password saved\./, "b_pw"], [/^No account yet\./, "b_acct"], [/^Sign-in failed\./, "b_signin"]]
-      .find(([re]) => re.test(st.error));
-    let title, sub, act;
-    if (known) {
-      const k = known[1];
-      title = t(k + "_title"); sub = STR[k + "_sub"] || ""; act = t(k + "_btn");
-    } else {
-      const text = tr(st.error), m = text.match(/^(.+?[.。])\s*(.*)$/s);
-      title = m ? m[1].replace(/[.。]$/, "") : text; sub = m ? m[2] : ""; act = t("b_fix");
-    }
-    $("#banner-title").textContent = title;
-    $("#banner-sub").textContent = sub;
-    $("#banner-sub").hidden = !sub;
-    $("#banner-btn").textContent = act;
-    b.hidden = false;
-  } else b.hidden = true;
+  S.status = st;
+  drawProblem();
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
   showAsks(st.asks);
 }
-$("#banner-btn").addEventListener("click", openSettings);
+
+// ---- a problem with the mailbox: a small card floating at the foot of the list (it never pushes the list),
+// shaped by what the person can do about it:
+//   offline / server not answering (fixes itself): a quiet line, when mail last came in, the next try, "Try now"
+//   sign-in, no password, no account (needs the person): what is wrong and one button straight to the field
+//   anything else the server said: a neutral card, "Retry" and "Copy details" (the server's own words)
+// The backend's status says which (error_kind), when mail last came in (last_sync) and the next try (retry_at).
+const PROBLEM_KIND = [[/^(Sign-in failed)/, "auth"], [/^(No password saved|No account yet)/, "config"],
+  [/^(Can't find the mail server|The mail server did not answer|Can't reach the mail server)/, "offline"]];
+const problemKind = (st) => st.error_kind || PROBLEM_KIND.find(([re]) => re.test(st.error))?.[1] || "server";
+const prob = { key: null, dismissed: null, tryAt: 0, timer: 0 };
+function syncedAt(ts) { return dayKey(ts * 1000) === dayKey(Date.now()) ? fmt(ts, HM) : shortTime(ts); }
+function retryNow() {
+  prob.tryAt = Date.now();
+  drawProblem();
+  api("sync").catch(() => {});
+  setTimeout(refreshCounts, 1500);
+  setTimeout(refreshCounts, 4000);
+}
+function drawProblem() {
+  const st = S.status || {}, b = $("#banner"), col = $("#list-col");
+  const kind = st.error ? problemKind(st) : null;
+  const key = st.error ? kind + "|" + st.error : null;
+  $("#account").classList.toggle("alert", !!key);
+  clearTimeout(prob.timer);
+  if (!key || prob.dismissed === key) {
+    if (!b.hidden && !b.classList.contains("out")) {
+      b.classList.add("out");
+      col.classList.remove("has-banner");
+      setTimeout(() => { if (b.classList.contains("out")) { b.hidden = true; b.classList.remove("out"); } }, REDUCED.matches ? 0 : 180);
+    }
+    prob.key = prob.sig = null;
+    return;
+  }
+  // the next try, counted down; a spinner while it runs
+  const busy = st.syncing || Date.now() - prob.tryAt < 2500;
+  const left = st.retry_at ? Math.ceil(st.retry_at - Date.now() / 1000) : null;
+  const next = busy ? t("st_retrying") : left > 0 ? t("st_retry_in", left) : left != null ? t("st_retrying") : "";
+  const meta = [st.last_sync ? t("st_last", syncedAt(st.last_sync)) : "", kind === "offline" || kind === "server" ? next : ""].filter(Boolean).join(" · ");
+  let ic, tone = "", title, sub = "", acts = [];
+  const settingsAt = (focus) => () => openSettings({ tab: "account", focus });
+  if (kind === "offline") {
+    const net = !navigator.onLine || /^Can't find the mail server/.test(st.error);
+    ic = net ? "wifi-off" : "cloud-off"; tone = "quiet";
+    title = t(net ? "st_offline" : "st_noreply"); sub = t("st_still");
+    acts = [el("button", { class: "link-btn", onclick: retryNow, disabled: busy }, t("st_try_now"))];
+  } else if (kind === "auth" || kind === "config") {
+    const k = /^No account yet/.test(st.error) ? "b_acct" : /^No password saved/.test(st.error) ? "b_pw" : "b_signin";
+    ic = k === "b_acct" ? "circle-user-round" : "key-round"; tone = "warn";
+    title = t(k + "_title"); sub = STR[k + "_sub"] || "";
+    acts = [el("button", { class: "btn primary", onclick: settingsAt(k === "b_acct" ? "user" : "password") }, k === "b_acct" ? t("b_acct_btn") : t("st_enter_pw"))];
+  } else {
+    ic = "triangle-alert";
+    title = t("st_server"); sub = tr(st.error);
+    acts = [el("button", { class: "btn", onclick: retryNow, disabled: busy }, t("st_retry")),
+      iconBtn("copy", t("st_details"), () => copyText(st.error), { cls: "tiny" })];
+  }
+  if (st.retry_at || busy) prob.timer = setTimeout(drawProblem, 1000);
+  // drawn again only when more than the countdown changed (a hovered button stays as it is)
+  const sig = JSON.stringify([key, title, sub, !!meta, busy, LANG]);
+  if (sig === prob.sig && !b.hidden && !b.classList.contains("out")) {
+    const m = $(".banner-meta", b);
+    if (m) m.textContent = " · " + meta;
+    col.style.setProperty("--banner-h", b.offsetHeight + "px");
+    return;
+  }
+  prob.sig = sig;
+  b.className = "banner" + (tone ? " " + tone : "");
+  b.replaceChildren(
+    el("span", { class: "banner-ic", html: icon(busy && kind !== "auth" && kind !== "config" ? "loader-circle" : ic, busy && kind !== "auth" && kind !== "config" ? "spin" : "") }),
+    el("div", { class: "banner-text", title: kind === "server" ? tr(st.error) : null },
+      el("div", { class: "banner-title" }, el("b", {}, title), meta ? el("span", { class: "banner-meta" }, " · " + meta) : null),
+      sub ? el("span", { class: "banner-sub" }, sub) : null),
+    el("div", { class: "banner-acts" }, ...acts),
+    iconBtn("x", t("st_dismiss"), () => { prob.dismissed = key; drawProblem(); }, { cls: "tiny banner-x" }));
+  if (b.hidden) { b.hidden = false; if (!REDUCED.matches) b.classList.add("in"); setTimeout(() => b.classList.remove("in"), 260); }
+  prob.key = key;
+  // the list keeps room for the card at its foot, so the last mail can scroll out from under it
+  col.classList.add("has-banner");
+  col.style.setProperty("--banner-h", b.offsetHeight + "px");
+}
 $("#update").addEventListener("click", () => {
   if (S.update?.url) api("open_url", { url: S.update.url }).catch(fail);
   else toast(t("run_update"), { ms: 8000 });

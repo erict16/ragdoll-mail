@@ -239,6 +239,24 @@ def page_html(html, cids):
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
 
 
+SYNC_EVERY = 60          # seconds between two syncs (sync_loop's wake.wait)
+
+
+def sync_problem(sync):
+    """What the page's problem card needs: error_kind (offline / auth / config / server, or None), last_sync (when
+    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None."""
+    err = sync.get("error")
+    kind = None
+    if err:
+        kind = ("config" if err.startswith(("No password saved.", "No account yet.")) else
+                "auth" if err.startswith("Sign-in failed.") else
+                "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
+                                             "Can't reach the mail server")) else "server")
+    tried = sync.get("tried")
+    return {"error_kind": kind, "last_sync": sync.get("last"),
+            "retry_at": tried + SYNC_EVERY if err and tried and not sync.get("running") else None}
+
+
 def linkify(escaped):
     def one(mo):
         if mo.group(1):
@@ -1172,6 +1190,7 @@ class Backend:
                 m = None
             finally:
                 self.sync["running"] = False
+                self.sync["tried"] = int(time.time())       # the next try is a minute on (wake.wait above)
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
         if m is not None:
@@ -1270,7 +1289,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks}
+                "news": self.news, "asks": self.asks, **sync_problem(self.sync)}
 
     def api_sync(self, a):
         if not self.demo:

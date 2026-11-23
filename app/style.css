@@ -173,17 +173,37 @@ input, textarea, select { font: inherit; color: inherit; }
 .search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; font-size: 13px; }
 .search input::placeholder { color: var(--text-3); }
 kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; flex: none; font: 11px/1 var(--font); color: var(--text-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
-/* a warning over the list: a soft card lined up with the rows (box 10px in, text 24px inside it, the sign
-   centred in those 24px), what is wrong in bold, what it means below, and a button named for the fix */
-.banner { margin: 2px 10px 8px; padding: 10px 10px 11px 0; border-radius: 10px; display: grid; grid-template-columns: 24px 1fr auto;
-  align-items: center; column-gap: 0; background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%, transparent);
-  font-size: 12.5px; line-height: 1.4; animation: enter .28s var(--ease); }
-.banner > .i { align-self: start; justify-self: center; width: 15px; height: 15px; margin-top: 1px; color: var(--warn-text); }
+/* a problem with the mailbox (app.js drawProblem): a small card in the app's own card style floating at the foot
+   of the list, lined up with the rows (box 10px in, text 24px inside it, the sign centred in those 24px). It never
+   pushes the list: the list keeps its height as room at the bottom (.has-banner). Colour only on the sign:
+   amber when the person has to act, grey when it fixes itself. */
+.banner { position: absolute; left: 10px; right: 20px; bottom: 12px; z-index: 6; padding: 9px 6px 10px 0; border-radius: 10px;
+  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center;
+  background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.08);
+  font-size: 12.5px; line-height: 1.4; }
+:root[data-theme="dark"] .banner { box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35); }
+.banner.in { animation: banner-in .24s var(--ease); }
+.banner.out { animation: banner-out .18s ease-in forwards; pointer-events: none; }
+@keyframes banner-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes banner-out { to { opacity: 0; transform: translateY(6px); } }
+.banner-ic { display: grid; place-items: center; align-self: start; height: 18px; color: var(--text-2); }
+.banner-ic .i { width: 15px; height: 15px; }
+.banner.warn .banner-ic { color: var(--warn-text); }
+.banner.quiet .banner-ic { color: var(--text-3); }
 .banner-text { min-width: 0; user-select: text; display: flex; flex-direction: column; gap: 1px; }
-.banner-text b { font-weight: 600; color: var(--text); }
-.banner-text span { color: var(--text-2); }
-.banner .btn { height: 26px; padding: 0 11px; margin-left: 10px; font-size: 12px; border-radius: 7px; background: var(--bg); border-color: color-mix(in srgb, var(--warn-text) 22%, var(--line-2)); }
-.banner .btn:hover { border-color: color-mix(in srgb, var(--warn-text) 40%, var(--line-2)); }
+.banner-title b { font-weight: 600; color: var(--text); }
+.banner-meta { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.banner-sub { color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.banner-acts { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
+.banner .btn { height: 26px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
+.banner .link-btn { font-size: 12px; color: var(--text); padding: 0 4px; white-space: nowrap; }
+.banner .link-btn:disabled { opacity: .45; }
+.banner-x { align-self: start; margin: -3px 0 0 2px; color: var(--text-3); }
+.list-col.has-banner .rows { padding-bottom: calc(var(--banner-h, 64px) + 28px); }
+/* a problem is waiting: a small dot on the account button, seen also when the list is out of view */
+.account { position: relative; }
+.account.alert::after { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--warn-text); box-shadow: 0 0 0 2px var(--side); }
 .link-btn { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 /* the scrollbar's 10px is always kept (overflow-y: scroll), so nothing shifts when a list grows past the window */
 .rows { flex: 1; overflow-y: scroll; outline: 0; padding: 2px 0 24px 10px; }

@@ -233,6 +233,45 @@ class RemoteImages(DemoBackend):
         self.assertIn('"shield":', read("app", "icons.js"))
 
 
+class ProblemNotice(DemoBackend):
+    """#54: the status says what kind of problem it is, when mail last came in and when the next try is."""
+
+    def test_kinds(self):
+        for err, kind in [("No password saved. Add it in Settings.", "config"), ("No account yet. Add one in Settings.", "config"),
+                          ("Sign-in failed. Check the email address and password in Settings.", "auth"),
+                          ("Can't find the mail server. Check the server name and the internet connection.", "offline"),
+                          ("The mail server did not answer in time.", "offline"),
+                          ("Can't reach the mail server ([Errno 51] Network is unreachable).", "offline"),
+                          ("The mail server said: [OVERQUOTA] full", "server"), ("Secure connection failed (x).", "server")]:
+            self.assertEqual(A.sync_problem({"error": err})["error_kind"], kind, err)
+
+    def test_last_sync_and_next_try(self):
+        self.assertEqual(A.sync_problem({"error": None, "last": 100, "tried": 200}),
+                         {"error_kind": None, "last_sync": 100, "retry_at": None})
+        p = A.sync_problem({"error": "The mail server did not answer in time.", "last": 100, "tried": 200, "running": False})
+        self.assertEqual((p["last_sync"], p["retry_at"]), (100, 200 + A.SYNC_EVERY))
+        p = A.sync_problem({"error": "The mail server did not answer in time.", "tried": 200, "running": True})
+        self.assertIsNone(p["retry_at"])
+
+    def test_status_carries_them(self):
+        st = self.backend.api_status({})
+        for k in ("error_kind", "last_sync", "retry_at"):
+            self.assertIn(k, st)
+
+    def test_page(self):
+        html, js = read("app", "index.html"), read("app", "app.js")
+        self.assertNotIn("banner-btn", html)
+        self.assertLess(html.index('id="rows"'), html.index('id="banner"'))      # over the list, not above it
+        draw = js[js.index("function drawProblem("):js.index("// ---------------------------------------------------------------- start")]
+        for k in ("st.retry_at", "st.last_sync", "problemKind(st)", "settingsAt(", '"password"',
+                  "copyText(st.error)", "prob.dismissed", '"alert"'):
+            self.assertIn(k, draw, k)
+        self.assertNotIn("S.boot.demo", draw)
+        css = read("app", "style.css")
+        self.assertNotIn("background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%", css)
+        self.assertIn(".list-col.has-banner .rows", css)
+
+
 class Strings(unittest.TestCase):
     def test_every_new_string_is_in_every_language(self):
         src = read("app", "i18n.js")
