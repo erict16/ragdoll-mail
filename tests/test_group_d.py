@@ -679,7 +679,7 @@ class PlainErrors(OwnBackend):
     def test_sentences_and_kinds(self):
         cases = [
             (imaplib.IMAP4.error("[AUTHENTICATIONFAILED] Invalid credentials"), "auth"),
-            (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "auth"),
+            (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "config"),
             (SystemExit("no account configured: copy config.example.json"), "config"),
             (socket.gaierror(8, "nodename nor servname provided"), "offline"),
             (socket.timeout("timed out"), "offline"),
@@ -780,7 +780,7 @@ class StatusFields(OwnBackend):
                         (ConnectionRefusedError(61, "refused"), "offline"),
                         (socket.timeout("timed out"), "offline"),
                         (imaplib.IMAP4.error("LOGIN failed: invalid password"), "auth"),
-                        (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "auth"),
+                        (SystemExit("RAGDOLL_PASSWORD is not set and no password is saved"), "config"),
                         (SystemExit("no account configured"), "config"),
                         (imaplib.IMAP4.error("[b'Server busy']"), "server")):
             self.b.clear_error()

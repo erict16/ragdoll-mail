@@ -83,7 +83,7 @@
             await sleep(260);
           } else await sleep(l.classList.contains("say") ? 600 : 300);
           l.classList.remove("cur");
-          if (l === lines[lines.length - 2]) duo.classList.add("done");
+          if (l.classList.contains("land")) duo.classList.add("done");
         }
         duo.classList.add("done");
         await sleep(7000);

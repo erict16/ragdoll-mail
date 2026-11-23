@@ -113,7 +113,7 @@ ragdoll schedule --list
 
 ## Hand a draft to the app
 
-When the draft is ready, the agent runs `ragdoll open drafts:12`. Ragdoll Mail comes to the front with that draft open (it starts if it was closed). You read it, change what you like and press Send yourself. When the app is open and an agent writes a draft, a short note with an Open button shows at the bottom of the window.
+When the draft is ready, the agent runs `ragdoll open drafts:12`. Ragdoll Mail comes to the front with that draft open (it starts if it was closed). You read it, change what you like and press Send yourself. Or, once you say yes to that draft in the chat, the agent sends it with `ragdoll send drafts:12 --yes`. When the app is open and an agent writes a draft, a short note with an Open button shows at the bottom of the window.
 
 <details>
 <summary><b>How drafts work, in detail</b></summary>

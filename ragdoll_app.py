@@ -13,6 +13,7 @@ import atexit
 import base64
 import contextlib
 import datetime as dt
+import glob
 import hashlib
 import html as htmlmod
 import imaplib
@@ -121,7 +122,7 @@ def explain(e):
             and re.search(r"login|auth|password|credentials|invalid", low)):
         return "Sign-in failed. Check the email address and password in Settings.", "auth", s
     if "is not set and no password is saved" in s:
-        return "No password saved. Add it in Settings.", "auth", s
+        return "No password saved. Add it in Settings.", "config", s
     if "no account configured" in s:
         return "No account yet. Add one in Settings.", "config", s
     if s.startswith("the settings file ") and "can't be read" in s:
@@ -311,6 +312,30 @@ def page_html(html, cids):
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
 
 
+SYNC_EVERY = 60          # seconds between two syncs (sync_loop's wake.wait)
+
+
+def sync_problem(sync):
+    """What the page's problem card needs: error_kind (offline / auth / config / server, or None), last_sync (when
+    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None.
+    The sync loop records the kind and the next try itself (Backend.note_error, from the exception: explain());
+    a sentence without them (an older state) is sorted by its words, and tried again a minute on."""
+    err = sync.get("error")
+    kind = None
+    if err:
+        kind = sync.get("kind") or (
+            "config" if err.startswith(("No password saved.", "No account yet.", "The settings file")) else
+            "auth" if err.startswith("Sign-in failed.") else
+            "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
+                                         "Can't reach the mail server", "The connection to the mail server dropped",
+                                         "The mail server refused the connection")) else "server")
+    retry = sync.get("retry_at")
+    if retry is None and "kind" not in sync and sync.get("tried"):
+        retry = sync["tried"] + SYNC_EVERY
+    return {"error_kind": kind, "last_sync": sync.get("last"),
+            "retry_at": retry if err and not sync.get("running") else None}
+
+
 def linkify(escaped):
     def one(mo):
         if mo.group(1):
@@ -322,10 +347,11 @@ def linkify(escaped):
 
 def plain_html(text):
     text = (text or "").replace("\r\n", "\n").strip("\n")
-    mo = R.QUOTE_RE.search(text)
-    if not mo:
+    at = R.quote_start(text)
+    if at < 0:
         mo = re.search(r"(?m)^(>.*\n?){2,}\Z", text)
-    main, quoted = (text[:mo.start()], text[mo.start():]) if mo and mo.start() > 0 else (text, "")
+        at = mo.start() if mo else -1
+    main, quoted = (text[:at], text[at:]) if at > 0 else (text, "")
     out = '<div class="rd-plain">%s</div>' % linkify(htmlmod.escape(main.rstrip()))
     if quoted.strip():
         out += '<div class="rd-plain rd-quote">%s</div>' % linkify(htmlmod.escape(quoted.strip()))
@@ -381,85 +407,759 @@ def list_unsub(msg):
     return {"url": url, "mailto": mailto, "one_click": one}
 
 
-# Outlook names Windows time zones, not IANA ones
-WIN_TZ = {"China Standard Time": "Asia/Shanghai", "Singapore Standard Time": "Asia/Singapore",
-          "Taipei Standard Time": "Asia/Taipei", "Tokyo Standard Time": "Asia/Tokyo", "Korea Standard Time": "Asia/Seoul",
-          "India Standard Time": "Asia/Kolkata", "SE Asia Standard Time": "Asia/Bangkok",
-          "W. Australia Standard Time": "Australia/Perth", "AUS Eastern Standard Time": "Australia/Sydney",
-          "GMT Standard Time": "Europe/London", "W. Europe Standard Time": "Europe/Berlin",
-          "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest",
-          "Russian Standard Time": "Europe/Moscow", "Arabian Standard Time": "Asia/Dubai",
-          "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago",
-          "Mountain Standard Time": "America/Denver", "Pacific Standard Time": "America/Los_Angeles",
-          "UTC": "UTC", "Coordinated Universal Time": "UTC"}
+# ---- meeting invitations (iCalendar, RFC 5545; replies per iTIP, RFC 5546)
+
+# Outlook names Windows time zones, not IANA ones: the whole Windows -> IANA table (CLDR windowsZones, "001")
+WIN_TZ = {
+    "Dateline Standard Time": "Etc/GMT+12", "UTC-11": "Etc/GMT+11", "Aleutian Standard Time": "America/Adak",
+    "Hawaiian Standard Time": "Pacific/Honolulu", "Marquesas Standard Time": "Pacific/Marquesas",
+    "Alaskan Standard Time": "America/Anchorage", "UTC-09": "Etc/GMT+9",
+    "Pacific Standard Time (Mexico)": "America/Tijuana", "UTC-08": "Etc/GMT+8",
+    "Pacific Standard Time": "America/Los_Angeles", "US Mountain Standard Time": "America/Phoenix",
+    "Mountain Standard Time (Mexico)": "America/Mazatlan", "Mountain Standard Time": "America/Denver",
+    "Yukon Standard Time": "America/Whitehorse", "Central America Standard Time": "America/Guatemala",
+    "Central Standard Time": "America/Chicago", "Easter Island Standard Time": "Pacific/Easter",
+    "Central Standard Time (Mexico)": "America/Mexico_City", "Mexico Standard Time": "America/Mexico_City",
+    "Mexico Standard Time 2": "America/Chihuahua", "Canada Central Standard Time": "America/Regina",
+    "SA Pacific Standard Time": "America/Bogota", "Eastern Standard Time (Mexico)": "America/Cancun",
+    "Eastern Standard Time": "America/New_York", "Haiti Standard Time": "America/Port-au-Prince",
+    "Cuba Standard Time": "America/Havana", "US Eastern Standard Time": "America/Indiana/Indianapolis",
+    "Turks And Caicos Standard Time": "America/Grand_Turk", "Paraguay Standard Time": "America/Asuncion",
+    "Atlantic Standard Time": "America/Halifax", "Venezuela Standard Time": "America/Caracas",
+    "Central Brazilian Standard Time": "America/Cuiaba", "SA Western Standard Time": "America/La_Paz",
+    "Pacific SA Standard Time": "America/Santiago", "Newfoundland Standard Time": "America/St_Johns",
+    "Tocantins Standard Time": "America/Araguaina", "E. South America Standard Time": "America/Sao_Paulo",
+    "SA Eastern Standard Time": "America/Cayenne", "Argentina Standard Time": "America/Argentina/Buenos_Aires",
+    "Greenland Standard Time": "America/Godthab", "Montevideo Standard Time": "America/Montevideo",
+    "Magallanes Standard Time": "America/Punta_Arenas", "Saint Pierre Standard Time": "America/Miquelon",
+    "Bahia Standard Time": "America/Bahia", "UTC-02": "Etc/GMT+2", "Mid-Atlantic Standard Time": "Etc/GMT+2",
+    "Azores Standard Time": "Atlantic/Azores", "Cape Verde Standard Time": "Atlantic/Cape_Verde",
+    "UTC": "Etc/UTC", "Coordinated Universal Time": "Etc/UTC", "GMT Standard Time": "Europe/London",
+    "Greenwich Standard Time": "Atlantic/Reykjavik", "Sao Tome Standard Time": "Africa/Sao_Tome",
+    "Morocco Standard Time": "Africa/Casablanca", "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest", "Romance Standard Time": "Europe/Paris",
+    "Central European Standard Time": "Europe/Warsaw", "W. Central Africa Standard Time": "Africa/Lagos",
+    "Jordan Standard Time": "Asia/Amman", "GTB Standard Time": "Europe/Bucharest",
+    "Middle East Standard Time": "Asia/Beirut", "Egypt Standard Time": "Africa/Cairo",
+    "E. Europe Standard Time": "Europe/Chisinau", "Syria Standard Time": "Asia/Damascus",
+    "West Bank Standard Time": "Asia/Hebron", "South Africa Standard Time": "Africa/Johannesburg",
+    "FLE Standard Time": "Europe/Kiev", "Israel Standard Time": "Asia/Jerusalem",
+    "Jerusalem Standard Time": "Asia/Jerusalem", "South Sudan Standard Time": "Africa/Juba",
+    "Kaliningrad Standard Time": "Europe/Kaliningrad", "Sudan Standard Time": "Africa/Khartoum",
+    "Libya Standard Time": "Africa/Tripoli", "Namibia Standard Time": "Africa/Windhoek",
+    "Arabic Standard Time": "Asia/Baghdad", "Turkey Standard Time": "Europe/Istanbul",
+    "Arab Standard Time": "Asia/Riyadh", "Belarus Standard Time": "Europe/Minsk",
+    "Russian Standard Time": "Europe/Moscow", "Russia TZ 2 Standard Time": "Europe/Moscow",
+    "E. Africa Standard Time": "Africa/Nairobi", "Volgograd Standard Time": "Europe/Volgograd",
+    "Iran Standard Time": "Asia/Tehran", "Arabian Standard Time": "Asia/Dubai",
+    "Astrakhan Standard Time": "Europe/Astrakhan", "Azerbaijan Standard Time": "Asia/Baku",
+    "Russia Time Zone 3": "Europe/Samara", "Mauritius Standard Time": "Indian/Mauritius",
+    "Saratov Standard Time": "Europe/Saratov", "Georgian Standard Time": "Asia/Tbilisi",
+    "Caucasus Standard Time": "Asia/Yerevan", "Afghanistan Standard Time": "Asia/Kabul",
+    "West Asia Standard Time": "Asia/Tashkent", "Ekaterinburg Standard Time": "Asia/Yekaterinburg",
+    "Pakistan Standard Time": "Asia/Karachi", "Qyzylorda Standard Time": "Asia/Qyzylorda",
+    "India Standard Time": "Asia/Kolkata", "Sri Lanka Standard Time": "Asia/Colombo",
+    "Nepal Standard Time": "Asia/Kathmandu", "Central Asia Standard Time": "Asia/Bishkek",
+    "Bangladesh Standard Time": "Asia/Dhaka", "Omsk Standard Time": "Asia/Omsk",
+    "Myanmar Standard Time": "Asia/Yangon", "SE Asia Standard Time": "Asia/Bangkok",
+    "Altai Standard Time": "Asia/Barnaul", "W. Mongolia Standard Time": "Asia/Hovd",
+    "North Asia Standard Time": "Asia/Krasnoyarsk", "N. Central Asia Standard Time": "Asia/Novosibirsk",
+    "Tomsk Standard Time": "Asia/Tomsk", "China Standard Time": "Asia/Shanghai",
+    "North Asia East Standard Time": "Asia/Irkutsk", "Singapore Standard Time": "Asia/Singapore",
+    "Malay Peninsula Standard Time": "Asia/Singapore", "W. Australia Standard Time": "Australia/Perth",
+    "Taipei Standard Time": "Asia/Taipei", "Ulaanbaatar Standard Time": "Asia/Ulaanbaatar",
+    "Aus Central W. Standard Time": "Australia/Eucla", "Transbaikal Standard Time": "Asia/Chita",
+    "Tokyo Standard Time": "Asia/Tokyo", "North Korea Standard Time": "Asia/Pyongyang",
+    "Korea Standard Time": "Asia/Seoul", "Yakutsk Standard Time": "Asia/Yakutsk",
+    "Cen. Australia Standard Time": "Australia/Adelaide", "AUS Central Standard Time": "Australia/Darwin",
+    "E. Australia Standard Time": "Australia/Brisbane", "AUS Eastern Standard Time": "Australia/Sydney",
+    "West Pacific Standard Time": "Pacific/Port_Moresby", "Tasmania Standard Time": "Australia/Hobart",
+    "Vladivostok Standard Time": "Asia/Vladivostok", "Lord Howe Standard Time": "Australia/Lord_Howe",
+    "Bougainville Standard Time": "Pacific/Bougainville", "Russia Time Zone 10": "Asia/Srednekolymsk",
+    "Magadan Standard Time": "Asia/Magadan", "Norfolk Standard Time": "Pacific/Norfolk",
+    "Sakhalin Standard Time": "Asia/Sakhalin", "Central Pacific Standard Time": "Pacific/Guadalcanal",
+    "Russia Time Zone 11": "Asia/Kamchatka", "Kamchatka Standard Time": "Asia/Kamchatka",
+    "New Zealand Standard Time": "Pacific/Auckland", "UTC+12": "Etc/GMT-12", "Fiji Standard Time": "Pacific/Fiji",
+    "Chatham Islands Standard Time": "Pacific/Chatham", "UTC+13": "Etc/GMT-13",
+    "Tonga Standard Time": "Pacific/Tongatapu", "Samoa Standard Time": "Pacific/Apia",
+    "Line Islands Standard Time": "Pacific/Kiritimati"}
+
+# cities in Outlook's display names ("(UTC+08:00) Beijing, Chongqing, Hong Kong, Urumqi") that are no IANA city
+WIN_CITY = {"beijing": "Asia/Shanghai", "osaka": "Asia/Tokyo", "sapporo": "Asia/Tokyo", "new delhi": "Asia/Kolkata",
+            "mumbai": "Asia/Kolkata", "chennai": "Asia/Kolkata", "hanoi": "Asia/Bangkok", "abu dhabi": "Asia/Dubai",
+            "canberra": "Australia/Sydney", "wellington": "Pacific/Auckland", "brasilia": "America/Sao_Paulo",
+            "eastern time (us & canada)": "America/New_York", "central time (us & canada)": "America/Chicago",
+            "mountain time (us & canada)": "America/Denver", "pacific time (us & canada)": "America/Los_Angeles",
+            "edinburgh": "Europe/London", "bern": "Europe/Zurich", "st. petersburg": "Europe/Moscow",
+            "coordinated universal time": "Etc/UTC", "islamabad": "Asia/Karachi", "astana": "Asia/Bishkek",
+            "ekaterinburg": "Asia/Yekaterinburg", "kuwait": "Asia/Riyadh", "riyadh": "Asia/Riyadh"}
+
+ICS_LINE = re.compile(r'([A-Za-z0-9-]+)((?:;[A-Za-z0-9-]+=(?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)*):(.*)')
+ICS_PARAM = re.compile(r';([A-Za-z0-9-]+)=((?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)')
 
 
-def ics_time(value, params):
-    """An iCalendar date or date-time -> (unix time, all day)."""
-    v = value.strip()
-    if re.fullmatch(r"\d{8}", v):           # a whole day: midnight where the reader is
-        d = dt.datetime.strptime(v, "%Y%m%d")
-        return int(d.timestamp()), True
-    m = re.fullmatch(r"(\d{8}T\d{4})(\d{2})?(Z?)", v)
+def ics_parse(text):
+    """iCalendar text -> its components as a tree: {"name", "props": [(NAME, {PARAM: value}, value, line)], "subs"}.
+    Quoted parameter values may hold ":" and ";" (Outlook: TZID="(UTC+01:00) Amsterdam, Berlin, ...")."""
+    root = {"name": "", "props": [], "subs": []}
+    stack = [root]
+    for line in re.sub(r"\r?\n[ \t]", "", text or "").splitlines():
+        if not line.strip():
+            continue
+        m = ICS_LINE.match(line) or re.match(r"([A-Za-z0-9-]+)((?:;[^:]*)?):(.*)", line)
+        if not m:
+            continue
+        name, value = m.group(1).upper(), m.group(3)
+        if name == "BEGIN":
+            c = {"name": value.strip().upper(), "props": [], "subs": []}
+            stack[-1]["subs"].append(c)
+            stack.append(c)
+            continue
+        if name == "END":
+            if len(stack) > 1 and stack[-1]["name"] == value.strip().upper():
+                stack.pop()
+            continue
+        params = {k.upper(): v.strip('"') for k, v in ICS_PARAM.findall(m.group(2))}
+        stack[-1]["props"].append((name, params, value, line))
+    return root
+
+
+def ics_find(comp, name):
+    """Every component called name, at any depth."""
+    for s in comp["subs"]:
+        if s["name"] == name:
+            yield s
+        yield from ics_find(s, name)
+
+
+def ics_prop(comp, name, default=None):
+    """The first (value, params) of a property, or default."""
+    for n, p, v, _ in comp["props"]:
+        if n == name:
+            return v, p
+    return default
+
+
+def ics_text(v):
+    """An iCalendar TEXT value, unescaped."""
+    return re.sub(r"\\([,;:\\])", r"\1", re.sub(r"\\[nN]", "\n", v or "")).strip()
+
+
+def ics_offset(v):
+    """"+0100" / "-0530" / "+013000" -> seconds east of UTC, or None."""
+    m = re.fullmatch(r"([+-])(\d\d)(\d\d)(\d\d)?", (v or "").strip())
     if not m:
-        return None, False
-    d = dt.datetime.strptime(m.group(1) + (m.group(2) or "00"), "%Y%m%dT%H%M%S")
-    if m.group(3):
-        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False
-    tz = None
-    name = (params.get("TZID") or "").strip('"')
-    if name:
+        return None
+    s = int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4) or 0)
+    return -s if m.group(1) == "-" else s
+
+
+def ics_local(v):
+    """"20261124T100000" -> a naive datetime, or None."""
+    m = re.fullmatch(r"(\d{8})T(\d{4})(\d{2})?Z?", (v or "").strip())
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1) + m.group(2) + (m.group(3) or "00"), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def rule_of(v):
+    """An RRULE value -> {KEY: value}."""
+    return {k.upper(): x for k, _, x in (p.partition("=") for p in (v or "").split(";")) if k}
+
+
+def nth_weekday(year, month, wd, n):
+    """The day of month of the nth (1..5, or -1 = last) weekday wd (0 = Monday), or None."""
+    days = [d for d in range(1, 32) if _valid(year, month, d) and dt.date(year, month, d).weekday() == wd]
+    try:
+        return days[n - 1] if n > 0 else days[n]
+    except IndexError:
+        return None
+
+
+def _valid(y, m, d):
+    try:
+        dt.date(y, m, d)
+        return True
+    except ValueError:
+        return False
+
+
+WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+class VTimezone(dt.tzinfo):
+    """A time zone as the invitation itself describes it (VTIMEZONE: STANDARD and DAYLIGHT, each with its
+    offsets and a yearly rule or fixed dates). Used when the TZID is no name the system knows."""
+
+    def __init__(self, comp):
+        self.parts = []
+        for s in comp["subs"]:
+            if s["name"] not in ("STANDARD", "DAYLIGHT"):
+                continue
+            start = ics_local((ics_prop(s, "DTSTART") or ("", {}))[0]) or dt.datetime(1601, 1, 1)
+            to = ics_offset((ics_prop(s, "TZOFFSETTO") or ("", {}))[0])
+            frm = ics_offset((ics_prop(s, "TZOFFSETFROM") or ("", {}))[0])
+            if to is None:
+                continue
+            rdates = []
+            for n, _p, v, _l in s["props"]:
+                if n == "RDATE":
+                    rdates += [d for d in (ics_local(x) for x in v.split(",")) if d]
+            rr = ics_prop(s, "RRULE")
+            self.parts.append({"start": start, "to": to, "from": frm if frm is not None else to,
+                               "rule": rule_of(rr[0]) if rr else None, "rdates": rdates, "dst": s["name"] == "DAYLIGHT"})
+        if not self.parts:
+            raise ValueError("no offsets")
+
+    def onsets(self, part, year):
+        """Local times in this year at which part begins."""
+        out = [d for d in [part["start"]] + part["rdates"] if d.year == year]
+        r = part["rule"]
+        if r and r.get("FREQ", "").upper() == "YEARLY":
+            until = ics_local(r.get("UNTIL", "")) or (dt.datetime.strptime(r["UNTIL"][:8], "%Y%m%d")
+                                                      if re.fullmatch(r"\d{8}", r.get("UNTIL", "")) else None)
+            months = [int(x) for x in r.get("BYMONTH", str(part["start"].month)).split(",") if x.strip().isdigit()]
+            for mo in months:
+                days = []
+                for b in [x for x in r.get("BYDAY", "").split(",") if x]:
+                    m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b.strip().upper())
+                    if m:
+                        days.append(nth_weekday(year, mo, WEEKDAYS.index(m.group(2)), int(m.group(1) or 1)))
+                for b in [x for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()]:
+                    d = int(b)
+                    days.append(d if d > 0 else None)
+                if not days:
+                    days = [part["start"].day]
+                for d in days:
+                    if d and _valid(year, mo, d):
+                        when = dt.datetime(year, mo, d, part["start"].hour, part["start"].minute, part["start"].second)
+                        if when >= part["start"] and (until is None or when <= until):
+                            out.append(when)
+        return out
+
+    def offset_at(self, d):
+        """Seconds east of UTC at the wall-clock time d (naive)."""
+        best = None
+        for part in self.parts:
+            for y in (d.year - 1, d.year):
+                for on in self.onsets(part, y):
+                    if on <= d and (best is None or on > best[0]):
+                        best = (on, part)
+        if best is None:                    # before every onset: the earliest part's "from"
+            first = min(self.parts, key=lambda p: p["start"])
+            return first["from"], False
+        return best[1]["to"], best[1]["dst"]
+
+    def utcoffset(self, d):
+        return dt.timedelta(seconds=self.offset_at(d.replace(tzinfo=None))[0])
+
+    def dst(self, d):
+        return dt.timedelta(0)
+
+    def tzname(self, d):
+        return None
+
+
+def zone_city(iana):
+    return iana.rsplit("/", 1)[-1].replace("_", " ") if iana and not iana.startswith("Etc/") else ""
+
+
+_CITIES = None
+
+
+def win_display_zone(name, year):
+    """Outlook's display name "(UTC+01:00) Amsterdam, Berlin, ..." -> (IANA name or None, fixed offset or None).
+    A city is taken only when its standard offset is the one in the name."""
+    global _CITIES
+    m = re.match(r"\(\s*(?:UTC|GMT)\s*(?:([+-])(\d{1,2}):?(\d\d))?\s*\)\s*(.*)", name)
+    if not m:
+        return None, None
+    off = (int(m.group(2)) * 3600 + int(m.group(3)) * 60) * (-1 if m.group(1) == "-" else 1) if m.group(2) else 0
+    try:
+        from zoneinfo import ZoneInfo, available_timezones
+        if _CITIES is None:
+            _CITIES = {zone_city(z).lower(): z for z in sorted(available_timezones()) if "/" in z and zone_city(z)}
+        rest = m.group(4).strip()
+        names = [rest.lower()] + [c.strip().lower() for c in rest.split(",")]
+        for c in names:
+            z = WIN_CITY.get(c) or _CITIES.get(c)
+            if not z:
+                continue
+            tz = ZoneInfo(z)
+            std = min(int(dt.datetime(year, mo, 1, tzinfo=tz).utcoffset().total_seconds()) for mo in (1, 7))
+            if std == off:
+                return z, off
+    except Exception:       # noqa: BLE001 - no time zone database: the offset in the name still holds
+        pass
+    return None, off
+
+
+def ics_zone(name, zones, when=None):
+    """A TZID -> (tzinfo or None, IANA name or None). Tries an IANA name, a Windows name, the invitation's own
+    VTIMEZONE, then the offset in an Outlook display name. None: nobody can tell."""
+    name = (name or "").strip().strip('"').strip()
+    if not name:
+        return None, None
+    year = (when or dt.datetime.now()).year
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        ZoneInfo = None
+    if ZoneInfo:
+        tail = re.search(r"([A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?)$", name)     # "/mozilla.org/.../Europe/Berlin"
+        for z in (WIN_TZ.get(name), name if "/" in name or name.upper() in ("UTC", "GMT") else None,
+                  tail.group(1) if tail and tail.group(1) != name else None):
+            if z:
+                try:
+                    return ZoneInfo(z), z
+                except Exception:   # noqa: BLE001 - not a name this system knows
+                    pass
+        z, _ = win_display_zone(name, year)
+        if z:
+            try:
+                tz = ZoneInfo(z)
+                vt = zones.get(name)
+                if vt is None or when is None or tz.utcoffset(when) == vt.utcoffset(when):
+                    return tz, z
+            except Exception:       # noqa: BLE001
+                pass
+    if zones.get(name) is not None:
+        return zones[name], None
+    _, off = win_display_zone(name, year)
+    if off is not None:
+        return dt.timezone(dt.timedelta(seconds=off)), None
+    return None, None
+
+
+def ics_zones(cal):
+    """{TZID: VTimezone} for the invitation's VTIMEZONE blocks that can be read."""
+    out = {}
+    for c in ics_find(cal, "VTIMEZONE"):
+        tzid = (ics_prop(c, "TZID") or ("", {}))[0].strip().strip('"')
+        if tzid:
+            with contextlib.suppress(Exception):
+                out[tzid] = VTimezone(c)
+    return out
+
+
+def ics_time(value, params, zones=None):
+    """An iCalendar date or date-time -> (unix time, all day). A whole day is midnight where the reader is;
+    a time with an unknown zone is read as the reader's (ics_when says it is unknown)."""
+    return ics_when(value, params, zones or {})[:2]
+
+
+def ics_when(value, params, zones):
+    """-> (unix time, all day, {"iana", "offset", "label"} of the event's zone, or None when floating,
+    or {"unknown": True}), (None, False, None) when it can't be read."""
+    v = (value or "").strip()
+    if re.fullmatch(r"\d{8}", v):
         try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(WIN_TZ.get(name, name))
-        except Exception:
-            tz = None
-    return int(d.replace(tzinfo=tz).timestamp() if tz else d.timestamp()), False
+            d = dt.datetime.strptime(v, "%Y%m%d")
+        except ValueError:
+            return None, False, None
+        return int(d.timestamp()), True, None
+    d = ics_local(v)
+    if d is None:
+        return None, False, None
+    if v.upper().endswith("Z"):
+        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False, None     # UTC says nothing of the zone
+    name = (params.get("TZID") or "").strip().strip('"')
+    if not name:
+        return int(d.timestamp()), False, None          # floating: the same wall-clock time everywhere
+    tz, iana = ics_zone(name, zones, d)
+    if tz is None:
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    try:
+        aware = d.replace(tzinfo=tz)
+        off = int(aware.utcoffset().total_seconds())
+        ts = int(aware.timestamp())
+    except Exception:       # noqa: BLE001 - a zone that can't answer for this date
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    mm = re.match(r"\([^)]*\)\s*([^,]*)", name)
+    label = (mm.group(1).strip() if mm and mm.group(1).strip() else "") or zone_city(iana) or name
+    return ts, False, {"iana": iana, "offset": off, "label": label}
+
+
+def ics_duration(v):
+    """"PT1H30M" / "P1D" / "-PT15M" -> seconds, or None."""
+    m = re.fullmatch(r"([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", (v or "").strip())
+    if not m or not any(m.groups()[1:]):
+        return None
+    w, d, h, mi, s = (int(x or 0) for x in m.groups()[1:])
+    n = (((w * 7 + d) * 24 + h) * 60 + mi) * 60 + s
+    return -n if m.group(1) == "-" else n
+
+
+def ics_charset_text(p):
+    """The calendar part as text: its declared charset, then UTF-8, then GB18030 (as for mail text)."""
+    data = R.part_bytes(p)
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    for cs, err in ((p.get_content_charset() or "", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
+        if not cs:
+            continue
+        try:
+            return data.decode(cs, err)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", "replace")
 
 
 def ics_part(msg):
-    """The mail's calendar part (an invitation), or None."""
+    """The mail's calendar part (an invitation), or None. The text/calendar part wins over an .ics file."""
+    found = None
     for p in msg.walk():
-        if p.is_multipart():
+        if p.is_multipart() or p.get_content_type() == "message/rfc822":
             continue
-        if p.get_content_type() == "text/calendar" or (R.fname(p) or "").lower().endswith(".ics"):
+        if p.get_content_type() == "text/calendar":
             return p
+        if found is None and (R.fname(p) or "").lower().endswith(".ics"):
+            found = p
+    return found
+
+
+# links that join an online meeting, the service named by the first group
+JOIN_LINKS = (
+    ("teams", r"https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join|meet|dl/launcher)/[^\s<>\"'\\]+"),
+    ("zoom", r"https://(?:[\w-]+\.)?zoom(?:gov)?\.(?:us|com|com\.cn)/(?:j|my|w|s|wc)/[^\s<>\"'\\]+"),
+    ("meet", r"https://meet\.google\.com/[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}[^\s<>\"'\\]*"),
+    ("tencent", r"https://(?:meeting\.tencent\.com|voovmeeting\.com|work\.weixin\.qq\.com/meeting)/[^\s<>\"'\\]+"),
+    ("webex", r"https://[\w-]+\.webex\.com(?:\.cn)?/[^\s<>\"'\\]+"),
+)
+
+
+def join_link(ev):
+    """The online meeting's link: {"url", "kind"}, or None. Looks where the services put it."""
+    texts = []
+    for n in ("X-MICROSOFT-SKYPETEAMSMEETINGURL", "X-MICROSOFT-ONLINEMEETINGCONFLINK", "X-GOOGLE-CONFERENCE",
+              "URL", "LOCATION", "DESCRIPTION", "X-ALT-DESC"):
+        for pn, _p, v, _l in ev["props"]:
+            if pn == n:
+                texts.append(htmlmod.unescape(ics_text(v)))
+    for n, _p, v, _l in ev["props"]:
+        if n.startswith("X-") and "http" in v:
+            texts.append(ics_text(v))
+    for t in texts:
+        for kind, pat in JOIN_LINKS:
+            m = re.search(pat, t, re.I)
+            if m:
+                return {"url": m.group(0).rstrip(".,;)>]"), "kind": kind}
     return None
 
 
+def ics_person(value, params):
+    addr = re.sub(r"(?i)^mailto:", "", (value or "").strip()).strip().lower()
+    return {"name": (params.get("CN") or "").strip().strip('"'), "addr": addr if "@" in addr else ""}
+
+
+def rrule_info(v, tz, start_local):
+    """An RRULE -> what the page needs to say it ({"freq", "interval", "byday", "bymonthday", "count", "until"})."""
+    r = rule_of(v)
+    freq = r.get("FREQ", "").upper()
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+        return None
+    out = {"freq": freq, "interval": max(1, int(r["INTERVAL"])) if r.get("INTERVAL", "").isdigit() else 1,
+           "byday": [x.strip().upper() for x in r.get("BYDAY", "").split(",") if x.strip()],
+           "bymonthday": [int(x) for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()],
+           "count": int(r["COUNT"]) if r.get("COUNT", "").isdigit() else None, "until": None}
+    u = r.get("UNTIL", "").strip()
+    if re.fullmatch(r"\d{8}", u):
+        out["until_day"] = u
+    elif ics_local(u):
+        d = ics_local(u)
+        out["until"] = int((d.replace(tzinfo=dt.timezone.utc) if u.upper().endswith("Z") else
+                            d.replace(tzinfo=tz) if tz else d).timestamp())
+    return out
+
+
+def rrule_next(start, dur, tz, rr, now, exdates=()):
+    """The first occurrence (as a naive local start) of a repeating event that has not ended by now, or None when
+    the series is over. Covers DAILY, WEEKLY (BYDAY), MONTHLY (BYMONTHDAY or nth BYDAY) and YEARLY."""
+    def ts(d):
+        return (d.replace(tzinfo=tz) if tz else d).timestamp()
+    until = rr.get("until")
+    until_day = rr.get("until_day")
+    count = rr.get("count")
+    n = 0
+    k = 0
+    iv = rr["interval"]
+    while k < 5000:
+        if rr["freq"] == "DAILY":
+            cands = [start + dt.timedelta(days=k * iv)]
+        elif rr["freq"] == "WEEKLY":
+            week0 = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * iv)
+            days = [WEEKDAYS.index(b[-2:]) for b in rr["byday"] if b[-2:] in WEEKDAYS] or [start.weekday()]
+            cands = [week0 + dt.timedelta(days=d) for d in sorted(set(days))]
+        elif rr["freq"] == "MONTHLY":
+            mi = start.month - 1 + k * iv
+            y, mo = start.year + mi // 12, mi % 12 + 1
+            days = []
+            for b in rr["byday"]:
+                m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b)
+                if m and m.group(1):
+                    days.append(nth_weekday(y, mo, WEEKDAYS.index(m.group(2)), int(m.group(1))))
+            days += [d for d in rr["bymonthday"] if d > 0] or ([] if days else [start.day])
+            cands = [start.replace(year=y, month=mo, day=d) for d in sorted(x for x in days if x) if _valid(y, mo, d)]
+        else:
+            y = start.year + k * iv
+            cands = [start.replace(year=y)] if _valid(y, start.month, start.day) else []
+        for c in cands:
+            if c < start:
+                continue
+            if until is not None and ts(c) > until or until_day and c.strftime("%Y%m%d") > until_day:
+                return None
+            n += 1
+            if count and n > count:
+                return None
+            if c in exdates:
+                continue
+            if ts(c) + dur > now:
+                return c
+        k += 1
+    return None
+
+
+def pick_event(cal):
+    """The VEVENT the mail is about: the series, unless an occurrence with RECURRENCE-ID was changed later."""
+    evs = list(ics_find(cal, "VEVENT"))
+    if not evs:
+        return None
+    def seq(e):
+        v = (ics_prop(e, "SEQUENCE") or ("0", {}))[0].strip()
+        return int(v) if v.isdigit() else 0
+    master = next((e for e in evs if not ics_prop(e, "RECURRENCE-ID")), None)
+    others = [e for e in evs if e is not master]
+    if master is None:
+        return others[0]
+    newer = [e for e in others if seq(e) > seq(master)]
+    return max(newer, key=seq) if newer else master
+
+
 def invite_of(msg):
-    """What a meeting invitation says: {"title", "start", "end", "all_day", "where", "organizer", "method"}, or None."""
+    """What a meeting invitation (or a reply to one, a cancellation, a new time proposed) says, or None.
+    {"title", "start", "end", "all_day", "where", "organizer", "method", "cancelled", "uid", ...}."""
     p = ics_part(msg)
     if p is None:
         return None
     try:
-        text = R.part_bytes(p).decode("utf-8", "replace")
-    except Exception:
+        cal = ics_parse(ics_charset_text(p))
+    except Exception:       # noqa: BLE001 - a broken calendar part is no invitation
         return None
-    text = re.sub(r"\r?\n[ \t]", "", text)               # unfold
-    method = (re.search(r"(?mi)^METHOD:(.*)$", text) or [None, ""])[1].strip().upper()
-    ev = re.search(r"(?s)BEGIN:VEVENT(.*?)END:VEVENT", text)
-    if not ev:
+    vcal = next(ics_find(cal, "VCALENDAR"), cal)
+    method = ((ics_prop(vcal, "METHOD") or ics_prop(cal, "METHOD") or ("", {}))[0].strip().upper()
+              or (p.get_param("method") or "").upper())
+    ev = pick_event(cal)
+    if ev is None:
         return None
-    props = {}
-    for line in ev.group(1).splitlines():
-        m = re.match(r"([A-Za-z-]+)((?:;[^:]*)?):(.*)", line)
-        if not m or m.group(1).upper() in props:
-            continue
-        params = dict(re.findall(r';([A-Za-z-]+)=("[^"]*"|[^;]*)', m.group(2)))
-        props[m.group(1).upper()] = (m.group(3), {k.upper(): v for k, v in params.items()})
-    unesc = lambda v: re.sub(r"\\([,;\\])", r"\1", v.replace("\\n", "\n").replace("\\N", "\n")).strip()
-    start, all_day = ics_time(*props["DTSTART"]) if "DTSTART" in props else (None, False)
+    zones = ics_zones(cal)
+    g = lambda n: ics_prop(ev, n) or ("", {})
+    if not ics_prop(ev, "DTSTART"):
+        return None
+    start, all_day, zone = ics_when(*g("DTSTART"), zones)
     if start is None:
         return None
-    end = ics_time(*props["DTEND"])[0] if "DTEND" in props else None
-    org = props.get("ORGANIZER")
-    organizer = ""
-    if org:
-        organizer = org[1].get("CN", "").strip('"') or re.sub(r"(?i)^mailto:", "", org[0])
-    return {"title": unesc(props.get("SUMMARY", ("", {}))[0]), "start": start, "end": end, "all_day": all_day,
-            "where": unesc(props.get("LOCATION", ("", {}))[0]), "organizer": organizer,
-            "method": method, "cancelled": method == "CANCEL" or props.get("STATUS", ("", {}))[0].upper() == "CANCELLED"}
+    end = None
+    if ics_prop(ev, "DTEND"):
+        end = ics_when(*g("DTEND"), zones)[0]
+    elif ics_prop(ev, "DURATION"):
+        d = ics_duration(g("DURATION")[0])
+        end = start + d if d is not None else None
+    if all_day and (end is None or end <= start):
+        end = start + 86400
+    org = ics_prop(ev, "ORGANIZER")
+    organizer = ics_person(*org) if org else {"name": "", "addr": ""}
+    people = []
+    for n, pa, v, _l in ev["props"]:
+        if n == "ATTENDEE":
+            x = ics_person(v, pa)
+            if not x["addr"] and not x["name"]:
+                continue
+            x["status"] = (pa.get("PARTSTAT") or "NEEDS-ACTION").upper()
+            x["role"] = (pa.get("ROLE") or "REQ-PARTICIPANT").upper()
+            x["kind"] = (pa.get("CUTYPE") or "INDIVIDUAL").upper()
+            people.append(x)
+    seq_v = g("SEQUENCE")[0].strip()
+    rid = ics_prop(ev, "RECURRENCE-ID")
+    out = {"title": ics_text(g("SUMMARY")[0]), "start": start, "end": end, "all_day": all_day,
+           "where": ics_text(g("LOCATION")[0]), "organizer": organizer["name"] or organizer["addr"],
+           "organizer_addr": organizer["addr"], "method": method or "PUBLISH",
+           "cancelled": method == "CANCEL" or g("STATUS")[0].strip().upper() == "CANCELLED",
+           "uid": g("UID")[0].strip(), "seq": int(seq_v) if seq_v.isdigit() else 0,
+           "occurrence": bool(rid), "rid": rid[0].strip() if rid else "",
+           "zone": zone, "attendees": [x for x in people if x["kind"] not in ("ROOM", "RESOURCE")],
+           "about": ics_about(ics_text(g("DESCRIPTION")[0]))[:2000], "join": join_link(ev), "repeat": None,
+           "first": [start, end]}
+    if all_day:
+        s = g("DTSTART")[0].strip()[:8]
+        out["day0"] = s
+        e = (g("DTEND")[0].strip()[:8] if re.fullmatch(r"\d{8}", g("DTEND")[0].strip()) else None)
+        last = (dt.datetime.strptime(e, "%Y%m%d") - dt.timedelta(days=1)) if e and e > s else dt.datetime.strptime(s, "%Y%m%d")
+        out["day1"] = last.strftime("%Y%m%d")
+    rr = ics_prop(ev, "RRULE")
+    if rr and not rid:
+        tz = None
+        if not all_day and g("DTSTART")[1].get("TZID"):
+            tz = ics_zone(g("DTSTART")[1]["TZID"], zones, ics_local(g("DTSTART")[0]))[0]
+        local = ics_local(g("DTSTART")[0]) or dt.datetime.strptime(g("DTSTART")[0].strip()[:8], "%Y%m%d")
+        if g("DTSTART")[0].strip().upper().endswith("Z"):
+            tz = dt.timezone.utc
+        info = rrule_info(rr[0], tz, local)
+        if info:
+            out["repeat"] = info
+            exd = set()
+            for n, _pa, v, _l in ev["props"]:
+                if n == "EXDATE":
+                    exd |= {d for d in (ics_local(x) for x in v.split(",")) if d}
+            dur = (end - start) if end else 0
+            nxt = rrule_next(local, dur, tz, info, time.time(), exd)
+            if nxt is not None and nxt != local:
+                ns = int((nxt.replace(tzinfo=tz) if tz else nxt).timestamp())
+                out["start"], out["end"] = ns, (ns + dur if end else None)
+                if all_day:
+                    out["day0"] = nxt.strftime("%Y%m%d")
+                    out["day1"] = (nxt + dt.timedelta(seconds=max(0, dur - 86400))).strftime("%Y%m%d")
+                if zone and zone.get("iana") is not None and tz is not None:
+                    out["zone"] = dict(zone, offset=int(nxt.replace(tzinfo=tz).utcoffset().total_seconds()))
+            out["repeat"]["over"] = nxt is None
+    if method in ("REPLY", "COUNTER"):
+        # the attendee who answers (or proposes a new time) is the one ATTENDEE of the reply
+        x = next((a for a in people if a["status"] != "NEEDS-ACTION"), people[0] if people else None)
+        out["reply"] = {"name": (x or {}).get("name", ""), "addr": (x or {}).get("addr", ""),
+                        "status": (x or {}).get("status", ""), "comment": ics_text(g("COMMENT")[0])}
+        if not out["reply"]["addr"]:
+            f = R.addrs(R.hdr(msg, "From"))
+            if f:
+                out["reply"]["name"], out["reply"]["addr"] = f[0]
+    return out
+
+
+def ics_about(text):
+    """The first part of a DESCRIPTION worth reading: without the join boilerplate that Teams puts after a
+    line of underscores, and without lines that are only rules."""
+    text = re.split(r"(?m)^\s*_{10,}\s*$", text or "", maxsplit=1)[0]
+    lines = [x.rstrip() for x in text.splitlines() if not re.fullmatch(r"\s*[-_=*~.]{4,}\s*", x)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def invite_for(v, me):
+    """What the invitation asks of the person reading it: are they the organizer, are they asked, how they answered
+    in the invitation itself. Changes v."""
+    me = (me or "").lower()
+    v["mine"] = bool(me) and v.get("organizer_addr") == me
+    x = next((a for a in v.get("attendees") or [] if me and a["addr"] == me), None)
+    v["me_status"] = x["status"] if x else None
+    v["can_answer"] = bool(x) and not v["mine"] and v.get("method") == "REQUEST" and not v.get("cancelled")
+    return v
+
+
+RSVP_SUBJECT = {"ACCEPTED": "Accepted: %s", "TENTATIVE": "Tentative: %s", "DECLINED": "Declined: %s"}
+
+
+def ics_fold(line):
+    """One content line folded at 75 octets (RFC 5545 3.1), never inside a UTF-8 character."""
+    out, cur = [], b""
+    for ch in line:
+        e = ch.encode()
+        if len(cur) + len(e) > (75 if not out else 74):
+            out.append(cur)
+            cur = b""
+        cur += e
+    out.append(cur)
+    return "\r\n ".join(x.decode() for x in out)
+
+
+def ics_escape(s):
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\n") \
+        .replace("\r", "\n").replace("\n", "\\n")
+
+
+def ics_param_value(v):
+    v = (v or "").replace('"', "'")
+    return '"%s"' % v if re.search(r"[;:,]", v) else v
+
+
+def ics_lines(comp):
+    """A parsed component back as content lines (each line as it came, unfolded)."""
+    out = ["BEGIN:" + comp["name"]]
+    out += [line for _n, _p, _v, line in comp["props"]]
+    for s in comp["subs"]:
+        out += ics_lines(s)
+    return out + ["END:" + comp["name"]]
+
+
+def rsvp_ics(cal, ev, partstat, me, name, note="", now=None):
+    """The iTIP REPLY (RFC 5546 3.2.3) to the event ev of the invitation cal: the same UID, SEQUENCE and
+    RECURRENCE-ID, the organizer, and one ATTENDEE, the person answering, with PARTSTAT. DTSTAMP is when the
+    reply is made, so a later answer replaces an earlier one."""
+    used = {p.get("TZID", "").strip() for n, p, _v, _l in ev["props"]
+            if n in ("DTSTART", "DTEND", "RECURRENCE-ID") and p.get("TZID")}
+    lines = ["BEGIN:VCALENDAR", "PRODID:-//Ragdoll Mail//EN", "VERSION:2.0", "METHOD:REPLY"]
+    for z in ics_find(cal, "VTIMEZONE"):
+        if (ics_prop(z, "TZID") or ("", {}))[0].strip().strip('"') in used:
+            lines += ics_lines(z)
+    lines.append("BEGIN:VEVENT")
+    for want in ("UID", "RECURRENCE-ID", "SEQUENCE", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "ORGANIZER"):
+        lines += [line for n, _p, _v, line in ev["props"] if n == want][:1]
+    if not ics_prop(ev, "SEQUENCE"):
+        lines.append("SEQUENCE:0")
+    lines.append("DTSTAMP:" + dt.datetime.fromtimestamp(now or time.time(), dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    me = (me or "").lower()
+    params = next((dict(p) for n, p, v, _l in ev["props"]
+                   if n == "ATTENDEE" and ics_person(v, p)["addr"] == me), {})
+    for k in ("PARTSTAT", "RSVP"):
+        params.pop(k, None)
+    if name and not params.get("CN"):
+        params["CN"] = name
+    lines.append("ATTENDEE" + "".join(";%s=%s" % (k, ics_param_value(v)) for k, v in params.items())
+                 + ";PARTSTAT=%s:mailto:%s" % (partstat, me))
+    if note:
+        lines.append("COMMENT:" + ics_escape(note))
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
+
+
+def build_rsvp(orig, partstat, me, name="", note="", subject=None):
+    """The answer to the invitation mail orig, to its organizer: text/plain (the note) beside
+    text/calendar; method=REPLY. ValueError when the mail holds no invitation to answer."""
+    partstat = (partstat or "").upper()
+    if partstat not in RSVP_SUBJECT:
+        raise ValueError("unknown answer")
+    p = ics_part(orig)
+    if p is None:
+        raise ValueError("no invitation")
+    cal = ics_parse(ics_charset_text(p))
+    ev = pick_event(cal)
+    if ev is None or not ics_prop(ev, "UID"):
+        raise ValueError("no invitation")
+    org = ics_prop(ev, "ORGANIZER")
+    to = ics_person(*org)["addr"] if org else ""
+    to_name = ics_person(*org)["name"] if org else ""
+    if not to:
+        f = R.addrs(R.hdr(orig, "From"))
+        to, to_name = (f[0][1], f[0][0]) if f else ("", "")
+    if not to:
+        raise ValueError("the invitation has no organizer")
+    title = ics_text((ics_prop(ev, "SUMMARY") or ("", {}))[0])
+    form = subject if subject and "%s" in subject else RSVP_SUBJECT[partstat]
+    note = re.sub(r"[\r\n]+", " ", (note or "").strip())[:500]
+    msg = EmailMessage()
+    msg["From"] = formataddr((R.one_line(name), me)) if name else me
+    msg["To"] = formataddr((R.one_line(to_name), to)) if to_name else to
+    msg["Subject"] = R.one_line(form.replace("%s", title, 1)).strip()
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=(me.split("@")[-1] or None))
+    mid = R.hdr(orig, "Message-ID").strip()
+    if mid:
+        msg["In-Reply-To"] = mid
+        msg["References"] = ((R.hdr(orig, "References").strip() + " ") if R.hdr(orig, "References").strip() else "") + mid
+    msg.set_content((note or msg["Subject"]) + "\n")
+    msg.add_alternative(rsvp_ics(cal, ev, partstat, me, name, note), subtype="calendar",
+                        params={"method": "REPLY"})
+    return msg
+
 
 def data_images(html):
     """Pasted data: images in the editor -> (html with cid: links, [(cid, bytes, maintype, subtype)])."""
@@ -617,6 +1317,10 @@ DEMO = [
      "Product training next Wednesday",
      "Hi all,\n\nThe product training is next Wednesday at 2 pm in the meeting room on the third floor. "
      "Please be on time.\n\nEmily", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("Daniel Ruiz", "d.ruiz@contoso.com"), [ME], [],
+     "Weekly supplier sync",
+     "Hi Alex,\n\nA short weekly call to go through open orders and shipments. It's on Teams.\n\nDaniel",
+     [("meeting.ics", "teams")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -710,6 +1414,9 @@ DEMO_ZH = [
     ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME_ZH], [],
      "下周培训安排",
      "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("周敏", "zhou.min@fabrikam.cn"), [ME_ZH], [],
+     "项目周会（腾讯会议）",
+     "各位好，\n\n这周的项目周会改在线上开，请用腾讯会议加入。\n\n周敏", [("meeting.ics", "tencent")], True, None, None),
     ("inbox", 60 * 200, ("陈刚", "chen.gang@example.com"), [ME_ZH], [],
      "备件清单",
      "林工，\n\n附件是明年需要的备件清单。\n\n陈刚", [("备件清单_2027.pdf", "pdf")], True, None, None),
@@ -771,7 +1478,13 @@ def demo_lang(want=None):
     return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
 
 
-def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
+def demo_attendees(people):
+    """ATTENDEE lines for [(name, addr, PARTSTAT)]."""
+    return "".join('ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=%s;RSVP=TRUE;CN="%s":mailto:%s\r\n' % (st, n, a)
+                   for n, a, st in people)
+
+
+def demo_ics(name, ts, event=DEMO_SETS["en"]["event"], to=()):
     """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
     d = dt.datetime.now() + dt.timedelta(days=1)
     d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
@@ -779,9 +1492,71 @@ def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
     f = "%Y%m%dT%H%M%SZ"
     title, place, who, addr = event
     return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
-            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
-            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr))
+            "UID:training@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
+            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\n%sEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr,
+               demo_attendees([(n, a, "NEEDS-ACTION") for n, a in to])))
+
+
+DEMO_BERLIN = "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"
+
+
+def demo_ics_teams(to):
+    """A weekly Teams meeting from Outlook in Berlin: a Windows zone name with its VTIMEZONE, a repeat rule,
+    the Teams link, people who answered."""
+    from zoneinfo import ZoneInfo
+    berlin = ZoneInfo("Europe/Berlin")
+    d = dt.datetime.now(berlin) + dt.timedelta(days=1)
+    d = (d + dt.timedelta(days=(1 - d.weekday()) % 7)).replace(hour=10, minute=0, second=0, microsecond=0)
+    until = (d + dt.timedelta(days=120)).astimezone(dt.timezone.utc)
+    url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_RGVtbyBtZWV0aW5n%40thread.v2/0?context=demo"
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("Jane Doe", "jane.doe@acme-industrial.com", "ACCEPTED"), ("Tom Becker", "tom.becker@acme-industrial.com", "TENTATIVE"),
+        ("Priya Natarajan", "priya@fabrikam.com", "DECLINED"), ("Sara Kim", "sara.kim@northwind.io", "NEEDS-ACTION"),
+        ("Marco Rossi", "marco.rossi@example.it", "ACCEPTED")]
+    about = ("A short weekly call to go through open orders and shipments.\\n\\n" + "_" * 80 +
+             "\\nMicrosoft Teams meeting\\nJoin on your computer\\, mobile app or room device\\n" + url +
+             "\\nMeeting ID: 371 552 908 114\\nPasscode: 7xQ2pD\\n" + "_" * 80)
+    z = '"%s"' % DEMO_BERLIN
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN\r\nVERSION:2.0\r\n"
+            "METHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:%s\r\nBEGIN:STANDARD\r\nDTSTART:16010101T030000\r\n"
+            "TZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\n"
+            "BEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\n"
+            "RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\n"
+            "ORGANIZER;CN=Daniel Ruiz:mailto:d.ruiz@contoso.com\r\n%s"
+            "DESCRIPTION;LANGUAGE=en-US:%s\r\nRRULE:FREQ=WEEKLY;UNTIL=%s;INTERVAL=1;BYDAY=TU;WKST=SU\r\n"
+            "UID:040000008200E00074C5B7101A82E00800000000DEMO0001\r\nSUMMARY;LANGUAGE=en-US:Weekly supplier sync\r\n"
+            "DTSTART;TZID=%s:%s\r\nDTEND;TZID=%s:%s\r\nCLASS:PUBLIC\r\nPRIORITY:5\r\nDTSTAMP:%s\r\n"
+            "TRANSP:OPAQUE\r\nSTATUS:CONFIRMED\r\nSEQUENCE:0\r\nLOCATION;LANGUAGE=en-US:Microsoft Teams Meeting\r\n"
+            "X-MICROSOFT-SKYPETEAMSMEETINGURL:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (DEMO_BERLIN, demo_attendees(people), about, until.strftime("%Y%m%dT%H%M%SZ"), z,
+               d.strftime("%Y%m%dT%H%M%S"), z, (d + dt.timedelta(minutes=30)).strftime("%Y%m%dT%H%M%S"),
+               dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), url))
+
+
+def demo_ics_tencent(to):
+    """A Tencent Meeting invitation in Chinese, in Shanghai time with its VTIMEZONE."""
+    from zoneinfo import ZoneInfo
+    d = (dt.datetime.now(ZoneInfo("Asia/Shanghai")) + dt.timedelta(days=2)).replace(hour=15, minute=0, second=0,
+                                                                                   microsecond=0)
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("张伟", "zhang.wei@acme-industrial.cn", "ACCEPTED"), ("赵磊", "zhao.lei@acme-industrial.cn", "NEEDS-ACTION"),
+        ("李明", "li.ming@example.cn", "ACCEPTED"), ("孙佳", "sun.jia@northwind.cn", "TENTATIVE")]
+    url = "https://meeting.tencent.com/dm/Rd9Kx2mDemo"
+    about = ("周敏 邀请您参加腾讯会议\\n会议主题：项目周会\\n\\n点击链接入会，或添加至会议列表：\\n" + url +
+             "\\n\\n#腾讯会议：482-615-730")
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Tencent//WeMeet//CN\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n"
+            "BEGIN:VTIMEZONE\r\nTZID:Asia/Shanghai\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\n"
+            "TZOFFSETFROM:+0800\r\nTZOFFSETTO:+0800\r\nTZNAME:CST\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+            "BEGIN:VEVENT\r\nUID:wemeet-482615730@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\n"
+            "DTSTART;TZID=Asia/Shanghai:%s\r\nDTEND;TZID=Asia/Shanghai:%s\r\nSUMMARY:项目周会\r\n"
+            "LOCATION:腾讯会议\r\nDESCRIPTION:%s\r\nORGANIZER;CN=周敏:mailto:zhou.min@fabrikam.cn\r\n%s"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), d.strftime("%Y%m%dT%H%M%S"),
+               (d + dt.timedelta(hours=1)).strftime("%Y%m%dT%H%M%S"), about, demo_attendees(people)))
+
+
+DEMO_ICS = {"teams": demo_ics_teams, "tencent": demo_ics_tencent}
 
 
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False,
@@ -811,7 +1586,10 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
         if kind == "ics":
-            msg.add_attachment(demo_ics(name, ts, event), subtype="calendar", filename=name, params={"method": "REQUEST"})
+            msg.add_attachment(demo_ics(name, ts, event, to), subtype="calendar", filename=name,
+                               params={"method": "REQUEST"})
+        elif kind in DEMO_ICS:
+            msg.add_attachment(DEMO_ICS[kind](to), subtype="calendar", filename=name, params={"method": "REQUEST"})
         elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
@@ -1368,17 +2146,16 @@ class Backend:
 
     def status_fields(self):
         """The problem fields of the status the page polls (#54), from the real sync state:
-        error_kind  "offline" (no network, DNS, refused, timed out, dropped), "auth" (sign-in failed,
-                    no password), "server" (the server said no, another sync holds the index),
-                    "config" (no account, the settings file can't be read), or None: no problem;
+        error_kind  "offline" (no network, DNS, refused, timed out, dropped), "auth" (sign-in failed),
+                    "server" (the server said no, another sync holds the index), "config" (no account,
+                    no password saved, the settings file can't be read), or None: no problem;
         last_sync   epoch seconds of the last sync that went through, or None;
         retry_at    epoch seconds of the next automatic try while there is a problem, else None;
         error_detail the raw text behind the error, for "copy details", or None."""
         s = self.sync
-        err = s["error"] if not self.demo else None
-        return {"error_kind": (s["kind"] or "server") if err else None, "last_sync": s["last"],
-                "retry_at": s["retry_at"] if err and not s["running"] else None,
-                "error_detail": s["detail"] if err else None}
+        if self.demo:
+            return {"error_kind": None, "last_sync": s["last"], "retry_at": None, "error_detail": None}
+        return dict(sync_problem(s), error_detail=s["detail"] if s["error"] else None)
 
     LOCK_RETRY = 10     # seconds before the sync tries again while another process syncs
     LOCK_WARN = 180     # seconds of that before the page is told
@@ -1447,6 +2224,7 @@ class Backend:
             finally:
                 self.sync["running"] = False
                 self.pass_at = None
+                self.sync["tried"] = int(time.time())
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
         m, self.sync_m = self.sync_m, None
@@ -1715,9 +2493,28 @@ class Backend:
             p["fmt_bar"] = a["fmt_bar"]
         if isinstance(a.get("notify"), bool):
             p["notify"] = a["notify"]
+        # the window's size and place (keep_window_place)
+        win = a.get("window")
+        if isinstance(win, dict):
+            ok = lambda k, lo, hi, none=False: (none and win.get(k) is None) or (      # noqa: E731
+                type(win.get(k)) is int and lo <= win[k] <= hi)
+            if ok("width", 200, 20000) and ok("height", 200, 20000) and ok("x", -100000, 100000, True) and \
+                    ok("y", -100000, 100000, True) and isinstance(win.get("maximized", False), bool):
+                p["window"] = {k: win.get(k) for k in ("x", "y", "width", "height")} | {"maximized": win.get("maximized", False)}
+        # images from the web: on by default; the senders whose images always load when it is off
+        if isinstance(a.get("remote_images"), bool):
+            p["remote_images"] = a["remote_images"]
+        s = a.get("img_senders")
+        if isinstance(s, list) and len(s) <= 2000 and all(isinstance(x, str) and 0 < len(x) <= 320 and "@" in x for x in s):
+            p["img_senders"] = list(dict.fromkeys(x.strip().lower() for x in s))
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
+        # the owner's own order of their folders, and the folders mail was moved to last (newest first)
+        for k, most in (("folder_order", 2000), ("folder_recent", 8)):
+            f = a.get(k)
+            if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
+                p[k] = f
         os.makedirs(R.CFG.home, exist_ok=True)
         path = os.path.join(R.CFG.home, "app.json")
         tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
@@ -1835,7 +2632,10 @@ class Backend:
 
     def api_search(self, a):
         text = text_in(a, "q").strip()[:500]
-        ns = SimpleNamespace(limit=200, folder=None, from_=None, to=None, since=None, until=None,
+        # one page at a time, as in a folder: the list asks for the next one when it is scrolled to the end
+        limit = max(1, min(int_in(a, "limit", 200), 500))
+        offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
+        ns = SimpleNamespace(limit=limit, offset=offset, folder=None, from_=None, to=None, since=None, until=None,
                              unread=False, att=False)
         words = []
         for w in re.findall(r'(\w+:"[^"]*"|"[^"]*"|\S+)', text):
@@ -1849,13 +2649,15 @@ class Backend:
             else:
                 words.append(w.strip('"'))
         if not words and not any((ns.folder, ns.from_, ns.to, ns.unread, ns.att)):
-            return {"rows": []}
+            return {"rows": [], "more": False}
         with self.dblock:
             rows = R.search_rows(self.c, words, ns)
+        more = len(rows) == limit
         skip = {R.CFG.folders.get("junk")}
         rows = [r for r in rows if r["folder"] not in skip]
-        self.prefetch(rows[:10])
-        return {"rows": [self.row_json(r) for r in rows]}
+        if not offset:
+            self.prefetch(rows[:10])
+        return {"rows": [self.row_json(r) for r in rows], "more": more}
 
     def api_thread(self, a):
         r = self.row(a["id"])
@@ -1894,6 +2696,8 @@ class Backend:
             raise
         if send:
             send()                      # the server hears it in the background, now that the mail is open
+        if out.get("invite"):
+            self.invite_state(out)
         return out
 
     def build_message(self, i):
@@ -2202,7 +3006,7 @@ class Backend:
             self.server_folders = [n for n, _ in list_folders(m)]
         return self.server_folders
 
-    # ---- the owner's own folders: make, rename, delete (only an empty one)
+    # ---- the owner's own folders: make (inside another too), rename, move, delete, and empty Trash or Junk
 
     def own_folder(self, a):
         key = a.get("key")
@@ -2230,23 +3034,60 @@ class Backend:
         if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
             fail("There is already a folder called %s." % label)
 
+    def subtree(self, key, sep):
+        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
+        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
+                      key=lambda x: -x[0].count(sep))
+
     def rename_rows(self, old, new, sep):
-        """The mail already listed follows its folder to the new name (the folders inside it too)."""
+        """The mail already listed follows its folder to the new name (the folders inside it too), and so do
+        the copies of it kept on disk, so nothing is fetched again."""
+        inside = lambda f: f == old or f.startswith(old + sep)     # noqa: E731
         with self.dblock:
             names = {r[0] for r in self.c.execute("select folder from msgs union select folder from state").fetchall()}
+            keep = []
             for f in names:
-                if f == old or f.startswith(old + sep):
+                if inside(f):
                     to = new + f[len(old):]
+                    keep += [(f, to, r[0], r[1]) for r in
+                             self.c.execute("select uidv, uid from msgs where folder=?", (f,)).fetchall()]
                     self.c.execute("delete from state where folder=?", (to,))
                     self.c.execute("update msgs set folder=? where folder=?", (to, f))
                     self.c.execute("update state set folder=? where folder=?", (to, f))
             self.c.commit()
+        for f, to, uidv, uid in keep:
+            cache_move((f, uidv, uid), (to, uidv, uid))
+
+    def drop_rows(self, folder, uids=None):
+        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
+        with self.dblock:
+            if uids is None:
+                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
+            else:
+                rows = []
+                uids = sorted(set(uids))
+                for k in range(0, len(uids), 500):
+                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
+                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
+            for r in rows:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.commit()
+        for r in rows:
+            self.demo_raw.pop((folder, r["uid"]), None)
+            cache_drop((folder, r["uidv"], r["uid"]))
+        return len(rows)
 
     def api_folder_new(self, a):
+        """{"name", "parent": an own folder to make it in (else beside the others)} -> {"key", "sep"}."""
         label = folder_label(a.get("name"))
+        parent = a.get("parent")
+        if parent is not None:
+            parent = self.own_folder({"key": parent})[0]
         if self.demo:
-            base = self.own_parent("/")
-            name = base + "/" + label if base else label
+            sep = "/"
+            base = parent or self.own_parent(sep)
+            name = base + sep + label if base else label
             self.free_name(name, label)
             self.found.append((name, ""))
         else:
@@ -2255,7 +3096,9 @@ class Backend:
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
-                base = self.own_parent(sep)
+                if parent:
+                    self.own_folder({"key": parent})
+                base = parent or self.own_parent(sep)
                 name = base + sep + label if base else label
                 self.free_name(name, label)
                 typ, data = m.create(R.q(name))
@@ -2264,85 +3107,225 @@ class Backend:
                 with contextlib.suppress(Exception):
                     m.subscribe(R.q(name))
                 self.refresh_folders(m)
-                return name
-            name = self.imap(go)
+                return name, sep
+            name, sep = self.imap(go)
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
+
+    def demo_rename(self, key, name):
+        self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
+        for (f, u) in list(self.demo_raw):
+            if f == key or f.startswith(key + "/"):
+                self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
+        self.rename_rows(key, name, "/")
+
+    def server_rename(self, m, key, name, sep):
+        """RENAME on the server; the folders inside go along, and stay subscribed under their new names."""
+        inner = [n for n, _ in self.subtree(key, sep)]
+        R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+        typ, data = m.rename(R.q(key), R.q(name))
+        if typ != "OK":
+            fail("The mail server said: %s" % said(data))
+        for n in inner:
+            with contextlib.suppress(Exception):
+                m.unsubscribe(R.q(n))
+                m.subscribe(R.q(name + n[len(key):]))
+        self.rename_rows(key, name, sep)
+        self.refresh_folders(m)
 
     def api_folder_rename(self, a):
+        """{"key", "name"} -> {"key": the new name, "sep"}. The folders inside keep their places in it."""
         key, old = self.own_folder(a)
         label = folder_label(a.get("name"))
         name = key[:len(key) - len(old)] + label
-        if name == key:
-            return {"key": key}
         if self.demo:
-            self.free_name(name, label)
-            self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
-            for (f, u) in list(self.demo_raw):
-                if f == key or f.startswith(key + "/"):
-                    self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
-            self.rename_rows(key, name, "/")
+            if name != key:
+                self.free_name(name, label)
+                self.demo_rename(key, name)
+            sep = "/"
         else:
             def go(m):
                 sep = folder_sep(m)
+                if name == key:
+                    return sep
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
                 self.own_folder(a)
                 self.free_name(name, label)
-                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                typ, data = m.rename(R.q(key), R.q(name))
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                    m.subscribe(R.q(name))
-                self.rename_rows(key, name, sep)
-                self.refresh_folders(m)
-            self.imap(go)
-            self.extra_now = True
-            self.wake.set()
+                self.server_rename(m, key, name, sep)
+                return sep
+            sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
 
-    def api_folder_delete(self, a):
-        """Only a folder with no mail and no folders inside goes; mail is never deleted this way."""
-        key, label = self.own_folder(a)
+    def move_target(self, key, a, sep):
+        """The new name of an own folder put in a.parent ("" the server's top level), or with a.top where
+        new folders go."""
+        if a.get("top") is True:
+            parent = self.own_parent(sep)
+        elif isinstance(a.get("parent"), str):
+            parent = a["parent"]
+        else:
+            fail("bad request")
+        if parent:
+            if parent.upper() == "INBOX" or parent in [R.CFG.folders.get(k) for k in ("drafts", "sent", "trash", "junk")]:
+                fail("A folder can't go inside %s." % parent)
+            if parent not in [n for n, _ in self.found]:
+                fail("The folder %s is no longer on the server." % parent)
+            if parent == key or parent.startswith(key + sep):
+                fail("A folder can't go inside itself.")
+        leaf = key.rpartition(sep)[2]
+        return (parent + sep + leaf if parent else leaf), leaf
+
+    def api_folder_move(self, a):
+        """{"key": an own folder, "parent": the folder to put it in ("" for the server's top level), or
+        "top": true for where new folders go} -> {"key": its new name, "was": the folder it was in, "sep"}.
+        It is a RENAME: the folders and the mail inside go along."""
+        key, _ = self.own_folder(a)
         if self.demo:
-            if any(n.startswith(key + "/") for n, _ in self.found):
-                fail("%s has folders inside it. Delete those first." % label)
-            if self.q("select 1 from msgs where folder=? limit 1", (key,)):
-                fail("%s still has mail in it. Move the mail out first." % label)
-            self.found = [(n, f) for n, f in self.found if n != key]
+            sep = "/"
+            name, leaf = self.move_target(key, a, sep)
+            if name != key:
+                self.free_name(name, leaf)
+                self.demo_rename(key, name)
         else:
             def go(m):
                 sep = folder_sep(m)
                 self.refresh_folders(m)
                 self.own_folder(a)
-                if any(n.startswith(key + sep) for n, _ in self.found):
+                name, leaf = self.move_target(key, a, sep)
+                if name != key:
+                    self.free_name(name, leaf)
+                    self.server_rename(m, key, name, sep)
+                return name, sep
+            name, sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
+        self.bump()
+        return {"key": name, "was": key.rpartition(sep)[0], "sep": sep}
+
+    def server_count(self, m, folder):
+        typ, data = m.status(R.q(folder), "(MESSAGES)")
+        mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
+        if typ != "OK" or not mo:
+            fail("The mail server said: %s" % said(data))
+        return int(mo.group(1))
+
+    def api_folder_delete(self, a):
+        """{"key"} deletes a folder with no mail and no folders inside. {"key", "check": true} -> {"mails", "folders"}:
+        what is in it and in the folders inside it. {"key", "trash": true}: that mail goes to Trash (never deleted
+        for good here), then the folders inside and the folder itself are deleted."""
+        key, label = self.own_folder(a)
+        check, trash = a.get("check") is True, a.get("trash") is True
+        bin_ = R.CFG.folders.get("trash")
+        if trash and not bin_:
+            fail("No %s folder is set." % "trash")
+        if self.demo:
+            names = self.subtree(key, "/")
+            mails = self.q("select count(*) n from msgs where folder in (%s)" % ",".join("?" * len(names)),
+                           [n for n, _ in names])[0]["n"]
+            if check:
+                return {"mails": mails, "folders": len(names) - 1}
+            if not trash:
+                if len(names) > 1:
                     fail("%s has folders inside it. Delete those first." % label)
-                typ, data = m.status(R.q(key), "(MESSAGES)")
-                mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
-                if typ != "OK" or not mo:
-                    fail("The mail server said: %s" % said(data))
-                if int(mo.group(1)):
+                if mails:
                     fail("%s still has mail in it. Move the mail out first." % label)
+            for n, _ in names:
+                for r in self.q("select uid, ts, seen, answered, flagged from msgs where folder=?", (n,)):
+                    raw = self.demo_raw.get((n, r["uid"]))
+                    if raw:
+                        self.demo_insert(bin_, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+            gone = {n for n, _ in names}
+            self.found = [(n, f) for n, f in self.found if n not in gone]
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                names = self.subtree(key, sep)
+                if check:
+                    return {"mails": sum(self.server_count(m, n) for n, f in names if "\\noselect" not in f.split()),
+                            "folders": len(names) - 1}
+                if not trash:
+                    if len(names) > 1:
+                        fail("%s has folders inside it. Delete those first." % label)
+                    if self.server_count(m, key):
+                        fail("%s still has mail in it. Move the mail out first." % label)
+                else:
+                    if bin_ not in self.folders(m):
+                        fail("The folder %s is no longer on the server." % bin_)
+                    for n, f in names:
+                        if "\\noselect" in f.split():
+                            continue
+                        R.select(m, n, readonly=False)
+                        uids = R.uids_of(m)
+                        if uids:
+                            R.move_uids(m, n, uids, bin_)
                 R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                typ, data = m.delete(R.q(key))
+                for n, _ in names:
+                    with contextlib.suppress(Exception):
+                        m.unsubscribe(R.q(n))
+                    typ, data = m.delete(R.q(n))
+                    if typ != "OK":
+                        self.refresh_folders(m)
+                        fail("The mail server said: %s" % said(data))
+                self.refresh_folders(m)
+                return names
+            out = self.imap(go)
+            if check:
+                return out
+            names = out
+            self.extra_now = True
+            self.wake.set()
+        for n, _ in names:
+            self.drop_rows(n)
+            self.exec("delete from state where folder=?", (n,))
+        self.bump()
+        return {"deleted": [n for n, _ in names]}
+
+    def api_folder_empty(self, a):
+        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
+        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
+        k = a.get("key")
+        if k not in ("trash", "junk"):
+            fail("can't empty %s" % k)
+        folder = R.CFG.folders.get(k)
+        if not folder:
+            fail("No %s folder is set." % k)
+        if self.demo:
+            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
+            if a.get("check") is not True:
+                self.drop_rows(folder)
+                self.bump()
+            return {"count": n}
+
+        def go(m):
+            if a.get("check") is True:
+                return None, self.server_count(m, folder)
+            R.select(m, folder, readonly=False)
+            uids = R.uids_of(m)
+            for i in range(0, len(uids), 500):
+                batch = ",".join(map(str, uids[i:i + 500]))
+                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
                 if typ != "OK":
                     fail("The mail server said: %s" % said(data))
-                self.refresh_folders(m)
-            self.imap(go)
-        with self.dblock:
-            for r in self.c.execute("select id from msgs where folder=?", (key,)).fetchall():
-                self.c.execute("delete from fts where rowid=?", (r["id"],))
-            self.c.execute("delete from msgs where folder=?", (key,))
-            self.c.execute("delete from state where folder=?", (key,))
-            self.c.commit()
-        self.bump()
-        return {}
+                if R.has_cap(m, "UIDPLUS"):
+                    m.uid("EXPUNGE", batch)
+            if uids and not R.has_cap(m, "UIDPLUS"):
+                m.expunge()
+            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+            return uids, len(uids)
+        uids, n = self.imap(go)
+        if uids is not None:
+            self.drop_rows(folder, uids)
+            self.bump()
+        return {"count": n}
 
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
@@ -2435,6 +3418,127 @@ class Backend:
         subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
         return {"mailto": urllib.parse.unquote(to), "subject": subj}
 
+    # ---- meeting invitations: what was answered, what changed (invites.json, per UID and occurrence)
+
+    INVITE_LOCK = threading.Lock()
+
+    def invites_path(self):
+        return os.path.join(R.CFG.home, "invites.json")
+
+    def invites_load(self):
+        try:
+            with open(self.invites_path(), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def invites_save(self, d):
+        os.makedirs(R.CFG.home, exist_ok=True)
+        if len(d) > 2000:          # the oldest meetings go first
+            for k in sorted(d, key=lambda k: d[k].get("t", 0))[:len(d) - 2000]:
+                del d[k]
+        tmp = self.invites_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, self.invites_path())
+
+    @staticmethod
+    def invite_key(v):
+        return v["uid"] + ("|" + v["rid"] if v.get("rid") else "")
+
+    def invite_state(self, out):
+        """What the invitation means for the person reading it: organizer or asked to answer, how they
+        answered here, and for an updated invitation (a higher SEQUENCE) what changed since the one before."""
+        v = invite_for(out["invite"], R.CFG.user)
+        if not v.get("uid") or v["method"] not in ("REQUEST", "PUBLISH", "ADD", "CANCEL"):
+            return
+        snap = {"start": v["first"][0], "end": v["first"][1], "where": v["where"], "all_day": v["all_day"]}
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            seen = e.setdefault("seen", {})
+            if seen.get(str(v["seq"])) != snap:
+                seen[str(v["seq"])] = snap
+                e["t"] = int(time.time())
+                with contextlib.suppress(OSError):
+                    self.invites_save(d)
+        v["updated"] = v["method"] == "REQUEST" and v["seq"] > 0 and not v["cancelled"]
+        before = [int(s) for s in seen if s.lstrip("-").isdigit() and int(s) < v["seq"]]
+        if before and v["updated"]:
+            old = seen[str(max(before))]
+            was = {}
+            if (old.get("start"), old.get("end")) != (snap["start"], snap["end"]):
+                was.update(start=old.get("start"), end=old.get("end"), all_day=old.get("all_day"))
+            if old.get("where", "") != snap["where"]:
+                was["where"] = old.get("where", "")
+            v["was"] = was or None
+        ans = e.get("answer")
+        v["answer"] = ans["status"] if ans and ans.get("seq", 0) >= v["seq"] and not v["cancelled"] else None
+
+    def invite_in(self, i):
+        """(the mail, its invitation as the reader sees it) for a mail id; fails when it holds none."""
+        msg = R.to_msg(self.view(i)[0])
+        v = invite_of(msg)
+        if v is None:
+            fail("This mail has no invitation.")
+        return msg, invite_for(v, R.CFG.user)
+
+    def save_built(self, msg):
+        """A mail built here (not from the compose page) saved as a draft -> its id."""
+        raw = msg.as_bytes(policy=R.OUT_POLICY)
+        drafts = R.CFG.folders["drafts"]
+        if self.demo:
+            uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
+        else:
+            def go(m):
+                return R.append_draft(m, raw), R.select(m, drafts)
+            uid, uidv = self.imap(go)
+            if uid:
+                with self.dblock:
+                    index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
+        self.bump()
+        if not uid:
+            fail("The draft was saved but the server did not say where. Open Drafts and send it from there.")
+        return R.make_id(drafts, uid)
+
+    def api_rsvp(self, a):
+        """Accept / Maybe / Decline: the iTIP reply to the organizer, saved as a draft. The page sends it with
+        api_rsvp_send after the undo pause, the way a mail from compose goes."""
+        msg, v = self.invite_in(a["id"])
+        if not v["can_answer"]:
+            fail("This invitation can't be answered from here.")
+        try:
+            reply = build_rsvp(msg, a.get("answer"), R.CFG.user, R.CFG.name, a.get("note") or "", a.get("subject"))
+        except ValueError as e:
+            fail("Can't answer this invitation: %s." % e)
+        return {"draft": self.save_built(reply)}
+
+    def api_rsvp_send(self, a):
+        """Send the reply api_rsvp saved, then remember the answer for this meeting."""
+        _msg, v = self.invite_in(a["id"])
+        status = (a.get("answer") or "").upper()
+        if status not in RSVP_SUBJECT:
+            fail("Can't answer this invitation: unknown answer.")
+        r = self.api_send({"id": a["draft"]})
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            e["answer"] = {"status": status, "seq": v["seq"], "at": int(time.time())}
+            e["t"] = int(time.time())
+            with contextlib.suppress(OSError):
+                self.invites_save(d)
+        return {"answer": status, "problems_after_sending": r.get("problems_after_sending") or []}
+
+    def api_join(self, a):
+        """Open the online meeting's link (Teams, Zoom, Google Meet, Tencent Meeting, Webex) in the browser."""
+        _msg, v = self.invite_in(a["id"])
+        if not v.get("join"):
+            fail("This invitation has no meeting link.")
+        if not self.demo:
+            webbrowser.open(v["join"]["url"])
+        return {"url": v["join"]["url"]}
+
     def api_open_invite(self, a):
         """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""
         p = ics_part(R.to_msg(self.view(a["id"])[0]))
@@ -2479,7 +3583,7 @@ class Backend:
         return {}
 
     def api_window_theme(self, a):
-        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"))
+        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"), system=a.get("system") is True)
         return {}
 
     def api_contacts(self, a):
@@ -3278,6 +4382,28 @@ def said(data):
     return b" ".join(x for x in data or [] if isinstance(x, bytes)).decode("utf-8", "replace")
 
 
+def cache_files(k):
+    """The copies of one mail kept on disk (k = folder, uidvalidity, uid): whole, light, and its files."""
+    whole = R.cache_path(*k)
+    return [whole, R.light_path(*k)] + glob.glob(glob.escape(whole[:-4]) + ".part*.eml")
+
+
+def cache_move(old, new):
+    """A renamed folder's mail keeps its copies on disk: they are filed under the folder's name."""
+    for p in cache_files(old):
+        if os.path.exists(p):
+            to = R.cache_path(*new)[:-4] + p[len(R.cache_path(*old)) - 4:]
+            with contextlib.suppress(OSError):
+                os.makedirs(os.path.dirname(to), exist_ok=True)
+                os.replace(p, to)
+
+
+def cache_drop(k):
+    for p in cache_files(k):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+
+
 def list_folders(m):
     """[(name, lowercased flags)] from LIST."""
     typ, data = m.list()
@@ -3566,7 +4692,7 @@ def system_dark():
     return False
 
 
-WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[])
+WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None)
 
 
 def bring_front():
@@ -3775,7 +4901,15 @@ def hex_ref(c):
     return r | g << 8 | b << 16
 
 
-def window_theme(dark, bg=None, text=None):
+def mac_appearance(AppKit, dark, system):
+    """The window's appearance: None follows macOS (theme System), else Aqua or DarkAqua is forced. A forced one
+    is all the page sees, so with System it would never hear macOS switch between light and dark."""
+    if system:
+        return None
+    return AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua)
+
+
+def window_theme(dark, bg=None, text=None, system=False):
     """Match the native title bar to the app theme (it can differ from the system's)."""
     w = WINDOW.w
     if w is None:
@@ -3791,8 +4925,7 @@ def window_theme(dark, bg=None, text=None):
             nw = w.native
             if nw is None:
                 return
-            nw.setAppearance_(AppKit.NSAppearance.appearanceNamed_(
-                AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua))
+            nw.setAppearance_(mac_appearance(AppKit, dark, system))
             ref = (bg or "").lstrip("#")
             if re.fullmatch(r"[0-9a-fA-F]{6}", ref):
                 nw.setBackgroundColor_(AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -3818,12 +4951,148 @@ def window_theme(dark, bg=None, text=None):
                 put(attr, ref)
 
 
+WINDOW_SIZE = (1280, 820)
+WINDOW_MIN = (880, 560)
+
+
+def fit_window(saved, areas):
+    """Where the window opens and how big: the saved place (prefs "window": x, y, width, height, maximized), kept
+    inside the screen it was on, never larger than that screen's work area. areas: the screens' work areas as
+    (x, y, width, height), top-left origin, the main screen first. A window on a screen that is gone opens in the
+    middle of the main one; with nothing saved it opens at the default size, centred. x and y are None when no
+    screen is known (the window system places it)."""
+    saved = saved if isinstance(saved, dict) else {}
+    num = lambda v: v if type(v) in (int, float) else None     # noqa: E731
+    w, h = num(saved.get("width")), num(saved.get("height"))
+    w, h = (int(w), int(h)) if w and h and w >= 200 and h >= 200 else WINDOW_SIZE
+    x, y = num(saved.get("x")), num(saved.get("y"))
+    out = {"width": w, "height": h, "x": None, "y": None, "maximized": saved.get("maximized") is True}
+    areas = [a for a in areas or () if a[2] > 0 and a[3] > 0]
+    if not areas:
+        return out
+
+    def overlap(a):
+        return max(0, min(x + w, a[0] + a[2]) - max(x, a[0])) * max(0, min(y + h, a[1] + a[3]) - max(y, a[1]))
+    area = max(areas, key=overlap) if x is not None and y is not None else None
+    if area is None or overlap(area) == 0:
+        area, x, y = areas[0], None, None
+    ax, ay, aw, ah = (int(v) for v in area)
+    w = max(min(w, aw), min(WINDOW_MIN[0], aw))
+    h = max(min(h, ah), min(WINDOW_MIN[1], ah))
+    if x is None:
+        x, y = ax + (aw - w) // 2, ay + (ah - h) // 2
+    out.update(width=w, height=h, x=int(min(max(x, ax), ax + aw - w)), y=int(min(max(y, ay), ay + ah - h)))
+    return out
+
+
+def screen_areas():
+    """The screens' work areas (no menu bar, Dock or taskbar), top-left origin, the main screen first; [] if unknown."""
+    try:
+        if sys.platform == "darwin":
+            import AppKit
+            screens = AppKit.NSScreen.screens()
+            top = screens[0].frame().size.height
+            return [(v.origin.x, top - v.origin.y - v.size.height, v.size.width, v.size.height)
+                    for v in (s.visibleFrame() for s in screens)]
+        import webview
+        out = []
+        for s in webview.screens:
+            f = getattr(s, "frame", None)        # Windows: the work area
+            out.append((f.X, f.Y, f.Width, f.Height) if hasattr(f, "Width") else (s.x, s.y, s.width, s.height))
+        return out
+    except Exception:       # noqa: BLE001
+        return []
+
+
+def window_place():
+    """The window's place for this start (see fit_window)."""
+    saved = None
+    with contextlib.suppress(Exception):
+        saved = WINDOW.backend.prefs().get("window")
+    return fit_window(saved, screen_areas())
+
+
+def keep_window_place(w, place):
+    """Remember the window's size and place: on resize and move (a second after the last one) and on close.
+    A maximized, full-screen or minimized window keeps the size it had before. Never stops the window closing."""
+    state = {k: place.get(k) for k in ("x", "y", "width", "height", "maximized")}
+    flags = {"max": bool(place.get("maximized")), "min": False, "timer": None}
+
+    def save():
+        with contextlib.suppress(Exception):
+            WINDOW.backend.api_prefs({"window": dict(state)})
+
+    def later():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        flags["timer"] = threading.Timer(1.0, save)
+        flags["timer"].daemon = True
+        flags["timer"].start()
+
+    def resized(width, height):
+        if not (flags["max"] or flags["min"]):
+            state.update(width=int(width), height=int(height))
+            later()
+
+    def moved(x, y):
+        if not (flags["max"] or flags["min"]) and x > -30000 and y > -30000:     # Windows parks a minimized one there
+            state.update(x=int(x), y=int(y))
+            later()
+
+    def maximized():
+        flags["max"] = True
+        if sys.platform != "darwin":           # on a Mac this is full screen, not kept for the next start
+            state["maximized"] = True
+            later()
+
+    def minimized():
+        flags["min"] = True
+
+    def restored():
+        flags["max"] = flags["min"] = False
+        if state["maximized"]:
+            state["maximized"] = False
+            later()
+
+    def closing():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        save()
+
+    ev = w.events
+    ev.resized += resized
+    ev.moved += moved
+    ev.maximized += maximized
+    ev.minimized += minimized
+    ev.restored += restored
+    ev.closing += closing
+    if sys.platform == "darwin" and place.get("x") is not None:
+        ev.before_show += lambda: mac_place(w, place)
+
+
+def mac_place(w, place):
+    """Put the Mac window where it was (pywebview reads x and y against the focused screen, not the main one)."""
+    try:
+        import AppKit
+        nw = w.native
+        top = AppKit.NSScreen.screens()[0].frame().size.height
+        nw.setFrame_display_(AppKit.NSMakeRect(place["x"], top - place["y"] - place["height"],
+                                               place["width"], place["height"]), True)
+    except Exception:       # noqa: BLE001
+        pass
+
+
 def run_window(url, home):
     import webview
     dark = system_dark()
-    w = webview.create_window(APP_NAME, url, width=1280, height=820, min_size=(880, 560),
+    place = window_place()
+    mac = sys.platform == "darwin"
+    w = webview.create_window(APP_NAME, url, width=place["width"], height=place["height"], min_size=WINDOW_MIN,
+                              x=None if mac else place["x"], y=None if mac else place["y"],
+                              maximized=place["maximized"] and not mac,
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
+    keep_window_place(w, place)
     if sys.platform == "darwin":
         mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
@@ -3854,6 +5123,7 @@ def main(argv=None):
         backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
         return too_new(str(e), a.browser)
+    WINDOW.backend = backend                # the window keeps its size and place in the prefs
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()

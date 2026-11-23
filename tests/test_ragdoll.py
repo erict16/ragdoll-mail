@@ -35,7 +35,7 @@ class Basics(unittest.TestCase):
         self.assertEqual(ragdoll.bs_names(blob), ["上海.dwg", "plain.pdf"])
 
     def test_new_text_and_bare_subject(self):
-        self.assertEqual(ragdoll.new_text("Noted.\n\n发件人: a\nold"), "Noted.")
+        self.assertEqual(ragdoll.new_text("Noted.\n\n发件人: a\n发送时间: 2026年11月1日\n主题: x\nold"), "Noted.")
         self.assertEqual(ragdoll.bare_subject("回复： Re: Fw: Order 12"), "order 12")
 
     def test_big_attachment_lines_hide_links(self):
@@ -1168,6 +1168,7 @@ class AppBridge(unittest.TestCase):
         self.assertIn("newer Ragdoll Mail", err)
 
 
+@unittest.skipIf(sys.platform == "win32", "Windows reads the registry, never the login shell")
 class PasswordFromShell(unittest.TestCase):
     """An app opened from the Dock does not get the variables the shell profile exports."""
 
