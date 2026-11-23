@@ -711,6 +711,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "The connection broke while the mail was going out, so it may have been sent. Check Sent before you send it again.",
     err_going_out: "This mail is going out right now.",
     err_going_out_unsaved: "This mail is going out right now, so the change was not saved.",
+    downloaded_mail: "Downloaded mail",
+    clear: "Clear",
+    storage_cleared: "Downloaded mail cleared",
   },
   "zh-Hans": {
     att_program: "%s 是程序文件，没有打开。邮件里的程序可能会损害电脑。",
@@ -720,6 +723,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "邮件发送途中连接断开，可能已经发出。再次发送前请先查看已发送。",
     err_going_out: "这封邮件正在发送。",
     err_going_out_unsaved: "这封邮件正在发送，改动没有保存。",
+    downloaded_mail: "已下载的邮件",
+    clear: "清除",
+    storage_cleared: "已清除下载的邮件",
   },
   "zh-Hant": {
     att_program: "%s 是程式檔，沒有開啟。郵件裡的程式可能會損害電腦。",
@@ -729,6 +735,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "郵件寄送途中連線中斷，可能已經寄出。再次寄送前請先查看寄件備份。",
     err_going_out: "這封郵件正在寄出。",
     err_going_out_unsaved: "這封郵件正在寄出，變更沒有儲存。",
+    downloaded_mail: "已下載的郵件",
+    clear: "清除",
+    storage_cleared: "已清除下載的郵件",
   },
   "ja": {
     att_program: "%s はプログラムのため開きませんでした。メールで届いたプログラムはパソコンに害を与えることがあります。",
@@ -738,6 +747,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "送信中に接続が切れたため、送信済みの可能性があります。もう一度送る前に送信済みを確認してください。",
     err_going_out: "このメールは今送信中です。",
     err_going_out_unsaved: "このメールは今送信中のため、変更は保存されませんでした。",
+    downloaded_mail: "ダウンロード済みのメール",
+    clear: "消去",
+    storage_cleared: "ダウンロード済みのメールを消去しました",
   },
   "ko": {
     att_program: "%s 파일은 프로그램이라 열지 않았습니다. 메일로 받은 프로그램은 컴퓨터에 해를 줄 수 있습니다.",
@@ -747,6 +759,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "메일을 보내는 중에 연결이 끊겨 이미 보내졌을 수 있습니다. 다시 보내기 전에 보낸편지함을 확인하세요.",
     err_going_out: "이 메일은 지금 보내는 중입니다.",
     err_going_out_unsaved: "이 메일은 지금 보내는 중이라 변경 내용을 저장하지 않았습니다.",
+    downloaded_mail: "다운로드한 메일",
+    clear: "지우기",
+    storage_cleared: "다운로드한 메일을 지웠습니다",
   },
   "es": {
     att_program: "%s es un programa, así que no se abrió. Los programas recibidos por correo pueden dañar tu equipo.",
@@ -756,6 +771,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "La conexión se cortó mientras se enviaba el correo, así que puede que se haya enviado. Revisa Enviados antes de enviarlo otra vez.",
     err_going_out: "Este correo se está enviando ahora.",
     err_going_out_unsaved: "Este correo se está enviando ahora, así que el cambio no se guardó.",
+    downloaded_mail: "Correo descargado",
+    clear: "Borrar",
+    storage_cleared: "Correo descargado borrado",
   },
   "fr": {
     att_program: "%s est un programme : il n'a pas été ouvert. Un programme reçu par e-mail peut endommager votre ordinateur.",
@@ -765,6 +783,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "La connexion a été coupée pendant l'envoi : l'e-mail est peut-être parti. Vérifiez Envoyés avant de le renvoyer.",
     err_going_out: "Cet e-mail est en cours d'envoi.",
     err_going_out_unsaved: "Cet e-mail est en cours d'envoi : la modification n'a pas été enregistrée.",
+    downloaded_mail: "E-mails téléchargés",
+    clear: "Effacer",
+    storage_cleared: "E-mails téléchargés effacés",
   },
   "de": {
     att_program: "%s ist ein Programm und wurde nicht geöffnet. Programme aus Mails können Ihrem Computer schaden.",
@@ -774,6 +795,9 @@ const MORE_B_SEND = {
     err_maybe_sent: "Die Verbindung brach beim Senden ab, die Mail ist also vielleicht schon gesendet. Prüfen Sie Gesendet, bevor Sie sie erneut senden.",
     err_going_out: "Diese Mail wird gerade gesendet.",
     err_going_out_unsaved: "Diese Mail wird gerade gesendet, die Änderung wurde nicht gespeichert.",
+    downloaded_mail: "Heruntergeladene Mails",
+    clear: "Leeren",
+    storage_cleared: "Heruntergeladene Mails gelöscht",
   },
 };
 for (const [k, v] of Object.entries(MORE_B_SEND)) Object.assign(LANGS[k], v);

@@ -2302,6 +2302,7 @@ async function openSettings() {
         finally { testBtn.disabled = false; }
       } }, t("test"));
       f.append(el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, testBtn, res));
+      f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
@@ -2406,6 +2407,18 @@ async function openSettings() {
   }
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
+}
+
+// how much downloaded mail this computer keeps, and a button that clears it (it is fetched again when opened)
+function storageLine() {
+  const gb = (n) => (n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(1) + " GB" : size(n));
+  const val = el("span", { class: "storage-size" });
+  const btn = el("button", { class: "btn", onclick: async () => {
+    btn.disabled = true;
+    try { val.textContent = gb((await api("clear_storage")).bytes); toast(t("storage_cleared")); } catch (e) { fail(e); } finally { btn.disabled = false; }
+  } }, t("clear"));
+  api("storage").then((r) => { val.textContent = gb(r.bytes); }).catch(() => {});
+  return el("div", { class: "stack" }, el("span", { class: "lab" }, t("downloaded_mail")), el("div", { class: "storage-line" }, val, btn));
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];

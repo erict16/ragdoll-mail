@@ -862,5 +862,67 @@ class OneCopy(unittest.TestCase):
         again.close()
 
 
+class Tidy(DemoBackend):
+    """#18: the cache, opened files and compose files are tidied with age and size limits."""
+    DAY = 86400
+
+    def put(self, *parts, size=10, age=0):
+        p = os.path.join(self.home, *parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(b"x" * size)
+        t = time.time() - age * self.DAY
+        os.utime(p, (t, t))
+        return p
+
+    def test_cache_age_and_size(self):
+        old = self.put("cache", "INBOX", "1.eml", age=100)
+        a = self.put("cache", "INBOX", "2.eml", size=600, age=5)
+        b = self.put("cache", "INBOX", "3.eml", size=600, age=1)
+        part = self.put("cache", "INBOX", "4.part2.eml", age=1)          # its light mail is gone
+        self.b.prune_cache(90, max_bytes=1000)
+        self.assertEqual([os.path.exists(p) for p in (old, a, b, part)], [False, False, True, False])
+
+    def test_opened_files(self):
+        stale = self.put("open", "aaa", "old.pdf", age=40)
+        used = self.put("open", "bbb", "used.xlsx", size=800, age=3)
+        today = self.put("open", "ccc", "today.docx", size=800)
+        self.b.made.add(stale)
+        self.b.prune_open(time.time(), max_bytes=1000)
+        self.assertEqual([os.path.exists(p) for p in (stale, used, today)], [False, False, True])
+        self.assertNotIn(stale, self.b.made)
+        self.assertFalse(os.path.exists(os.path.dirname(stale)))
+
+    def test_compose_files(self):
+        _, out = self.b.call("save_draft", compose(self.b, atts=[self.b.upload("kept.pdf", b"%PDF")]))
+        self.assertTrue(out["ok"])
+        kept = [x["path"] for x in self.b.compose_state(R.hdr(msg_of(self.b.raw(out["data"]["id"])), "Message-ID"))["atts"]]
+        for p in kept:
+            t = time.time() - 30 * self.DAY
+            os.utime(p, (t, t))
+        loose_old = self.put("uploads", "f00", "gone.pdf", age=5)
+        loose_new = self.put("uploads", "f01", "new.pdf")
+        orphan = self.put("compose", "0" * 40 + ".json", age=3)
+        self.b.tidy()
+        self.assertTrue(all(os.path.exists(p) for p in kept))          # a saved draft still points at it
+        self.assertEqual([os.path.exists(p) for p in (loose_old, loose_new, orphan)], [False, True, False])
+
+    def test_settings_size_and_clear(self):
+        self.put("cache", "INBOX", "1.eml", size=1000, age=1)
+        self.put("open", "aaa", "a.pdf", size=500, age=3)
+        today = self.put("open", "bbb", "b.pdf", size=200)
+        self.assertEqual(self.b.call("storage", {})[1]["data"], {"bytes": 1700})
+        self.assertEqual(self.b.call("clear_storage", {})[1]["data"], {"bytes": 200})
+        self.assertTrue(os.path.exists(today))                          # it may still be open in another app
+
+    def test_tidy_runs_every_day(self):
+        runs = []
+        self.b.tidy = lambda: (runs.append(1), self.b.stopping.set())
+        self.b.tidy_loop()
+        self.assertEqual(runs, [1])
+        src = open(A.__file__, encoding="utf-8").read()
+        self.assertIn("self.stopping.wait(86400)", src[src.index("def tidy_loop"):src.index("def tidy(")])
+
+
 if __name__ == "__main__":
     unittest.main()

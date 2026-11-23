@@ -833,7 +833,7 @@ class Backend:
             with contextlib.suppress(Exception):
                 r = self.q("select v from meta where k='folders'")
                 self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
-            self.prune_cache()
+            threading.Thread(target=self.tidy_loop, daemon=True).start()
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -1057,20 +1057,125 @@ class Backend:
             with contextlib.suppress(Exception):
                 m.logout()
 
-    def prune_cache(self, days=90):
-        root = os.path.join(R.CFG.home, "cache")
-        cut = time.time() - days * 86400
+    # ---- files the app keeps on disk: the mail cache, opened files, files kept for a compose.
+    # One job tidies them when the app starts and once a day after (an app left open for weeks too).
+
+    CACHE_DAYS, CACHE_MAX = 90, 2 * 1024 ** 3       # mail not opened for 90 days goes; 2 GB at most
+    OPEN_DAYS, OPEN_MAX = 30, 1024 ** 3             # opened attachments: 30 days, 1 GB
+    UPLOAD_DAYS = 2                                 # a compose's files nothing points at any more
+    STATE_DAYS = 1                                  # a compose state whose draft is gone
+
+    def tidy_loop(self):
+        while not self.stopping.is_set():
+            try:
+                self.tidy()
+            except Exception:       # noqa: BLE001 - tidying must never take the app down
+                traceback.print_exc(file=sys.stderr)
+            self.stopping.wait(86400)
+
+    def tidy(self, now=None):
+        now = time.time() if now is None else now
+        self.prune_cache(self.CACHE_DAYS, now=now, max_bytes=self.CACHE_MAX)
+        self.prune_open(now)
+        self.prune_uploads(now)
+
+    @staticmethod
+    def used_at(path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            return 0
+        return max(st.st_atime, st.st_mtime)
+
+    @staticmethod
+    def files_in(root):
+        """[(path, last used, bytes)] of every file under root."""
+        out = []
         for d, _, files in os.walk(root):
-            gone = set()
             for n in files:
                 p = os.path.join(d, n)
                 with contextlib.suppress(OSError):
-                    if os.path.getatime(p) < cut:
-                        os.remove(p)
-                        gone.add(n)
-            for n in files:         # a file fetched by itself (R.part_path) goes when its light mail goes
-                if ".part" in n and n not in gone and not os.path.exists(
-                        os.path.join(d, n.split(".part")[0] + ".light.eml")):
+                    st = os.stat(p)
+                    out.append((p, max(st.st_atime, st.st_mtime), st.st_size))
+        return out
+
+    def prune_open(self, now, days=None, max_bytes=None, keep_new=86400):
+        """Opened attachments (open/<hash>/name) not used for a while go, the oldest first past the size
+        limit; one used in the last day stays (it may be open in Word right now)."""
+        root = os.path.join(R.CFG.home, "open")
+        days = self.OPEN_DAYS if days is None else days
+        max_bytes = self.OPEN_MAX if max_bytes is None else max_bytes
+        dirs = []
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            files = self.files_in(d)
+            dirs.append((max([t for _, t, _ in files] or [self.used_at(d)]), sum(s for _, _, s in files), d))
+        dirs.sort()
+        total = sum(s for _, s, _ in dirs)
+        for used, size, d in dirs:
+            if used < now - days * 86400 or (total > max_bytes and used < now - keep_new):
+                shutil.rmtree(d, ignore_errors=True)
+                if not os.path.exists(d):
+                    total -= size
+                    self.made = {p for p in self.made if not p.startswith(d + os.sep)}
+
+    def prune_uploads(self, now):
+        """Files kept for a compose (uploads/<token>/name): kept while a saved compose points at them;
+        the others go after UPLOAD_DAYS. A compose state goes when its draft is no longer in Drafts."""
+        states = os.path.join(R.CFG.home, "compose")
+        drafts = {hashlib.sha1((r["msgid"] or "").strip().encode()).hexdigest() for r in
+                  self.q("select msgid from msgs where folder=?", (R.CFG.folders["drafts"],))}
+        keep = set()
+        for n in os.listdir(states) if os.path.isdir(states) else []:
+            p = os.path.join(states, n)
+            if n.endswith(".json") and n[:-5] not in drafts and self.used_at(p) < now - self.STATE_DAYS * 86400:
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                continue
+            with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+                with open(p, encoding="utf-8") as f:
+                    for x in json.load(f).get("atts") or []:
+                        keep.add(os.path.dirname(os.path.realpath(x["path"])))
+        root = os.path.join(R.CFG.home, "uploads")
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            if os.path.realpath(d) in keep:
+                continue
+            if max([t for _, t, _ in self.files_in(d)] or [self.used_at(d)]) < now - self.UPLOAD_DAYS * 86400:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def downloaded_bytes(self):
+        return sum(s for k in ("cache", "open") for _, _, s in self.files_in(os.path.join(R.CFG.home, k)))
+
+    def api_storage(self, a):
+        """How much downloaded mail is kept on this computer (the mail cache and opened files)."""
+        return {"bytes": self.downloaded_bytes()}
+
+    def api_clear_storage(self, a):
+        """Remove the downloaded mail; it is fetched again when it is opened. An opened file changed or
+        used in the last day stays: it may still be open in another app."""
+        self.prune_cache(0, now=time.time() + 1, max_bytes=0)
+        self.prune_open(time.time(), days=1, max_bytes=0)
+        with self.schedlock:
+            self.built.clear()
+        return {"bytes": self.downloaded_bytes()}
+
+    def prune_cache(self, days=90, now=None, max_bytes=None):
+        """Mail not opened for `days` goes from the cache, and past max_bytes the least recently used
+        first. A file fetched by itself (R.part_path) goes when its light mail goes."""
+        root = os.path.join(R.CFG.home, "cache")
+        now = time.time() if now is None else now
+        cut = now - days * 86400
+        files = sorted(self.files_in(root), key=lambda x: x[1])
+        total = sum(s for _, _, s in files)
+        for p, used, size in files:
+            if used < cut or (max_bytes is not None and total > max_bytes):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                    total -= size
+        for d, _, names in os.walk(root):
+            for n in names:
+                if ".part" in n and not os.path.exists(os.path.join(d, n.split(".part")[0] + ".light.eml")):
                     with contextlib.suppress(OSError):
                         os.remove(os.path.join(d, n))
 
