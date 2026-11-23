@@ -76,7 +76,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 // is drawn outside the frame (WebKit cuts off what is); reply and forward share one size.
 // reply all is wider than tall: its frame keeps reply's height, and its box is wider (style.css .i-wide), so its
 // arrows are drawn at the very size of reply's
-const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
+const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 1.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
 const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="${ARROW_BOX[n]}" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
   : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const icon = (n, cls = "") => `<span class="i ${cls}${n === "reply-all" ? " i-wide" : ""}">${svg(n)}</span>`;
@@ -290,13 +290,15 @@ function toast(text, opts = {}) {
   let done = false;
   const close = () => { if (done) return; done = true; leave(node, 180); };
   if (opts.action) node.append(el("button", { class: "toast-act", onclick: () => { close(); opts.action.run(); } }, opts.action.label));
-  if (opts.bar) {
+  // the bar drains for as long as the toast stays: a toast that closes by itself always has one
+  const ms = opts.ms ?? (opts.error ? 7000 : 3200);
+  const barMs = opts.bar || ms;
+  if (barMs) {
     const bar = el("span", { class: "toast-bar" });
     node.append(bar);
-    if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: opts.bar, easing: "linear", fill: "forwards" });
+    if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: barMs, easing: "linear", fill: "forwards" });
   }
   box.append(node);
-  const ms = opts.ms ?? (opts.error ? 7000 : 3200);
   if (ms) setTimeout(close, ms);
   return { close, node, set: (s) => { node.querySelector(".toast-text").textContent = s; } };
 }
