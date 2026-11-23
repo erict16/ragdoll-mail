@@ -195,6 +195,7 @@ class Repeats(unittest.TestCase):
         r = A.invite_of(mail(cal(e)))["repeat"]
         self.assertEqual((r["freq"], r["interval"], r["byday"], r["until"]), ("WEEKLY", 2, ["MO", "WE"], utc(2027, 12, 30, 2)))
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_next_occurrence_of_a_running_series(self):
         e = ("UID:r\r\nDTSTART;TZID=Asia/Shanghai:20200106T100000\r\nDTEND;TZID=Asia/Shanghai:20200106T110000\r\n"
              "RRULE:FREQ=WEEKLY;BYDAY=MO\r\nSUMMARY:x\r\n")

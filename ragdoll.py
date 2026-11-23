@@ -56,7 +56,7 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 ~/.local/share/hmail to their new names (and the paths in the config with them); the old
 HMAIL_* environment variables still work.
 """
-import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
+import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib, itertools
 import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
@@ -3587,10 +3587,14 @@ def add_to_path(d, home):
 
 # ---- hand-off to the app: a small file in <data dir>/asks that the running app picks up
 
+_ASK_N = itertools.count()
+
+
 def tell_app(kind, mail_id, subject=""):
     d = os.path.join(CFG.home, "asks")
     os.makedirs(d, exist_ok=True)
-    name = "%d-%d" % (time.time_ns(), os.getpid())
+    # the clock can repeat (Windows counts in 15 ms steps): the counter keeps two quick hand-offs apart
+    name = "%020d-%d-%06d" % (time.time_ns(), os.getpid(), next(_ASK_N))
     tmp = os.path.join(d, name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"kind": kind, "id": mail_id, "subject": subject, "at": int(time.time())}, f, ensure_ascii=False)

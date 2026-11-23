@@ -8,6 +8,19 @@ REAL_OPEN_PATH = A.open_path      # the Files tests put a stand-in in its place
 TOKEN = "test-token"
 
 
+
+def _has_tz():
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo("Asia/Shanghai")
+        return True
+    except Exception:       # noqa: BLE001
+        return False
+
+
+HAS_TZ = _has_tz()
+
+
 class AppServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1021,6 +1034,7 @@ class ListsAndInvites(unittest.TestCase):
         self.assertIsNone(A.list_unsub(self.msg()))
         self.assertIsNone(A.list_unsub(self.msg("List-Unsubscribe: <ftp://x>\r\n")))
 
+    @unittest.skipUnless(HAS_TZ, "no time zone database here (Windows without tzdata)")
     def test_invite(self):
         ics = ("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nDTSTART;TZID=China Standard Time:20261125T140000\r\n"
                "DTEND;TZID=China Standard Time:20261125T150000\r\nSUMMARY:Review\\, Q4\r\nLOCATION:Room 3\r\n"

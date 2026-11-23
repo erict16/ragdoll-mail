@@ -582,7 +582,7 @@ WIN_TZ = {
     "Pacific SA Standard Time": "America/Santiago", "Newfoundland Standard Time": "America/St_Johns",
     "Tocantins Standard Time": "America/Araguaina", "E. South America Standard Time": "America/Sao_Paulo",
     "SA Eastern Standard Time": "America/Cayenne", "Argentina Standard Time": "America/Argentina/Buenos_Aires",
-    "Greenland Standard Time": "America/Godthab", "Montevideo Standard Time": "America/Montevideo",
+    "Greenland Standard Time": "America/Nuuk", "Montevideo Standard Time": "America/Montevideo",
     "Magallanes Standard Time": "America/Punta_Arenas", "Saint Pierre Standard Time": "America/Miquelon",
     "Bahia Standard Time": "America/Bahia", "UTC-02": "Etc/GMT+2", "Mid-Atlantic Standard Time": "Etc/GMT+2",
     "Azores Standard Time": "Atlantic/Azores", "Cape Verde Standard Time": "Atlantic/Cape_Verde",
@@ -595,7 +595,7 @@ WIN_TZ = {
     "Middle East Standard Time": "Asia/Beirut", "Egypt Standard Time": "Africa/Cairo",
     "E. Europe Standard Time": "Europe/Chisinau", "Syria Standard Time": "Asia/Damascus",
     "West Bank Standard Time": "Asia/Hebron", "South Africa Standard Time": "Africa/Johannesburg",
-    "FLE Standard Time": "Europe/Kiev", "Israel Standard Time": "Asia/Jerusalem",
+    "FLE Standard Time": "Europe/Kyiv", "Israel Standard Time": "Asia/Jerusalem",
     "Jerusalem Standard Time": "Asia/Jerusalem", "South Sudan Standard Time": "Africa/Juba",
     "Kaliningrad Standard Time": "Europe/Kaliningrad", "Sudan Standard Time": "Africa/Khartoum",
     "Libya Standard Time": "Africa/Tripoli", "Namibia Standard Time": "Africa/Windhoek",
@@ -2727,12 +2727,17 @@ class Backend:
         return {}
 
     def prefs(self):
-        try:
-            with open(os.path.join(R.CFG.home, "app.json"), encoding="utf-8") as f:
-                p = json.load(f)
-            return p if isinstance(p, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        path = os.path.join(R.CFG.home, "app.json")
+        for k in range(10):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    p = json.load(f)
+                return p if isinstance(p, dict) else {}
+            except PermissionError:     # Windows: the file is being swapped for the new one this moment
+                time.sleep(0.02 * (k + 1))
+            except (OSError, ValueError):
+                return {}
+        return {}
 
     def api_prefs(self, a):
         # one change at a time, each on top of the one before: two at once lost the language (#61)
@@ -2793,7 +2798,16 @@ class Backend:
         tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
         with open(tmp, "w", encoding="utf-8") as f:     # a reader never sees half a file
             json.dump(p, f)
-        os.replace(tmp, path)
+        for k in range(10):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:     # Windows: a reader has the old file open this moment
+                if k == 9:
+                    with contextlib.suppress(OSError):
+                        os.remove(tmp)
+                    raise
+                time.sleep(0.02 * (k + 1))
         return p
 
     # ---- api: lists and reading
