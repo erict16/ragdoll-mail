@@ -942,5 +942,39 @@ class SettingsChange(OwnBackend):
         with self.assertRaises(A.Restart), b.dblock:
             b.sync_pass(Works(), b.c)
 
+class Prefs(OwnBackend):
+    """#61: changes made at the same moment are all kept."""
+
+    def test_changes_at_once_lose_nothing(self):
+        b = self.b
+        b.api_prefs({"lang": "zh-Hans", "theme": "dark"})
+        sizes = [12, 13, 14, 15, 16, 18, 20, 14]
+        for _ in range(5):
+            go = threading.Barrier(len(sizes) + 1)
+
+            def one(n):
+                go.wait()
+                b.call("prefs", {"text_size": n})
+            ts = [threading.Thread(target=one, args=(n,)) for n in sizes]
+            for t in ts:
+                t.start()
+            reader = []
+            go.wait()
+            for _ in range(20):
+                reader.append(b.prefs().get("lang"))        # a reader never sees half a file
+            for t in ts:
+                t.join(5)
+            self.assertEqual(set(reader), {"zh-Hans"})
+            p = b.prefs()
+            self.assertEqual((p["lang"], p["theme"]), ("zh-Hans", "dark"))
+            self.assertIn(p["text_size"], sizes)
+        self.assertFalse([n for n in os.listdir(self.home) if n.endswith(".tmp")])
+
+    def test_a_file_that_is_not_an_object_counts_as_empty(self):
+        with open(os.path.join(self.home, "app.json"), "w", encoding="utf-8") as f:
+            f.write("[1, 2]")
+        self.assertEqual(self.b.prefs(), {})
+        self.assertEqual(self.b.api_prefs({"lang": "de"})["lang"], "de")
+
 if __name__ == "__main__":
     unittest.main()

@@ -889,6 +889,7 @@ class Backend:
         self.flag_thread = None
         self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
         self.marklock = threading.Lock()
+        self.preflock = threading.Lock()        # app.json: read, change, write as one step (#61)
         self.badge_n = None                     # the unread count the Dock icon shows
         if demo:
             self.make_demo()                    # opens self.c on the demo's own index
@@ -1677,11 +1678,17 @@ class Backend:
     def prefs(self):
         try:
             with open(os.path.join(R.CFG.home, "app.json"), encoding="utf-8") as f:
-                return json.load(f)
+                p = json.load(f)
+            return p if isinstance(p, dict) else {}
         except (OSError, ValueError):
             return {}
 
     def api_prefs(self, a):
+        # one change at a time, each on top of the one before: two at once lost the language (#61)
+        with self.preflock:
+            return self.change_prefs(a)
+
+    def change_prefs(self, a):
         p = self.prefs()
         p.update({k: v for k, v in a.items() if k in ("theme", "sidebar")})
         # widths in pixels (the page puts them in its style): whole numbers in a sane range; 0 is the default width
@@ -1712,8 +1719,11 @@ class Backend:
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
         os.makedirs(R.CFG.home, exist_ok=True)
-        with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
+        path = os.path.join(R.CFG.home, "app.json")
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:     # a reader never sees half a file
             json.dump(p, f)
+        os.replace(tmp, path)
         return p
 
     # ---- api: lists and reading
