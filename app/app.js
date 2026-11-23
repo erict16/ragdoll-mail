@@ -1769,11 +1769,7 @@ function renderCompose() {
     else if (e.shiftKey && (e.code === "Digit7" || e.code === "Digit8")) { e.preventDefault(); edCmd(e.code === "Digit7" ? "insertOrderedList" : "insertUnorderedList"); }
   });
   box.append(subj, fmtBar(), ed);
-  if (c.signature && c.use_signature) {
-    const sig = el("div", { class: "sig" });
-    sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), () => { c.use_signature = false; touched(); sig.remove(); }, { cls: "tiny" }));
-    box.append(sig);
-  }
+  if (c.signature && c.use_signature) box.append(sigBox(c));
   if (c.quote) {
     const qbox = el("div", { hidden: true });
     const tog = el("button", { class: "quote-toggle", "data-tip": t("show_quote"), "aria-label": t("show_quote") }, "•••");
@@ -1793,6 +1789,21 @@ function renderCompose() {
     else if (c.mode === "forward" || c.mode === "new") (c.subject ? ed : subj).focus();
     else ed.focus();
   });
+}
+
+// the signature under the text: a click on it picks another one (when there are more), × leaves it out
+const sigName = (x, k) => x.name || t("sig_n", k + 1);
+function sigBox(c) {
+  const many = (c.signatures || []).filter((x) => x.html.trim()).length > 1;
+  const sig = el("div", { class: "sig" + (many ? " pick" : ""), "data-tip": many ? t("sig_change") : null });
+  sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), (e) => { e.stopPropagation(); c.use_signature = false; touched(c); sig.remove(); }, { cls: "tiny" }));
+  if (many) sig.addEventListener("click", () => menu(sig, c.signatures.map((x, k) => ({ icon: "square-pen", label: sigName(x, k), on: x.id === c.sig_id,
+    run: () => {
+      if (x.id === c.sig_id) return;
+      c.sig_id = x.id; c.signature = x.html; touched(c);
+      sig.replaceWith(sigBox(c));
+    } })).filter((it, k) => c.signatures[k].html.trim())));
+  return sig;
 }
 
 // ---------------------------------------------------------------- formatting
@@ -2115,7 +2126,7 @@ function composeState(opts = {}) {
   return {
     mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
-    use_signature: c.use_signature, irt: c.irt, refs: c.refs, fwd: c.fwd,
+    use_signature: c.use_signature, sig_id: c.sig_id, irt: c.irt, refs: c.refs, fwd: c.fwd,
   };
 }
 
@@ -2389,8 +2400,8 @@ window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); })
 async function openSettings() {
   let s;
   try { s = await api("settings"); } catch (e) { return fail(e); }
-  const v = { ...s, password: "", theme: S.theme };
-  let tab = "account";
+  const v = { ...s, password: "", theme: S.theme, signatures: (s.signatures || []).map((x) => ({ ...x })) };
+  let tab = "account", sigOn = 0;
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
@@ -2410,7 +2421,8 @@ async function openSettings() {
   let sigEd = null;
   const grab = () => {
     for (const inp of $$("input[data-k]", body)) v[inp.dataset.k] = inp.value;
-    if (sigEd) v.signature = sigEd.innerHTML;
+    const cur = v.signatures[sigOn];
+    if (sigEd && cur) { cur.html = sigEd.innerHTML; cur.name = $("input[data-sig-name]", body)?.value.trim() || ""; }
   };
   const draw = () => {
     body.replaceChildren();
@@ -2434,11 +2446,45 @@ async function openSettings() {
       f.append(el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, testBtn, res));
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
+      // a list of signatures, each with a name; one is the default for new mail, one for replies
+      const sigs = v.signatures;
+      sigOn = Math.min(sigOn, Math.max(0, sigs.length - 1));
+      const list = el("div", { class: "seg sig-list" });
+      sigs.forEach((x, k) => list.append(el("button", { class: k === sigOn ? "on" : "", onclick: () => { grab(); sigOn = k; draw(); } }, sigName(x, k))));
+      const add = iconBtn("plus", t("sig_add"), () => {
+        grab();
+        sigs.push({ id: "s" + Date.now().toString(36), name: "", html: "" });
+        sigOn = sigs.length - 1;
+        if (sigs.length === 1) { v.sig_new = v.sig_new || sigs[0].id; v.sig_reply = v.sig_reply || sigs[0].id; }
+        draw();
+        $("input[data-sig-name]", body)?.focus();
+      }, { cls: "tiny" });
+      const head = el("div", { class: "sig-head" }, list, add);
+      const pick = (k) => selectBox([["", t("sig_none")], ...sigs.map((x, n) => [x.id, sigName(x, n)])], v[k] || "", (val) => { grab(); v[k] = val; draw(); });
+      const defaults = el("div", { class: "two-even" },
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_new")), pick("sig_new")),
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_reply")), pick("sig_reply")));
+      if (!sigs.length) {
+        body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head));
+        return;
+      }
+      const cur = sigs[sigOn];
+      const name = el("input", { type: "text", "data-sig-name": "", value: cur.name, placeholder: sigName({}, sigOn), maxlength: "60", spellcheck: "false", autocomplete: "off" });
+      name.addEventListener("input", () => { const b = list.children[sigOn]; if (b) b.textContent = name.value.trim() || sigName({}, sigOn); });
+      const del = el("button", { class: "btn", onclick: () => {
+        sigs.splice(sigOn, 1);
+        for (const k of ["sig_new", "sig_reply"]) if (v[k] === cur.id) v[k] = "";
+        sigOn = Math.max(0, sigOn - 1);
+        sigEd = null;
+        draw();
+      }, html: icon("trash-2", "small") + esc(t("sig_delete")) });
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
-      sigEd.innerHTML = cleanHTML(v.signature || "");
+      sigEd.innerHTML = cleanHTML(cur.html || "");
       sigEd.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "div"));
       sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h, { paste: true })); } });
-      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
+      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head,
+        el("label", {}, el("span", { class: "lab" }, t("sig_name")), name), sigEd,
+        el("div", {}, del), defaults));
     } else if (tab === "sending") {
       const seg = el("div", { class: "seg" });
       for (const n of UNDO_CHOICES) {
@@ -2520,12 +2566,19 @@ async function openSettings() {
   };
   async function save() {
     grab();
-    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "signature"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
-    if (!changed) return closeLayer();
+    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
+    const sigKey = (o) => JSON.stringify([(o.signatures || []).map(({ id, name, html }) => [id, name, html]), o.sig_new || "", o.sig_reply || ""]);
+    const sigChanged = sigKey(v) !== sigKey(s);
+    if (!changed && !sigChanged) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
     try {
-      const b = await api("save_settings", { ...v, account: true, folders: v.folders });
+      if (sigChanged) {
+        Object.assign(s, await api("save_signatures", { signatures: v.signatures, sig_new: v.sig_new, sig_reply: v.sig_reply }));
+        if (!changed) { closeLayer(); toast(t("saved")); return; }
+      }
+      const { signature, signatures, sig_new, sig_reply, ...acct } = v;
+      const b = await api("save_settings", { ...acct, account: true, folders: v.folders });
       S.boot = { ...S.boot, ...b };
       closeLayer();
       renderNav();

@@ -380,6 +380,72 @@ class UndoMove(OwnBackend):
         self.assertLess(src.index("if (S.compose) {", k), src.index('=== "z" && !typing(e)', k))
 
 
+class Signatures(OwnBackend):
+    """Several signatures, a default for new mail and one for replies and forwards (#23)."""
+    def lunch(self):
+        r = self.b.q("select uid from msgs where folder='INBOX' and subject=?", ("Lunch on Thursday?",))
+        return A.R.make_id("INBOX", r[0]["uid"]) if r else None
+
+    def test_compose_starts_with_the_default_for_its_mode(self):
+        new = self.b.api_compose({"mode": "new"})
+        self.assertEqual(new["sig_id"], "full")
+        self.assertEqual([x["id"] for x in new["signatures"]], ["full", "short"])
+        i = self.lunch() or A.R.make_id("INBOX", self.b.q("select uid from msgs where folder='INBOX' limit 1")[0]["uid"])
+        for mode in ("reply", "forward"):
+            out = self.b.api_compose({"mode": mode, "id": i})
+            self.assertEqual(out["sig_id"], "short", mode)
+            self.assertNotIn("Sales Engineer", out["signature"])
+
+    def test_the_picked_one_goes_out_and_comes_back(self):
+        st = {"mode": "new", "to": [{"name": "", "addr": "a@example.org"}], "cc": [], "bcc": [], "subject": "Sig",
+              "html": "<p>x</p>", "atts": [], "use_signature": True, "sig_id": "short"}
+        _, body = A.R.bodies(self.b.build(st))
+        self.assertNotIn("Sales Engineer", body)
+        _, body = A.R.bodies(self.b.build({**st, "sig_id": "full"}))
+        self.assertIn("Sales Engineer", body)
+        i = self.b.api_save_draft(st)["id"]
+        self.assertEqual(self.b.api_compose({"mode": "draft", "id": i})["sig_id"], "short")
+
+    def test_saving_the_list(self):
+        out = self.b.api_save_signatures({"signatures": [{"id": "a", "name": " EN ", "html": "<p>A</p>"},
+                                                         {"id": "a", "name": "ZH", "html": "<p>B</p>"}],
+                                          "sig_new": "a", "sig_reply": "nope"})
+        self.assertEqual([x["name"] for x in out["signatures"]], ["EN", "ZH"])
+        self.assertEqual(len({x["id"] for x in out["signatures"]}), 2)       # a repeated id gets its own
+        self.assertEqual((out["sig_new"], out["sig_reply"]), ("a", ""))
+        self.assertEqual(self.b.api_compose({"mode": "reply", "id": self.lunch()})["signature"], "")
+        self.assertEqual(self.b.api_compose({"mode": "new"})["signature"], "<p>A</p>")
+
+    def test_one_old_signature_file_becomes_the_list(self):
+        path = os.path.join(self.home, "config.json")
+        sig = os.path.join(self.home, "signature.html")
+        with open(sig, "w", encoding="utf-8") as f:
+            f.write("<p>Old</p>")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"user": "you@example.com", "data_dir": self.home, "signature": sig}, f)
+        for k in ("signatures", "signature_new", "signature_reply"):
+            A.R.CFG.d.pop(k, None)
+        A.R.CFG.d["signature"] = sig
+        self.assertEqual(self.b.api_signatures({}), {"signatures": [{"id": "1", "name": "", "html": "<p>Old</p>"}],
+                                                     "sig_new": "1", "sig_reply": "1"})
+        self.b.demo = False
+        self.patch(A, "config_path", lambda: path)
+        self.b.api_save_signatures({"signatures": [{"id": "1", "name": "", "html": "<p>Old</p>"},
+                                                   {"id": "2", "name": "Short", "html": "<p>S</p>"}],
+                                    "sig_new": "2", "sig_reply": "1"})
+        with open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual((saved["signature_new"], saved["signature_reply"]), ("2", "1"))
+        with open(os.path.expanduser(saved["signature"]), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "<p>S</p>")          # the ragdoll command uses the new-mail one
+
+    def test_page_switches_and_keeps_the_pick(self):
+        src = app_src()
+        self.assertIn("function sigBox(c)", src)
+        self.assertIn("sig_id: c.sig_id", src)
+        self.assertIn('api("save_signatures"', src)
+
+
 class ForwardMarker(OwnBackend):
     def test_a_forward_draft_keeps_its_marker(self):
         orig = self.b.q("select msgid from msgs where msgid != '' limit 1")[0]["msgid"]

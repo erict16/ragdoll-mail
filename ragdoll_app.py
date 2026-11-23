@@ -2275,6 +2275,84 @@ class Backend:
                 return f.read()
         return R.text_to_html(s) if "\n" in s or "/" not in s else ""
 
+    # ---- signatures: a list in the config, each with a name, and one default for new mail and one for
+    # replies and forwards. Before there was a list, the one signature file is the list's only entry.
+    # The file stays the default for new mail, so the ragdoll command goes on using it.
+
+    def signatures(self):
+        """[{id, name, html}]"""
+        got = R.CFG.d.get("signatures")
+        if isinstance(got, list):
+            return [{"id": str(x.get("id") or k + 1), "name": str(x.get("name") or ""), "html": str(x.get("html") or "")}
+                    for k, x in enumerate(got) if isinstance(x, dict)]
+        one = self.signature()
+        return [{"id": "1", "name": "", "html": one}] if one.strip() else []
+
+    def sig_defaults(self):
+        """(id for new mail, id for replies and forwards); "" is none"""
+        ids = [x["id"] for x in self.signatures()]
+        if not isinstance(R.CFG.d.get("signatures"), list):
+            return (ids[0], ids[0]) if ids else ("", "")
+        pick = lambda k: R.CFG.d.get(k) if R.CFG.d.get(k) in ids else ""     # noqa: E731
+        return pick("signature_new"), pick("signature_reply")
+
+    def sig_for(self, mode, sid=None):
+        """(id, html) of the signature a compose in this mode starts with, or of sid when it is one"""
+        sigs = {x["id"]: x["html"] for x in self.signatures()}
+        if sid is None or sid not in sigs:
+            new, reply = self.sig_defaults()
+            sid = reply if mode in ("reply", "replyall", "forward") else new
+        return sid, sigs.get(sid, "")
+
+    def api_signatures(self, a):
+        new, reply = self.sig_defaults()
+        return {"signatures": self.signatures(), "sig_new": new, "sig_reply": reply}
+
+    def api_save_signatures(self, a):
+        """Keep the list of signatures and the two defaults. The demo keeps them until it closes."""
+        sigs, seen = [], set()
+        for x in a.get("signatures") or []:
+            if not isinstance(x, dict):
+                continue
+            sid = str(x.get("id") or "").strip()[:40] or secrets.token_hex(4)
+            if sid in seen:
+                sid = secrets.token_hex(4)
+            seen.add(sid)
+            sigs.append({"id": sid, "name": str(x.get("name") or "").strip()[:60], "html": str(x.get("html") or "")})
+        ids = [x["id"] for x in sigs]
+        new = a.get("sig_new") if a.get("sig_new") in ids else ""
+        reply = a.get("sig_reply") if a.get("sig_reply") in ids else ""
+        keep = {"signatures": sigs, "signature_new": new, "signature_reply": reply}
+        if self.demo:
+            R.CFG.d.update(keep)
+            self.bump()
+            return self.api_signatures({})
+        path = config_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            raw = {}
+        except ValueError:
+            fail("The settings file %s is broken; fix or remove it first." % path)
+        raw.update(keep)
+        html = next((x["html"] for x in sigs if x["id"] == new), "")
+        cur = os.path.expanduser(R.CFG.signature or "")
+        mine = os.path.join(os.path.dirname(path), "signature.html")
+        target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(html)
+        raw["signature"] = target if html.strip() else ""
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+        R.CFG = R.load_config(path)
+        self.bump()
+        return self.api_signatures({})
+
     def upload_dir(self):
         d = os.path.join(R.CFG.home, "uploads", secrets.token_hex(6))
         os.makedirs(d, exist_ok=True)
@@ -2288,8 +2366,10 @@ class Backend:
 
     def api_compose(self, a):
         mode = a.get("mode") or "new"
+        sid, sig = self.sig_for(mode)
         out = {"mode": mode, "orig": None, "replace": None, "to": [], "cc": [], "bcc": [], "subject": "",
-               "html": "", "atts": [], "quote": "", "signature": self.signature(), "use_signature": True}
+               "html": "", "atts": [], "quote": "", "signature": sig, "sig_id": sid, "use_signature": True,
+               "signatures": self.signatures()}
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
@@ -2311,7 +2391,7 @@ class Backend:
                 out.update(state)
                 out["html"] = editor_html(state.get("html") or "")
                 out["replace"] = a["id"]
-                out["signature"] = self.signature()
+                out["sig_id"], out["signature"] = self.sig_for(state.get("mode"), state.get("sig_id"))
                 if state.get("orig"):
                     with contextlib.suppress(ApiError, SystemExit, Exception):
                         orig = R.to_msg(self.raw(state["orig"]))
@@ -2361,7 +2441,7 @@ class Backend:
                 fail("An attachment is missing: %s" % x.get("name", ""))
             atts.append(p)
         body, images = data_images(a.get("html") or "")
-        sig = self.signature() if a.get("use_signature", True) else ""
+        sig = self.sig_for(mode, a.get("sig_id"))[1] if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
                               bcc, atts, sig)
         if mode == "draft" and not orig and a.get("irt"):
@@ -2411,7 +2491,7 @@ class Backend:
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
         state = {k: a.get(k) for k in ("mode", "orig", "to", "cc", "bcc", "subject", "html", "atts",
-                                       "use_signature", "irt", "refs", "fwd")}
+                                       "use_signature", "irt", "refs", "fwd", "sig_id")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
             with open(self.state_path(R.hdr(msg, "Message-ID")), "w", encoding="utf-8") as f:
@@ -2754,7 +2834,7 @@ class Backend:
         return {"name": R.CFG.name, "user": R.CFG.user, "imap_host": R.CFG.imap.get("host", ""),
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
                 "smtp_port": R.CFG.smtp.get("port", 465),
-                "signature": self.signature(), "has_password": self.has_password(),
+                "signature": self.signature(), **self.api_signatures({}), "has_password": self.has_password(),
                 "password_env": R.CFG.password_env if not self.demo and (
                     os.environ.get(R.CFG.password_env) or R._SHELL_ENV.get(R.CFG.password_env)) else "",
                 "folders": dict(R.CFG.folders), "config": config_path(), "demo": self.demo}
@@ -2884,6 +2964,13 @@ class Backend:
         with open(sig, "w", encoding="utf-8") as f:
             f.write('<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"])
         d["signature"] = sig
+        # a full signature for new mail and a short one for replies, to switch between
+        zh = ds is DEMO_SETS["zh"]
+        full = '<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"]
+        short = '<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"].split("<br>")[0]
+        d["signatures"] = [{"id": "full", "name": "完整" if zh else "Full", "html": full},
+                           {"id": "short", "name": "简短" if zh else "Short", "html": short}]
+        d["signature_new"], d["signature_reply"] = "full", "short"
         R.CFG = R.Cfg(d)
         self.c = R.db()
         now = int(time.time())
