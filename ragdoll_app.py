@@ -803,6 +803,7 @@ class Backend:
         self.focus_at = 0                       # when the page last said its window is in front
         self.web_notice_at = 0                  # when a page that shows the browser's own notices last asked
         self.made = set()                       # files the app wrote (only these may be revealed)
+        self.url = None                         # the page's address, token and all (main sets it)
         self.orig_mids = {}                     # id -> Message-ID of each mail a reply or forward was opened on
         self.demo_raw = {}
         self.thread = None
@@ -2617,7 +2618,23 @@ class Backend:
         while not self.stopping.is_set():
             with contextlib.suppress(Exception):
                 self.take_asks()
+            with contextlib.suppress(Exception):
+                self.take_show()
             self.stopping.wait(1)
+
+    def take_show(self):
+        """The app was opened again (a second copy found this one running): show this one's window,
+        or in the browser this one's page."""
+        path = show_flag()
+        if not os.path.exists(path):
+            return False
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        if WINDOW.w is not None:
+            bring_front()
+        elif self.url:
+            webbrowser.open(self.url)
+        return True
 
     def take_asks(self):
         got = R.take_asks()
@@ -3457,6 +3474,28 @@ def window_theme(dark, bg=None, text=None):
                 put(attr, ref)
 
 
+def one_instance():
+    """The open lock file when this is the only copy of the app on this mailbox, else None. The lock
+    goes with the process, also when it crashes."""
+    os.makedirs(R.CFG.home, exist_ok=True)
+    f = open(os.path.join(R.CFG.home, "app-instance.lock"), "a+")
+    if R.try_lock(f):
+        return f
+    f.close()
+    return None
+
+
+def show_flag():
+    return os.path.join(R.CFG.home, "asks", "show-window")
+
+
+def ask_show():
+    """Ask the copy of the app that runs to show itself (Backend.take_show)."""
+    os.makedirs(os.path.dirname(show_flag()), exist_ok=True)
+    with open(show_flag(), "w") as f:
+        f.write(str(os.getpid()))
+
+
 def run_window(url, home):
     import webview
     dark = system_dark()
@@ -3489,6 +3528,15 @@ def main(argv=None):
     # a plain kill still closes the mailbox and removes the demo's temp folder
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # one copy of the app per mailbox: a second one (a double-click on a slow start, a second app
+    # bundle) would sync and send scheduled mail beside the first. It brings the first one forward.
+    instance = None
+    if not a.demo:
+        instance = one_instance()
+        if instance is None:
+            ask_show()
+            print("Ragdoll Mail is already open; it was brought to the front.", file=sys.stderr)
+            return 0
     try:
         backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
@@ -3497,6 +3545,7 @@ def main(argv=None):
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/#t=%s" % (srv.server_address[1], token)
+    backend.url = url
     use_window = not a.browser
     if use_window:
         try:

@@ -157,6 +157,7 @@ class ProgramFiles(DemoBackend):
 
 
 REAL_OPEN_PATH = A.open_path
+REAL_BACKEND = A.Backend
 
 
 class PlainText(unittest.TestCase):
@@ -819,6 +820,46 @@ class EditScheduled(DemoBackend):
         body = body[:body.index("\n}\n")]
         self.assertNotIn("unschedule", body)
         self.assertIn("still_sched", body)
+
+
+class OneCopy(unittest.TestCase):
+    """#62: a second copy of the app shows the first one and quits."""
+    def setUp(self):
+        own_cfg(self)
+
+    def patch(self, obj, name, value):
+        old = getattr(obj, name)
+        setattr(obj, name, value)
+        self.addCleanup(setattr, obj, name, old)
+
+    def test_second_copy_brings_the_first_forward(self):
+        first = A.one_instance()
+        self.addCleanup(first.close)
+        self.assertIsNotNone(first)
+        self.assertIsNone(A.one_instance())
+        started = []
+        self.patch(A, "Backend", lambda *a, **k: started.append(1))
+        self.assertEqual(A.main(["--browser", "--no-open"]), 0)
+        self.assertEqual(started, [])                               # no second sync or scheduled-send loop
+        shown = []
+        self.patch(A, "bring_front", lambda: shown.append("window"))
+        self.patch(A.webbrowser, "open", lambda u: shown.append(u))
+        b = REAL_BACKEND.__new__(REAL_BACKEND)
+        b.url = "http://127.0.0.1:1/#t=x"
+        self.patch(A.WINDOW, "w", object())
+        self.assertTrue(b.take_show())
+        self.assertFalse(b.take_show())                             # once per ask
+        A.WINDOW.w = None
+        A.ask_show()
+        self.assertTrue(b.take_show())
+        self.assertEqual(shown, ["window", "http://127.0.0.1:1/#t=x"])
+
+    def test_the_lock_goes_with_the_first_copy(self):
+        first = A.one_instance()
+        first.close()
+        again = A.one_instance()
+        self.assertIsNotNone(again)
+        again.close()
 
 
 if __name__ == "__main__":
