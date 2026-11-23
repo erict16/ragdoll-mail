@@ -1359,26 +1359,264 @@ function unsubLink(node, m) {
   } }, t("unsub")));
 }
 
-// a meeting invitation: when and where, and a way into the system's calendar
+// a meeting invitation: when and where, and a way into the system's calendar. A reply to one says who
+// answered and how; a new time proposed says the time. Only an invitation still to come can be added.
+// an all-day event's days are the invitation's own dates, the same wherever the reader is
+const dayTs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)) / 1000;
+function fmtUTC(ts, opts) {
+  const key = "utc" + JSON.stringify(opts);
+  let f = FMT.get(key);
+  if (!f) {
+    try { f = new Intl.DateTimeFormat(LOCALE, { ...opts, timeZone: "UTC" }); } catch { f = new Intl.DateTimeFormat(undefined, { ...opts, timeZone: "UTC" }); }
+    FMT.set(key, f);
+  }
+  return f.format(new Date(ts * 1000));
+}
+// seconds the reader's clock is ahead of UTC at ts
+function myOffset(ts) {
+  const p = zparts(ts * 1000);
+  return (Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi) - Math.floor(ts / 60) * 60000) / 1000;
+}
+const INV_DAY = { weekday: "short", month: "short", day: "numeric" };
+// "Wed 25 Nov · 17:00–18:00 · 10:00–11:00 Amsterdam": the reader's time first, the event's own when it differs
+function inviteWhen(v) {
+  if (v.all_day) {
+    const a = fmtUTC(dayTs(v.day0), INV_DAY);
+    return (v.day1 && v.day1 !== v.day0 ? a + "–" + fmtUTC(dayTs(v.day1), INV_DAY) : a) + " · " + t("all_day");
+  }
+  const same = v.end && dayKey(v.end * 1000) === dayKey(v.start * 1000);
+  let s = fmt(v.start, INV_DAY) + " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, INV_DAY) + " " + fmt(v.end, HM)) : "");
+  const z = v.zone;
+  if (z?.unknown) s += " · " + t("inv_tz_unknown");
+  else if (z && z.offset != null && z.offset !== myOffset(v.start))
+    s += " · " + fmtUTC(v.start + z.offset, HM) + (v.end && same ? "–" + fmtUTC(v.end + z.offset, HM) : "") + " " + z.label;
+  return s;
+}
+// "Every Monday · until 30 Dec", from the invitation's RRULE
+const WD = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+function weekdayName(code) {
+  const f = new Intl.DateTimeFormat(LOCALE, { weekday: LANG.startsWith("zh") ? "short" : "long", timeZone: "UTC" });
+  return f.format(new Date(Date.UTC(2024, 0, 1 + WD.indexOf(code))));       // 1 Jan 2024 was a Monday
+}
+function listOf(xs) {
+  try { return new Intl.ListFormat(LOCALE, { type: "conjunction" }).format(xs); } catch { return xs.join(", "); }
+}
+function repeatText(v) {
+  const r = v.repeat;
+  if (!r) return "";
+  const n = r.interval || 1;
+  const local = v.all_day ? dayTs(v.day0) : v.start + (v.zone?.offset ?? myOffset(v.start));   // the event's own day
+  const startWd = WD[(new Date(local * 1000).getUTCDay() + 6) % 7];
+  let s;
+  if (r.freq === "DAILY") s = n > 1 ? t("rr_days", n) : t("rr_daily");
+  else if (r.freq === "WEEKLY") {
+    const days = (r.byday.length ? r.byday.map((d) => d.slice(-2)) : [startWd]);
+    const sorted = WD.filter((d) => days.includes(d));
+    if (n === 1 && sorted.join() === "MO,TU,WE,TH,FR") s = t("rr_weekdays");
+    else s = n > 1 ? t("rr_weeks", n, listOf(sorted.map(weekdayName))) : t("rr_weekly", listOf(sorted.map(weekdayName)));
+  } else if (r.freq === "MONTHLY") {
+    const nth = r.byday.map((d) => d.match(/^([+-]?\d)(MO|TU|WE|TH|FR|SA|SU)$/)).find(Boolean);
+    if (n > 1) s = t("rr_months", n);
+    else if (nth) s = t("rr_monthly_nth", +nth[1] < 0 ? t("rr_last") : (t("rr_ord").split(",")[+nth[1] - 1] || nth[1]), weekdayName(nth[2]));
+    else s = t("rr_monthly_day", r.bymonthday[0] || new Date(local * 1000).getUTCDate());
+  } else s = n > 1 ? t("rr_years", n) : t("rr_yearly");
+  if (r.until_day) s += " · " + t("rr_until", fmtUTC(dayTs(r.until_day), { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.until) s += " · " + t("rr_until", fmt(r.until, { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.count) s += " · " + t("rr_count", r.count);
+  return s;
+}
+const REPLY_SAID = { ACCEPTED: "inv_r_accepted", DECLINED: "inv_r_declined", TENTATIVE: "inv_r_tentative", DELEGATED: "inv_r_delegated" };
+const invWho = (x) => (x && (x.addr === S.boot?.user ? t("me") : x.name || x.addr)) || "";
 function inviteCard(m) {
   const v = m.invite;
-  const day = { weekday: "short", month: "short", day: "numeric" };
-  const same = v.end && fmt(v.end, { year: "numeric", month: "numeric", day: "numeric" }) === fmt(v.start, { year: "numeric", month: "numeric", day: "numeric" });
-  let when = fmt(v.start, day);
-  if (v.all_day) when += " · " + t("all_day");
-  else when += " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, day) + " " + fmt(v.end, HM)) : "");
+  const leafTs = v.all_day ? dayTs(v.day0) : v.start;
+  const leafFmt = v.all_day ? fmtUTC : fmt;
   const past = (v.end || v.start) * 1000 < Date.now();
-  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") },
-    el("div", { class: "inv-day" }, el("span", {}, fmt(v.start, { month: "short" })), el("b", {}, fmt(v.start, { day: "numeric" }).replace(/\D+$/, ""))),
-    el("div", { class: "inv-text" },
-      el("b", {}, v.title || t("invite")),
-      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + when),
-      v.where ? el("span", {}, v.where) : null,
-      v.organizer ? el("span", { class: "inv-org" }, t("inv_from", v.organizer)) : null),
-    v.cancelled ? null : el("button", { class: "btn", onclick: async (e) => {
+  const kind = v.method === "REPLY" ? "reply" : v.method === "COUNTER" ? "counter" : ["REFRESH", "DECLINECOUNTER"].includes(v.method) ? "note" : "invite";
+  const lines = [];
+  if (kind === "reply") {
+    lines.push(el("b", {}, t(REPLY_SAID[v.reply?.status] || "inv_r_replied", invWho(v.reply))),
+      el("span", {}, v.title || t("invite")), el("span", {}, inviteWhen(v)));
+    if (v.reply?.comment) lines.push(el("span", { class: "inv-note" }, "“" + v.reply.comment + "”"));
+  } else if (kind === "counter") {
+    lines.push(el("b", {}, t("inv_counter", invWho(v.reply))), el("span", {}, v.title || t("invite")),
+      el("span", {}, t("inv_new_time", inviteWhen(v))));
+  } else {
+    const tag = v.updated ? t("inv_updated") : v.occurrence && !v.cancelled ? t("inv_one") : "";
+    lines.push(el("b", {}, v.title || t("invite"), tag ? el("span", { class: "inv-tag" }, tag) : null),
+      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + inviteWhen(v)));
+    const rep = repeatText(v);
+    if (rep) lines.push(el("span", {}, rep));
+    if (v.was && v.was.start) lines.push(el("span", { class: "inv-was" }, t("inv_was", wasWhen(v.was))));
+    if (v.where) lines.push(el("span", {}, v.where));
+    if (v.was && "where" in v.was && v.was.where !== v.where) lines.push(el("span", { class: "inv-was" }, t("inv_was", v.was.where || "—")));
+    if (v.organizer) lines.push(el("span", { class: "inv-org" }, t("inv_from", v.organizer)));
+    const people = invitePeople(v);
+    if (people) lines.push(people);
+    if (v.about) lines.push(inviteAbout(v.about));
+  }
+  // Add for an invitation still to come; a cancelled one leaves the calendar the same way
+  const canAdd = kind === "invite" && !past && ["REQUEST", "PUBLISH", "ADD", "CANCEL"].includes(v.method);
+  const soon = v.start * 1000 - Date.now() < 15 * 60e3;
+  const side = el("div", { class: "inv-side" },
+    v.join && kind === "invite" && !past && !v.cancelled ? el("button", { class: "btn" + (soon ? " primary" : ""), html: icon("video", "small") + `<span>${esc(t("inv_join"))}</span>`, onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      const b = e.currentTarget;
+      try { await api("join", { id: m.id }); } catch (err) { fail(err); } finally { b.disabled = false; }
+    } }) : null,
+    canAdd ? el("button", { class: "btn", onclick: async (e) => {
       e.target.disabled = true;
       try { await api("open_invite", { id: m.id }); } catch (err) { fail(err); } finally { e.target.disabled = false; }
-    } }, t("add_cal")));
+    } }, t(v.cancelled ? "inv_remove_cal" : "add_cal")) : null);
+  const card = el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") + (kind !== "invite" ? " inv-" + kind : "") },
+    el("div", { class: "inv-day" }, el("span", {}, leafFmt(leafTs, { month: "short" })), el("b", {}, leafFmt(leafTs, { day: "numeric" }).replace(/\D+$/, ""))),
+    el("div", { class: "inv-text" }, lines),
+    side.childElementCount ? side : el("span"));
+  if (kind === "invite" && v.can_answer && !past) card.append(rsvpRow(m, card));
+  return card;
+}
+function wasWhen(w) {
+  if (w.all_day) return fmt(w.start, INV_DAY);
+  const same = w.end && dayKey(w.end * 1000) === dayKey(w.start * 1000);
+  return fmt(w.start, INV_DAY) + " · " + fmt(w.start, HM) + (w.end && same ? "–" + fmt(w.end, HM) : "");
+}
+// "You, Li Ming, Gerrick Ong +3": opens into everyone with their answer
+const PART = { ACCEPTED: ["check", "att_yes"], DECLINED: ["x", "att_no"], TENTATIVE: ["circle-help", "att_maybe"] };
+function invitePeople(v) {
+  const me = (S.boot?.user || "").toLowerCase();
+  const all = (v.attendees || []).filter((a) => a.addr !== v.organizer_addr);
+  if (!all.length || (all.length === 1 && all[0].addr === me)) return null;
+  const sorted = [...all.filter((a) => a.addr === me), ...all.filter((a) => a.addr !== me)];
+  const name = (a) => (a.addr === me ? t("inv_you") : a.name || a.addr);
+  const shown = sorted.slice(0, 3).map(name).join(", ") + (sorted.length > 3 ? " " + t("inv_more_n", sorted.length - 3) : "");
+  const list = el("div", { class: "inv-list" });
+  // drawn when it opens: the reader's own answer from here counts too
+  const fill = () => list.replaceChildren(...sorted.map((a) => {
+    const st = a.addr === me && v.answer ? v.answer : a.status;
+    const [ic, word] = PART[st] || [null, "att_none"];
+    return el("div", { class: "inv-person" + (st === "ACCEPTED" ? " yes" : "") },
+      el("span", { class: "inv-pmark", html: ic ? icon(ic, "small") : "" }), el("span", { class: "inv-pname" }, name(a)),
+      el("span", { class: "inv-pst" }, t(word)));
+  }));
+  const wrap = el("div", { class: "inv-people" });
+  const btn = el("button", { class: "inv-ptoggle", "aria-expanded": "false", html: `<span>${esc(shown)}</span>` + icon("chevron-down", "small"), onclick: () => {
+    const open = !wrap.classList.contains("open");
+    if (open) fill();
+    wrap.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", String(open));
+  } });
+  wrap.append(btn, list);
+  return wrap;
+}
+// the first lines of the description; the rest on a click
+function inviteAbout(text) {
+  const box = el("div", { class: "inv-about" }, el("div", { class: "inv-about-t" }, text));
+  if (text.length > 140 || text.split("\n").length > 2) {
+    const more = el("button", { class: "link-btn inv-more", onclick: () => {
+      const open = box.classList.toggle("open");
+      more.textContent = t(open ? "inv_less" : "inv_more");
+    } }, t("inv_more"));
+    box.append(more);
+  }
+  return box;
+}
+// Accept / Maybe / Decline. The chosen button fills in and spins while the reply waits out the undo pause and
+// goes; then the buttons fold into one line ("You accepted · Change") in the same place, so nothing below moves.
+// Nothing says "You accepted" before the server took the reply; a reply that fails brings the buttons back.
+const RSVP = [["ACCEPTED", "check", "rsvp_accept", "accept"], ["TENTATIVE", "circle-help", "rsvp_maybe", "maybe"], ["DECLINED", "x", "rsvp_decline", "decline"]];
+function rsvpRow(m, card) {
+  const v = m.invite;
+  const row = el("div", { class: "inv-rsvp" });
+  const note = el("input", { class: "inv-note-in", type: "text", maxlength: "300", placeholder: t("rsvp_note"), "aria-label": t("rsvp_note") });
+  const btns = el("div", { class: "inv-btns" });
+  const done = el("div", { class: "inv-done", "aria-live": "polite" });
+  let busy = false;
+  const mark = (ans) => {
+    card.classList.remove("ans-accepted", "ans-tentative", "ans-declined");
+    if (ans) card.classList.add("ans-" + ans.toLowerCase());
+  };
+  const show = (ans, still) => {
+    const [, ic] = RSVP.find((x) => x[0] === ans);
+    done.replaceChildren(el("span", { class: "inv-mark " + ans.toLowerCase() + (ans !== "TENTATIVE" ? " draw" : ""), html: icon(ic) }),
+      el("span", { class: "inv-said" }, t("rsvp_did_" + ans.toLowerCase())),
+      el("button", { class: "link-btn inv-change", onclick: change }, t("rsvp_change")));
+    if (still) row.classList.add("still");
+    row.classList.add("done");
+    btns.inert = true;
+    done.inert = false;
+    mark(ans);
+    if (still) requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove("still")));
+  };
+  const change = () => {
+    row.classList.remove("done");
+    btns.inert = false;
+    done.inert = true;
+    mark(null);
+    btns.querySelector(".rsvp-btn")?.focus({ preventScroll: true });
+  };
+  const settle = (b, html, shake) => {
+    busy = false;
+    btns.classList.remove("busy");
+    b.classList.remove("chosen", "press");
+    b.innerHTML = html;
+    if (shake && !REDUCED.matches) {
+      btns.classList.remove("shake");
+      void btns.offsetWidth;
+      btns.classList.add("shake");
+    }
+  };
+  const answer = async (ans, b) => {
+    if (busy) return;
+    busy = true;
+    const html = b.innerHTML;
+    btns.classList.remove("shake");
+    btns.classList.add("busy");
+    b.classList.add("chosen", "press");
+    b.querySelector(".i").outerHTML = icon("loader-circle", "small spin");
+    let r;
+    try { r = await api("rsvp", { id: m.id, answer: ans, note: note.value.trim(), subject: t("rsvp_subj_" + ans.toLowerCase()) }); }
+    catch (e) { settle(b, html, true); return fail(e); }
+    const wait = undoSeconds() * 1000;
+    let undone = false;
+    const tt = toast(t("rsvp_sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
+    for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
+    if (undone) {
+      tt.close();
+      settle(b, html, false);
+      api("delete_draft", { id: r.draft }).catch(fail);
+      return;
+    }
+    tt.node.querySelector(".toast-act")?.remove();
+    tt.node.querySelector(".toast-bar")?.remove();
+    try {
+      const res = await api("rsvp_send", { id: m.id, draft: r.draft, answer: ans });
+      tt.close();
+      const after = res.problems_after_sending || [];
+      if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
+      else toast(t("rsvp_sent"));
+      settle(b, html, false);
+      v.answer = ans;
+      note.value = "";
+      show(ans, false);
+      if (ans !== "DECLINED") api("open_invite", { id: m.id }).catch(fail);     // into the calendar with the same click
+      refreshCounts();
+      if (["sent", "drafts"].includes(S.folder)) loadList({ quiet: true });
+    } catch (e) {
+      tt.close();
+      settle(b, html, true);
+      fail(e);
+    }
+  };
+  for (const [ans, ic, label, cls] of RSVP) {
+    const b = el("button", { class: "btn rsvp-btn " + cls, html: icon(ic, "small") + `<span>${esc(t(label))}</span>` });
+    b.addEventListener("click", () => answer(ans, b));
+    btns.append(b);
+  }
+  btns.append(note);
+  done.inert = true;
+  row.append(btns, done);
+  if (v.answer) show(v.answer, true);
+  return row;
 }
 
 function attNode(a, id) {
