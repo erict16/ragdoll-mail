@@ -385,7 +385,8 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 let navSig = "", navKeys = null;
 function renderNav() {
   const nav = $("#nav");
-  const folders = [...S.boot.folders];
+  const own = ownFolders();
+  const folders = [...S.boot.folders.filter((f) => !f.other), ...own];
   for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
@@ -401,6 +402,7 @@ function renderNav() {
   $("#here-btn").className = "here-btn" + (unread && S.folder !== "inbox" ? " dot" : "");
   $("#here-btn").innerHTML = icon(here?.other ? "folder-open" : FOLDER_ICON[S.folder] || "folder-open") + `<span class="label" dir="auto">${esc(folderName(S.folder))}</span>`;
   $("#head-title").textContent = folderName(S.folder);
+  emptyBtn(here);
   let seenOther = false;
   for (const [i, f] of folders.entries()) {
     if (f.other && !seenOther) nav.append(navSection());
@@ -418,6 +420,7 @@ function renderNav() {
       seenOther = true;
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
       $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); folderMenu(b, f); });
+      folderDrag(b, f, own);
     } else if (READ_ALL_IN.includes(f.key)) {
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
     }
@@ -438,17 +441,33 @@ function renderNav() {
 
 // the owner's own folders sit under a heading that folds them away; a folder with folders inside has
 // its own arrow. A folded folder adds the unread mail inside it to its own count. The open folder stays.
+// A folder dropped on the heading goes to the top level, first in it.
 function navSection() {
-  return el("div", { class: "nav-sec" },
+  const sec = el("div", { class: "nav-sec" },
     el("button", { class: "nav-sec-btn", "aria-label": t("fold"), onclick: () => toggleFold("@mine"),
       html: `<span class="label">${esc(t("my_folders"))}</span>` + icon("chevron-right", "small") + `<span class="count"></span>` }),
     el("button", { class: "icon-btn tiny nav-sec-add", "data-tip": t("new_folder"), "aria-label": t("new_folder"), onclick: () => newFolder(), html: icon("plus", "small") }));
+  sec.addEventListener("dragover", (e) => { if (!dragF) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; clearDrop(); sec.classList.add("drop"); });
+  sec.addEventListener("dragleave", (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove("drop"); });
+  sec.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const g = dragF.f;
+    dragF = null; clearDrop();
+    const first = ownFolders().find((x) => !x.up && x.key !== g.key);
+    if (g.up) moveFolder(g, null, { at: (key) => first && placeFolder(key, first.key, "before") });
+    else if (first) { const snap = navRects(); placeFolder(g.key, first.key, "before"); renderNav(); flipNav(snap); }
+  });
+  return sec;
 }
 function toggleFold(key) {
   const s = new Set(PREFS.folded || []);
   if (s.has(key)) s.delete(key); else s.add(key);
   savePref({ folded: [...s] });
   applyFold();
+}
+function unfold(key) {
+  if (PREFS.folded?.includes(key)) savePref({ folded: PREFS.folded.filter((k) => k !== key) });
 }
 function applyFold() {
   const folded = new Set(PREFS.folded || []), all = folded.has("@mine");
@@ -470,7 +489,252 @@ function applyFold() {
   if (sec) { sec.classList.toggle("folded", all); $(".count", sec).textContent = all && secSum ? secSum : ""; }
 }
 
-// the owner's own folders: make one, rename one, delete an empty one
+// The owner's own folders in the sidebar's order: each folder's own folders right under it. At each level the
+// order the owner dragged them into comes first (PREFS.folder_order), the rest A-Z as the chosen language sorts
+// (Chinese by pinyin, 2 before 10). Each comes with `up`, the folder it is in (null at the top level).
+let collator = null;
+function ownFolders() {
+  if (collator?.lang !== LOCALE) collator = { lang: LOCALE, c: new Intl.Collator(LOCALE, { numeric: true, sensitivity: "base" }) };
+  const order = new Map((PREFS.folder_order || []).map((k, i) => [k, i]));
+  const cmp = (a, b) => order.has(a.key) && order.has(b.key) ? order.get(a.key) - order.get(b.key)
+    : order.has(a.key) ? -1 : order.has(b.key) ? 1 : collator.c.compare(a.label, b.label) || (a.key < b.key ? -1 : 1);
+  const root = [], stack = [];
+  for (const f of S.boot.folders) {
+    if (!f.other) continue;
+    const d = f.depth || 0;
+    while (stack.length && (stack.at(-1).depth || 0) >= d) stack.pop();
+    const n = { ...f, up: stack.at(-1)?.key ?? null, kids: [] };
+    (stack.at(-1)?.kids || root).push(n);
+    stack.push(n);
+  }
+  const out = [];
+  const walk = (list) => { for (const { kids, ...f } of list.sort(cmp)) { out.push(f); walk(kids); } };
+  walk(root);
+  return out;
+}
+// a folder and the folders inside it, from ownFolders()
+function subtreeOf(list, key) {
+  const i = list.findIndex((f) => f.key === key);
+  if (i < 0) return [];
+  let j = i + 1;
+  while (j < list.length && (list[j].depth || 0) > (list[i].depth || 0)) j++;
+  return list.slice(i, j);
+}
+// "Projects / Acme": the folders a folder is in, for the search in the move menus
+function whereOf(f, list) {
+  const by = new Map(list.map((x) => [x.key, x])), out = [];
+  for (let up = by.get(f.up); up; up = by.get(up.up)) out.unshift(up.label);
+  return out.join(" / ");
+}
+
+// A renamed or moved folder: the open folder, the selection, the fold state, the order and the recent
+// folders follow it to its new name, and so do the folders inside it (old + sep + ...).
+function followFolder(old, nu, sep) {
+  if (old === nu) return false;
+  const map = (k) => (k === old ? nu : typeof k === "string" && k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
+  const mapId = (i) => { const c = i.lastIndexOf(":"); return c < 0 ? i : map(i.slice(0, c)) + i.slice(c); };
+  const was = S.folder;
+  S.folder = map(S.folder);
+  if (S.sel) S.sel = mapId(S.sel);
+  if (S.anchor) S.anchor = mapId(S.anchor);
+  if (S.focus) S.focus = mapId(S.focus);
+  S.multi = new Set([...S.multi].map(mapId));
+  const patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => map(x) !== x)) patch[k] = [...new Set(PREFS[k].map(map))];
+  if (Object.keys(patch).length) savePref(patch);
+  return S.folder !== was || !!S.thread?.rows.some((r) => mapId(r.id) !== r.id);
+}
+// deleted folders leave nothing behind in the prefs
+function forgetFolders(keys) {
+  const gone = new Set(keys), patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => gone.has(x))) patch[k] = PREFS[k].filter((x) => !gone.has(x));
+  if (Object.keys(patch).length) savePref(patch);
+}
+// after a rename or move that reached the open folder or the open mail: the list and the mail are shown
+// again under their new names, the selection kept
+async function showMoved() {
+  await loadList({ quiet: true });
+  if (S.thread && !S.compose && S.focus) openThread(S.focus);
+}
+
+// the sidebar's rows glide from where they were to where they are now (a folder moved, renamed or reordered)
+function navRects() {
+  return new Map($$("#nav .nav-item.other").map((b) => [b.dataset.folder, b.getBoundingClientRect().top]));
+}
+function flipNav(snap, rename = (k) => k) {
+  if (REDUCED.matches) return;
+  const was = new Map([...snap].map(([k, y]) => [rename(k), y]));
+  for (const b of $$("#nav .nav-item.other")) {
+    const y = was.get(b.dataset.folder);
+    if (y == null || b.classList.contains("gone")) continue;
+    const dy = y - b.getBoundingClientRect().top;
+    if (Math.abs(dy) < 1) continue;
+    b.classList.remove("new");
+    b.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 280, easing: EASE });
+  }
+}
+const renamer = (old, nu, sep) => (k) => (k === old ? nu : k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
+
+// The owner's own order: `key` goes right before or after `target` among the folders beside it.
+function placeFolder(key, target, where) {
+  const keys = ownFolders().map((f) => f.key).filter((k) => k !== key);
+  const at = keys.indexOf(target);
+  if (at < 0) return;
+  keys.splice(where === "after" ? at + 1 : at, 0, key);
+  savePref({ folder_order: keys });
+}
+// Put a folder in another one (parent null: the top level). It is a rename on the server: the mail and the
+// folders inside go along; the open folder, the selection and the fold state follow. at(newKey) places it
+// among its new neighbours. Undo puts it back.
+async function moveFolder(f, parent, { at } = {}) {
+  const snap = navRects();
+  let r;
+  try { r = await api("folder_move", parent == null ? { key: f.key, top: true } : { key: f.key, parent }); } catch (e) { fail(e); return; }
+  const shown = followFolder(f.key, r.key, r.sep);
+  if (parent != null) unfold(parent);
+  at?.(r.key);
+  await refreshCounts();
+  renderNav();
+  flipNav(snap, renamer(f.key, r.key, r.sep));
+  if (shown) showMoved();
+  if (r.key === f.key) return;
+  toast(parent == null ? t("moved_top") : t("moved_to", folderName(parent)), { ms: 6000, action: { label: t("undo"), run: async () => {
+    const back = navRects();
+    try { await api("folder_move", { key: r.key, parent: r.was }); } catch (e) { return fail(e); }
+    const again = followFolder(r.key, f.key, r.sep);
+    await refreshCounts();
+    renderNav();
+    flipNav(back, renamer(r.key, f.key, r.sep));
+    if (again) showMoved();
+  } } });
+}
+
+// Dragging an own folder: onto another one puts it inside (the folder lights up as for mail); near the top
+// or bottom edge of one puts it before or after it (a line shows where). Not into itself or a folder inside
+// it, and not onto the built-in folders (they take mail only). The heading takes it to the top level.
+let dragF = null;
+function clearDrop() {
+  for (const n of $$("#nav .drop, #nav .drop-before, #nav .drop-after")) n.classList.remove("drop", "drop-before", "drop-after");
+}
+function folderZone(b, f, e, list) {
+  if (!dragF || dragF.inside.has(f.key)) return null;
+  const r = b.getBoundingClientRect(), y = (e.clientY - r.top) / r.height;
+  const open = list[list.findIndex((x) => x.key === f.key) + 1]?.up === f.key && !PREFS.folded?.includes(f.key);
+  const z = y < 0.3 ? "before" : y > 0.7 && !open ? "after" : "inside";
+  return z === "inside" && dragF.f.up === f.key ? null : z;
+}
+function folderDrag(b, f, list) {
+  b.draggable = true;
+  b.addEventListener("dragstart", (e) => {
+    dragF = { f, inside: new Set(subtreeOf(list, f.key).map((x) => x.key)) };
+    e.dataTransfer.setData("x-ragdoll/folder", f.key);
+    e.dataTransfer.effectAllowed = "move";
+    requestAnimationFrame(() => { for (const x of $$("#nav .nav-item.other")) x.classList.toggle("dragging", !!dragF?.inside.has(x.dataset.folder)); });
+  });
+  b.addEventListener("dragend", () => { dragF = null; clearDrop(); for (const x of $$("#nav .dragging")) x.classList.remove("dragging"); });
+  b.addEventListener("dragover", (e) => {
+    if (!dragF) return;
+    const z = folderZone(b, f, e, list);
+    if (!z) return clearDrop();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const cls = z === "inside" ? "drop" : "drop-" + z;
+    if (!b.classList.contains(cls)) { clearDrop(); b.classList.add(cls); }
+  });
+  b.addEventListener("dragleave", (e) => { if (!b.contains(e.relatedTarget)) b.classList.remove("drop-before", "drop-after"); });
+  b.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const z = folderZone(b, f, e, list), g = dragF.f;
+    dragF = null; clearDrop();
+    if (!z) return;
+    const parent = z === "inside" ? f.key : f.up;
+    const at = z === "inside" ? null : (key) => placeFolder(key, f.key, z);
+    if (parent !== g.up) return moveFolder(g, parent, { at });
+    const snap = navRects();
+    at(g.key);
+    renderNav();
+    flipNav(snap);
+  });
+}
+
+// A menu of folders with a box on top to find one: typing narrows it (Chinese too, once the input method is
+// done), arrows walk it, Enter takes the first one found. entries: "-" or {key, label, depth, icon, run, on (a
+// tick), off (shown, can't be picked), where (the folders it is in), find: false (left out of a search)}.
+// make(name): the "New folder" that ends a search, with the words typed.
+function pickMenu(anchor, entries, { make } = {}) {
+  closeLayer();
+  const input = el("input", { type: "text", spellcheck: "false", autocomplete: "off", dir: "auto", placeholder: t("search"), "aria-label": t("search") });
+  const list = el("div", { class: "pick-list" });
+  const m = el("div", { class: "menu pick", role: "menu" }, el("label", { class: "pick-find", html: icon("search", "small") }, input), list);
+  const item = (x, hint) => el("button", { role: "menuitem", disabled: !!x.off, style: x.depth ? `--depth:${x.depth}` : null,
+    onclick: () => { closeLayer(); x.run(); },
+    html: icon(x.icon || "folder-open") + `<span class="label" dir="auto">${esc(x.label)}</span>` +
+      (x.on ? icon("check", "small on-mark") : hint ? `<span class="grow"></span><span class="hint" dir="auto">${esc(hint)}</span>` : "") });
+  const draw = () => {
+    const q = input.value.trim().toLocaleLowerCase();
+    list.replaceChildren();
+    if (!q) { for (const x of entries) list.append(x === "-" ? el("hr") : item(x)); return; }
+    const seen = new Set();
+    const hits = entries.filter((x) => x !== "-" && x.find !== false && !x.off && !seen.has(x.key) && seen.add(x.key) &&
+      x.label.toLocaleLowerCase().includes(q));
+    for (const x of hits) list.append(item({ ...x, depth: 0 }, x.where));
+    if (!hits.length) list.append(el("div", { class: "menu-note" }, t("no_results")));
+    if (make) list.append(el("hr"), item({ icon: "folder-plus", label: t("new_folder"), run: () => make(input.value.trim()) }));
+  };
+  input.addEventListener("input", draw);
+  // the keys stay in the menu: the page's own shortcuts don't see them (Escape still closes it)
+  m.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return e.stopPropagation();
+    if (e.key === "Escape") return;
+    e.stopPropagation();
+    const items = $$("button:not(:disabled)", list), k = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const d = e.key === "ArrowDown" ? 1 : -1;
+      if (k < 0) items[d > 0 ? 0 : items.length - 1]?.focus();
+      else if (k + d < 0) input.focus();
+      else items[(k + d) % items.length]?.focus();
+    } else if (e.target === input && e.key === "Enter") {
+      e.preventDefault();
+      items[0]?.click();
+    } else if (e.target !== input && (e.key === "Home" || e.key === "End")) {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1]?.focus();
+    } else if (e.target !== input && (e.key === "Backspace" || (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey))) {
+      input.focus();      // typing on an item goes on in the box
+    }
+  });
+  draw();
+  const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
+  $("#layer").append(catcher, m);
+  m.style.width = Math.min(360, Math.max(240, m.offsetWidth)) + "px";      // the menu keeps its width while it narrows
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
+  const top = Math.max(8, Math.min(r.bottom + 6, innerHeight - m.offsetHeight - 8));
+  m.style.top = top + "px";
+  m.style.maxHeight = innerHeight - top - 8 + "px";
+  input.focus();
+}
+
+// the folders mail was moved to last come first in the move menu
+function noteRecent(key) {
+  savePref({ folder_recent: [key, ...(PREFS.folder_recent || []).filter((k) => k !== key)].slice(0, 5) });
+}
+
+// a question before something that can't be taken back, or that moves a lot of mail
+function confirmSheet({ title, text, ok, run, safe = false }) {
+  const go = el("button", { class: "btn primary danger", onclick: async () => {
+    go.disabled = true;
+    go.innerHTML = icon("loader-circle", "small spin") + esc(ok);
+    try { await run(); closeLayer(); } catch (e) { go.disabled = false; go.textContent = ok; fail(e); }
+  } }, ok);
+  const no = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
+  sheet(el("div", {}, el("h2", {}, title), el("p", { class: "sheet-sub" }, text), el("div", { class: "sheet-acts" }, no, go)));
+  (safe ? no : go).focus();
+}
+
+// the owner's own folders: make one (inside another too), rename, move, delete one with its mail going to Trash
 function nameSheet(title, value, run) {
   const input = el("input", { type: "text", value, maxlength: "60", dir: "auto", spellcheck: "false", autocomplete: "off", "aria-label": title });
   let busy = false;
@@ -481,34 +745,78 @@ function nameSheet(title, value, run) {
     try { await run(name); closeLayer(); } catch (e) { fail(e); input.focus(); }
     busy = false;
   };
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, title), el("div", { class: "form" }, input),
     el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("ok")))));
   requestAnimationFrame(() => { input.focus(); input.select(); });
 }
-// then: what to do with the new folder (the move menu puts the mail in it)
-function newFolder(then) {
-  nameSheet(t("new_folder"), "", async (name) => {
-    const r = await api("folder_new", { name });
+// then: what to do with the new folder (the move menu puts the mail in it); parent: the folder to make it in
+function newFolder(then, parent = null, value = "") {
+  nameSheet(t(parent ? "new_subfolder" : "new_folder"), value, async (name) => {
+    const r = await api("folder_new", parent ? { name, parent } : { name });
+    if (parent) unfold(parent);
     await refreshCounts();
     then?.(r.key);
   });
 }
 function renameFolder(f) {
   nameSheet(t("rename_folder"), f.label, async (name) => {
+    const snap = navRects();
     const r = await api("folder_rename", { key: f.key, name });
-    if (S.folder === f.key) S.folder = r.key;
+    const shown = followFolder(f.key, r.key, r.sep);
     await refreshCounts();
-    loadList({ quiet: true });
+    flipNav(snap, renamer(f.key, r.key, r.sep));
+    if (shown) showMoved(); else loadList({ quiet: true });
   });
 }
+// an empty folder goes at once; one with mail or folders inside asks first, then its mail (and the mail of
+// the folders inside) goes to Trash, never deleted for good, and the folders go
 async function deleteFolder(f) {
-  try {
-    await api("folder_delete", { key: f.key });
-    if (S.folder === f.key) await openFolder("inbox");
+  let use;
+  try { use = await api("folder_delete", { key: f.key, check: true }); } catch (e) { return fail(e); }
+  const go = async (trash) => {
+    const r = await api("folder_delete", trash ? { key: f.key, trash } : { key: f.key });
+    const gone = r.deleted || [f.key];
+    forgetFolders(gone);
+    if (gone.includes(S.folder)) await openFolder("inbox");
     await refreshCounts();
-  } catch (e) { fail(e); }
+    if (trash) toast(t("folder_gone_trash", f.label));
+  };
+  if (!use.mails && !use.folders) return go(false).catch(fail);
+  const text = [use.mails ? t(use.mails === 1 ? "del_mails_1" : "del_mails_n", use.mails) : "",
+    use.folders ? t(use.folders === 1 ? "del_kids_1" : "del_kids_n", use.folders) : ""].filter(Boolean).join(" ");
+  confirmSheet({ title: t("del_folder_q", f.label), text, ok: t("delete_folder"), run: () => go(true) });
+}
+// every mail in Trash or Junk deleted for good, after a question that says how many
+async function emptyFolder(key) {
+  for (const job of [...pendingMoves]) if (job.to === key) await job.commit();
+  let n;
+  try { n = (await api("folder_empty", { key, check: true })).count; } catch (e) { return fail(e); }
+  if (!n) return toast(t("empty_none"));
+  confirmSheet({ title: t("empty_q_" + key), text: t(n === 1 ? "empty_text_1" : "empty_text_n", n), ok: t("empty_" + key), safe: true, run: async () => {
+    await api("folder_empty", { key });
+    if (S.sel?.startsWith(key + ":") || S.thread?.rows.some((r) => r.folder === key)) { S.sel = null; S.thread = null; showEmpty(); }
+    if (S.folder === key && !S.query) await loadList({ quiet: true });
+    await refreshCounts();
+    toast(t("emptied_" + key));
+  } });
+}
+// the list header of Trash and Junk has a button for it
+function emptyBtn(here) {
+  const on = (S.folder === "trash" || S.folder === "junk") && !S.query;
+  let b = $("#empty-btn");
+  if (!b) {
+    if (!on) return;
+    b = el("button", { class: "icon-btn", id: "empty-btn", onclick: () => emptyFolder(S.folder) });
+    $("#filter-btn").before(b);
+  }
+  b.hidden = !on;
+  if (!on) return;
+  b.innerHTML = icon("trash-2");
+  b.dataset.tip = t("empty_" + S.folder);
+  b.setAttribute("aria-label", b.dataset.tip);
+  b.disabled = !here?.total;
 }
 // every unread mail of a folder becomes read; the list on screen follows at once
 async function readAll(key) {
@@ -521,16 +829,34 @@ async function readAll(key) {
 const READ_ALL_IN = ["inbox", "flagged", "archive", "junk", "trash"];
 function folderMenu(anchor, f) {
   const all = { icon: "mail-open", label: t("read_all"), run: () => readAll(f.key) };
+  if (f.key === "trash" || f.key === "junk") {
+    return menu(anchor, f.total ? [all, "-", { icon: "trash-2", label: t("empty_" + f.key), run: () => emptyFolder(f.key) }] : [all]);
+  }
   if (!f.other) return menu(anchor, [all]);
+  const me = ownFolders().find((x) => x.key === f.key) || f;
   menu(anchor, [
     all,
     "-",
+    { icon: "folder-plus", label: t("new_subfolder"), run: () => newFolder(null, f.key) },
     { icon: "pencil", label: t("rename_folder"), run: () => renameFolder(f) },
+    { icon: "folder-input", label: t("move_to"), run: () => moveFolderMenu(anchor, me) },
     { icon: "trash-2", label: t("delete_folder"), run: () => deleteFolder(f) },
     "-",
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
   ]);
 }
+// where a folder can go: the top level or any own folder but itself and the folders inside it
+function moveFolderMenu(anchor, f) {
+  const own = ownFolders(), inside = new Set(subtreeOf(own, f.key).map((x) => x.key));
+  const entries = [{ key: "@top", label: t("top_level"), icon: "layers", on: !f.up, run: () => f.up && moveFolder(f, null) }, "-"];
+  for (const x of own) {
+    entries.push({ key: x.key, label: x.label, depth: x.depth, where: whereOf(x, own), off: inside.has(x.key), on: x.key === f.up,
+      run: () => x.key !== f.up && moveFolder(f, x.key) });
+  }
+  pickMenu(anchor, entries);
+}
+// a sentence from the server about folders, in the chosen language
+MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
 function accountMenu() {
   menu($("#account"), [
@@ -988,22 +1314,26 @@ function step(d) {
 }
 
 // "Move to…": the inbox, the server's other folders, and junk
+// where mail can go: Inbox, the owner's folders nested as in the sidebar (the ones used last on top when
+// there are many), Junk, a new folder; a box on top finds one by name
 function moveMenu(anchor, ids) {
   if (!anchor || !ids.length) return;
   const from = new Set(ids.map((i) => rowOf(i)?.folder));
   const here = (key) => from.size === 1 && from.has(key);
-  const items = [];
-  for (const f of S.boot.folders) {
-    if (!(f.key === "inbox" || f.other) || here(f.key)) continue;
-    items.push({ icon: f.other ? "folder-open" : "inbox", label: f.other ? f.key : t("inbox"), run: () => moveMail(ids, f.key) });
-  }
-  if (S.boot.folders.some((f) => f.key === "junk") && !here("junk")) {
-    if (items.length) items.push("-");
-    items.push({ icon: "archive-x", label: t("junk"), run: () => moveMail(ids, "junk") });
-  }
+  const go = (key) => { noteRecent(key); moveMail(ids, key); };
+  const own = ownFolders(), hasJunk = S.boot.folders.some((f) => f.key === "junk");
+  const entry = (key) => key === "inbox" ? { key, label: t("inbox"), icon: "inbox", run: () => go(key) }
+    : { key, label: t("junk"), icon: "archive-x", run: () => go(key) };
+  const tree = [];
+  if (!here("inbox")) tree.push(entry("inbox"));
+  for (const f of own) tree.push({ key: f.key, label: f.label, depth: f.depth, where: whereOf(f, own), off: here(f.key), run: () => go(f.key) });
+  const recent = own.length > 5 ? (PREFS.folder_recent || []).filter((k) => !here(k) && (k === "inbox" || (k === "junk" && hasJunk) || own.some((f) => f.key === k)))
+    .slice(0, 3).map((k) => { const f = own.find((x) => x.key === k); return f ? { key: k, label: f.label, where: whereOf(f, own), run: () => go(k) } : entry(k); }) : [];
+  const items = [...recent, ...(recent.length ? ["-"] : []), ...tree];
+  if (hasJunk && !here("junk")) items.push(...(items.length ? ["-"] : []), entry("junk"));
   if (items.length) items.push("-");
-  items.push({ icon: "folder-plus", label: t("new_folder"), run: () => newFolder((key) => moveMail(ids, key)) });
-  menu(anchor, items);
+  items.push({ key: "@new", icon: "folder-plus", label: t("new_folder"), find: false, run: () => newFolder(go) });
+  pickMenu(anchor, items, { make: (name) => newFolder(go, null, name) });
 }
 const moveKey = (ids) => moveMenu($('#tools .icon-btn[data-key="V"]:not(:disabled)'), ids);
 

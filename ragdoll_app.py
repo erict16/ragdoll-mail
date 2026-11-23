@@ -13,6 +13,7 @@ import atexit
 import base64
 import contextlib
 import datetime as dt
+import glob
 import hashlib
 import html as htmlmod
 import imaplib
@@ -2099,6 +2100,11 @@ class Backend:
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
+        # the owner's own order of their folders, and the folders mail was moved to last (newest first)
+        for k, most in (("folder_order", 2000), ("folder_recent", 8)):
+            f = a.get(k)
+            if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
+                p[k] = f
         os.makedirs(R.CFG.home, exist_ok=True)
         with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
             json.dump(p, f)
@@ -2562,7 +2568,7 @@ class Backend:
             self.server_folders = [n for n, _ in list_folders(m)]
         return self.server_folders
 
-    # ---- the owner's own folders: make, rename, delete (only an empty one)
+    # ---- the owner's own folders: make (inside another too), rename, move, delete, and empty Trash or Junk
 
     def own_folder(self, a):
         key = a.get("key")
@@ -2590,23 +2596,60 @@ class Backend:
         if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
             fail("There is already a folder called %s." % label)
 
+    def subtree(self, key, sep):
+        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
+        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
+                      key=lambda x: -x[0].count(sep))
+
     def rename_rows(self, old, new, sep):
-        """The mail already listed follows its folder to the new name (the folders inside it too)."""
+        """The mail already listed follows its folder to the new name (the folders inside it too), and so do
+        the copies of it kept on disk, so nothing is fetched again."""
+        inside = lambda f: f == old or f.startswith(old + sep)     # noqa: E731
         with self.dblock:
             names = {r[0] for r in self.c.execute("select folder from msgs union select folder from state").fetchall()}
+            keep = []
             for f in names:
-                if f == old or f.startswith(old + sep):
+                if inside(f):
                     to = new + f[len(old):]
+                    keep += [(f, to, r[0], r[1]) for r in
+                             self.c.execute("select uidv, uid from msgs where folder=?", (f,)).fetchall()]
                     self.c.execute("delete from state where folder=?", (to,))
                     self.c.execute("update msgs set folder=? where folder=?", (to, f))
                     self.c.execute("update state set folder=? where folder=?", (to, f))
             self.c.commit()
+        for f, to, uidv, uid in keep:
+            cache_move((f, uidv, uid), (to, uidv, uid))
+
+    def drop_rows(self, folder, uids=None):
+        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
+        with self.dblock:
+            if uids is None:
+                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
+            else:
+                rows = []
+                uids = sorted(set(uids))
+                for k in range(0, len(uids), 500):
+                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
+                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
+            for r in rows:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.commit()
+        for r in rows:
+            self.demo_raw.pop((folder, r["uid"]), None)
+            cache_drop((folder, r["uidv"], r["uid"]))
+        return len(rows)
 
     def api_folder_new(self, a):
+        """{"name", "parent": an own folder to make it in (else beside the others)} -> {"key", "sep"}."""
         label = folder_label(a.get("name"))
+        parent = a.get("parent")
+        if parent is not None:
+            parent = self.own_folder({"key": parent})[0]
         if self.demo:
-            base = self.own_parent("/")
-            name = base + "/" + label if base else label
+            sep = "/"
+            base = parent or self.own_parent(sep)
+            name = base + sep + label if base else label
             self.free_name(name, label)
             self.found.append((name, ""))
         else:
@@ -2615,7 +2658,9 @@ class Backend:
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
-                base = self.own_parent(sep)
+                if parent:
+                    self.own_folder({"key": parent})
+                base = parent or self.own_parent(sep)
                 name = base + sep + label if base else label
                 self.free_name(name, label)
                 typ, data = m.create(R.q(name))
@@ -2624,85 +2669,225 @@ class Backend:
                 with contextlib.suppress(Exception):
                     m.subscribe(R.q(name))
                 self.refresh_folders(m)
-                return name
-            name = self.imap(go)
+                return name, sep
+            name, sep = self.imap(go)
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
+
+    def demo_rename(self, key, name):
+        self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
+        for (f, u) in list(self.demo_raw):
+            if f == key or f.startswith(key + "/"):
+                self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
+        self.rename_rows(key, name, "/")
+
+    def server_rename(self, m, key, name, sep):
+        """RENAME on the server; the folders inside go along, and stay subscribed under their new names."""
+        inner = [n for n, _ in self.subtree(key, sep)]
+        R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+        typ, data = m.rename(R.q(key), R.q(name))
+        if typ != "OK":
+            fail("The mail server said: %s" % said(data))
+        for n in inner:
+            with contextlib.suppress(Exception):
+                m.unsubscribe(R.q(n))
+                m.subscribe(R.q(name + n[len(key):]))
+        self.rename_rows(key, name, sep)
+        self.refresh_folders(m)
 
     def api_folder_rename(self, a):
+        """{"key", "name"} -> {"key": the new name, "sep"}. The folders inside keep their places in it."""
         key, old = self.own_folder(a)
         label = folder_label(a.get("name"))
         name = key[:len(key) - len(old)] + label
-        if name == key:
-            return {"key": key}
         if self.demo:
-            self.free_name(name, label)
-            self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
-            for (f, u) in list(self.demo_raw):
-                if f == key or f.startswith(key + "/"):
-                    self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
-            self.rename_rows(key, name, "/")
+            if name != key:
+                self.free_name(name, label)
+                self.demo_rename(key, name)
+            sep = "/"
         else:
             def go(m):
                 sep = folder_sep(m)
+                if name == key:
+                    return sep
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
                 self.own_folder(a)
                 self.free_name(name, label)
-                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                typ, data = m.rename(R.q(key), R.q(name))
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                    m.subscribe(R.q(name))
-                self.rename_rows(key, name, sep)
-                self.refresh_folders(m)
-            self.imap(go)
-            self.extra_now = True
-            self.wake.set()
+                self.server_rename(m, key, name, sep)
+                return sep
+            sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
 
-    def api_folder_delete(self, a):
-        """Only a folder with no mail and no folders inside goes; mail is never deleted this way."""
-        key, label = self.own_folder(a)
+    def move_target(self, key, a, sep):
+        """The new name of an own folder put in a.parent ("" the server's top level), or with a.top where
+        new folders go."""
+        if a.get("top") is True:
+            parent = self.own_parent(sep)
+        elif isinstance(a.get("parent"), str):
+            parent = a["parent"]
+        else:
+            fail("bad request")
+        if parent:
+            if parent.upper() == "INBOX" or parent in [R.CFG.folders.get(k) for k in ("drafts", "sent", "trash", "junk")]:
+                fail("A folder can't go inside %s." % parent)
+            if parent not in [n for n, _ in self.found]:
+                fail("The folder %s is no longer on the server." % parent)
+            if parent == key or parent.startswith(key + sep):
+                fail("A folder can't go inside itself.")
+        leaf = key.rpartition(sep)[2]
+        return (parent + sep + leaf if parent else leaf), leaf
+
+    def api_folder_move(self, a):
+        """{"key": an own folder, "parent": the folder to put it in ("" for the server's top level), or
+        "top": true for where new folders go} -> {"key": its new name, "was": the folder it was in, "sep"}.
+        It is a RENAME: the folders and the mail inside go along."""
+        key, _ = self.own_folder(a)
         if self.demo:
-            if any(n.startswith(key + "/") for n, _ in self.found):
-                fail("%s has folders inside it. Delete those first." % label)
-            if self.q("select 1 from msgs where folder=? limit 1", (key,)):
-                fail("%s still has mail in it. Move the mail out first." % label)
-            self.found = [(n, f) for n, f in self.found if n != key]
+            sep = "/"
+            name, leaf = self.move_target(key, a, sep)
+            if name != key:
+                self.free_name(name, leaf)
+                self.demo_rename(key, name)
         else:
             def go(m):
                 sep = folder_sep(m)
                 self.refresh_folders(m)
                 self.own_folder(a)
-                if any(n.startswith(key + sep) for n, _ in self.found):
+                name, leaf = self.move_target(key, a, sep)
+                if name != key:
+                    self.free_name(name, leaf)
+                    self.server_rename(m, key, name, sep)
+                return name, sep
+            name, sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
+        self.bump()
+        return {"key": name, "was": key.rpartition(sep)[0], "sep": sep}
+
+    def server_count(self, m, folder):
+        typ, data = m.status(R.q(folder), "(MESSAGES)")
+        mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
+        if typ != "OK" or not mo:
+            fail("The mail server said: %s" % said(data))
+        return int(mo.group(1))
+
+    def api_folder_delete(self, a):
+        """{"key"} deletes a folder with no mail and no folders inside. {"key", "check": true} -> {"mails", "folders"}:
+        what is in it and in the folders inside it. {"key", "trash": true}: that mail goes to Trash (never deleted
+        for good here), then the folders inside and the folder itself are deleted."""
+        key, label = self.own_folder(a)
+        check, trash = a.get("check") is True, a.get("trash") is True
+        bin_ = R.CFG.folders.get("trash")
+        if trash and not bin_:
+            fail("No %s folder is set." % "trash")
+        if self.demo:
+            names = self.subtree(key, "/")
+            mails = self.q("select count(*) n from msgs where folder in (%s)" % ",".join("?" * len(names)),
+                           [n for n, _ in names])[0]["n"]
+            if check:
+                return {"mails": mails, "folders": len(names) - 1}
+            if not trash:
+                if len(names) > 1:
                     fail("%s has folders inside it. Delete those first." % label)
-                typ, data = m.status(R.q(key), "(MESSAGES)")
-                mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
-                if typ != "OK" or not mo:
-                    fail("The mail server said: %s" % said(data))
-                if int(mo.group(1)):
+                if mails:
                     fail("%s still has mail in it. Move the mail out first." % label)
+            for n, _ in names:
+                for r in self.q("select uid, ts, seen, answered, flagged from msgs where folder=?", (n,)):
+                    raw = self.demo_raw.get((n, r["uid"]))
+                    if raw:
+                        self.demo_insert(bin_, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+            gone = {n for n, _ in names}
+            self.found = [(n, f) for n, f in self.found if n not in gone]
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                names = self.subtree(key, sep)
+                if check:
+                    return {"mails": sum(self.server_count(m, n) for n, f in names if "\\noselect" not in f.split()),
+                            "folders": len(names) - 1}
+                if not trash:
+                    if len(names) > 1:
+                        fail("%s has folders inside it. Delete those first." % label)
+                    if self.server_count(m, key):
+                        fail("%s still has mail in it. Move the mail out first." % label)
+                else:
+                    if bin_ not in self.folders(m):
+                        fail("The folder %s is no longer on the server." % bin_)
+                    for n, f in names:
+                        if "\\noselect" in f.split():
+                            continue
+                        R.select(m, n, readonly=False)
+                        uids = R.uids_of(m)
+                        if uids:
+                            R.move_uids(m, n, uids, bin_)
                 R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                typ, data = m.delete(R.q(key))
+                for n, _ in names:
+                    with contextlib.suppress(Exception):
+                        m.unsubscribe(R.q(n))
+                    typ, data = m.delete(R.q(n))
+                    if typ != "OK":
+                        self.refresh_folders(m)
+                        fail("The mail server said: %s" % said(data))
+                self.refresh_folders(m)
+                return names
+            out = self.imap(go)
+            if check:
+                return out
+            names = out
+            self.extra_now = True
+            self.wake.set()
+        for n, _ in names:
+            self.drop_rows(n)
+            self.exec("delete from state where folder=?", (n,))
+        self.bump()
+        return {"deleted": [n for n, _ in names]}
+
+    def api_folder_empty(self, a):
+        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
+        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
+        k = a.get("key")
+        if k not in ("trash", "junk"):
+            fail("can't empty %s" % k)
+        folder = R.CFG.folders.get(k)
+        if not folder:
+            fail("No %s folder is set." % k)
+        if self.demo:
+            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
+            if a.get("check") is not True:
+                self.drop_rows(folder)
+                self.bump()
+            return {"count": n}
+
+        def go(m):
+            if a.get("check") is True:
+                return None, self.server_count(m, folder)
+            R.select(m, folder, readonly=False)
+            uids = R.uids_of(m)
+            for i in range(0, len(uids), 500):
+                batch = ",".join(map(str, uids[i:i + 500]))
+                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
                 if typ != "OK":
                     fail("The mail server said: %s" % said(data))
-                self.refresh_folders(m)
-            self.imap(go)
-        with self.dblock:
-            for r in self.c.execute("select id from msgs where folder=?", (key,)).fetchall():
-                self.c.execute("delete from fts where rowid=?", (r["id"],))
-            self.c.execute("delete from msgs where folder=?", (key,))
-            self.c.execute("delete from state where folder=?", (key,))
-            self.c.commit()
-        self.bump()
-        return {}
+                if R.has_cap(m, "UIDPLUS"):
+                    m.uid("EXPUNGE", batch)
+            if uids and not R.has_cap(m, "UIDPLUS"):
+                m.expunge()
+            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+            return uids, len(uids)
+        uids, n = self.imap(go)
+        if uids is not None:
+            self.drop_rows(folder, uids)
+            self.bump()
+        return {"count": n}
 
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
@@ -3621,6 +3806,28 @@ def folder_sep(m):
 
 def said(data):
     return b" ".join(x for x in data or [] if isinstance(x, bytes)).decode("utf-8", "replace")
+
+
+def cache_files(k):
+    """The copies of one mail kept on disk (k = folder, uidvalidity, uid): whole, light, and its files."""
+    whole = R.cache_path(*k)
+    return [whole, R.light_path(*k)] + glob.glob(glob.escape(whole[:-4]) + ".part*.eml")
+
+
+def cache_move(old, new):
+    """A renamed folder's mail keeps its copies on disk: they are filed under the folder's name."""
+    for p in cache_files(old):
+        if os.path.exists(p):
+            to = R.cache_path(*new)[:-4] + p[len(R.cache_path(*old)) - 4:]
+            with contextlib.suppress(OSError):
+                os.makedirs(os.path.dirname(to), exist_ok=True)
+                os.replace(p, to)
+
+
+def cache_drop(k):
+    for p in cache_files(k):
+        with contextlib.suppress(OSError):
+            os.remove(p)
 
 
 def list_folders(m):
