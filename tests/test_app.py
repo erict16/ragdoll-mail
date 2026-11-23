@@ -300,7 +300,7 @@ class AppServer(unittest.TestCase):
     def test_own_folders_made_renamed_deleted(self):
         keys = lambda: [f["key"] for f in self.api("status")[1]["data"]["folders"] if f.get("other")]
         err = lambda name, a: self.api(name, a)[1].get("error", "")
-        self.assertEqual(self.api("folder_new", {"name": "  Tenders   2026 "})[1]["data"], {"key": "Tenders 2026"})
+        self.assertEqual(self.api("folder_new", {"name": "  Tenders   2026 "})[1]["data"]["key"], "Tenders 2026")
         self.assertIn("Tenders 2026", keys())
         self.assertIn("already a folder", err("folder_new", {"name": "tenders 2026"}))
         self.assertIn("Give the folder a name", err("folder_new", {"name": "  "}))
@@ -311,7 +311,7 @@ class AppServer(unittest.TestCase):
         i = self.rows("inbox")[-1]["id"]
         subject = self.rows("inbox")[-1]["subject"]
         self.api("move", {"ids": [i], "to": "Tenders 2026"})
-        self.assertEqual(self.api("folder_rename", {"key": "Tenders 2026", "name": "Tenders"})[1]["data"], {"key": "Tenders"})
+        self.assertEqual(self.api("folder_rename", {"key": "Tenders 2026", "name": "Tenders"})[1]["data"]["key"], "Tenders")
         self.assertNotIn("Tenders 2026", keys())
         got = self.rows("Tenders")
         self.assertEqual([r["subject"] for r in got], [subject])
@@ -324,7 +324,7 @@ class AppServer(unittest.TestCase):
         self.assertNotIn("Tenders", keys())
         self.assertIn("folders inside", err("folder_delete", {"key": "Projects"}))
         # a folder inside another keeps its place when the outer one is renamed
-        self.assertEqual(self.api("folder_rename", {"key": "Projects/Acme", "name": "Acme Ltd"})[1]["data"], {"key": "Projects/Acme Ltd"})
+        self.assertEqual(self.api("folder_rename", {"key": "Projects/Acme", "name": "Acme Ltd"})[1]["data"]["key"], "Projects/Acme Ltd")
         self.api("folder_rename", {"key": "Projects", "name": "Work"})
         self.assertIn("Work/Acme Ltd", keys())
         self.api("folder_rename", {"key": "Work", "name": "Projects"})
@@ -474,7 +474,7 @@ class OwnBackend(unittest.TestCase):
                 raise e
             b.m = self.server
             return fn(self.server)
-        b.imap = imap
+        b.imap = b.download = imap
 
     def hold_queue(self):
         self.b.flag_q, self.b.flag_thread = FakeQueue(), Busy

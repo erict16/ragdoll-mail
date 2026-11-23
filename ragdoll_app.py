@@ -13,6 +13,7 @@ import atexit
 import base64
 import contextlib
 import datetime as dt
+import glob
 import hashlib
 import html as htmlmod
 import html.parser as htmlparser
@@ -89,48 +90,130 @@ PROVIDERS = {       # domain -> (imap host, smtp host[, smtp port]); IMAP on 993
 
 
 class ApiError(Exception):
-    pass
+    def __init__(self, msg, detail=None):
+        super().__init__(msg)
+        self.detail = detail        # the server's own words: for "copy details", never the title
 
 
-def fail(msg):
-    raise ApiError(msg)
+def fail(msg, detail=None):
+    raise ApiError(msg, detail)
 
 
 LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
 UNDO_SECONDS = (0, 5, 10, 20, 30)
 FONTS = ("system", "arial", "helvetica", "georgia", "times", "verdana", "courier", "yahei", "pingfang", "simsun")
+# what each font is in CSS, as the page writes it (app.js FONTS, SAFE_FONT for "system")
+FONT_CSS = {
+    "system": "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif",
+    "arial": "Arial, Helvetica, sans-serif", "helvetica": "Helvetica, Arial, sans-serif", "georgia": "Georgia, serif",
+    "times": "'Times New Roman', Times, serif", "verdana": "Verdana, Geneva, sans-serif",
+    "courier": "'Courier New', Courier, monospace", "yahei": "'Microsoft YaHei', 微软雅黑, sans-serif",
+    "pingfang": "'PingFang SC', 苹方, sans-serif", "simsun": "SimSun, 宋体, serif"}
+BODY_FONT_RE = re.compile(r'^\s*<div data-rd-body="1" style="(font-family:[^";<>]{1,300});(font-size:\d{1,2}px)"')
 FONT_SIZES = (12, 13, 14, 16, 18)
 TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
 
-def friendly(e):
-    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+GONE_MSG = "This mail is no longer here. It may have been moved or deleted."
+CONFIG_MSG = "The settings file can't be read. Sign in again to make a new one."
+
+
+def explain(e):
+    """(a sentence a person can act on, the kind of problem, the raw text) for an exception from
+    IMAP, SMTP or ragdoll. The sentence never carries the server's raw words (#58); the kind is
+    "auth", "offline", "server" or "config" (#54)."""
+    if isinstance(e, R.SendLater) and e.cause is not None:     # a send that stopped before anything left: say why
+        return explain(e.cause)
     s = str(e.code if isinstance(e, SystemExit) else e) or e.__class__.__name__
     low = s.lower()
-    if isinstance(e, (smtplib.SMTPAuthenticationError,)) or (
-            isinstance(e, imaplib.IMAP4.error) and re.search(r"login|auth|password|credentials|invalid", low)):
-        return "Sign-in failed. Check the email address and password in Settings."
+    if isinstance(e, ApiError):
+        return s, "server", e.detail
+    if isinstance(e, smtplib.SMTPAuthenticationError) or (
+            isinstance(e, imaplib.IMAP4.error) and not isinstance(e, imaplib.IMAP4.abort)
+            and re.search(r"login|auth|password|credentials|invalid", low)):
+        return "Sign-in failed. Check the email address and password in Settings.", "auth", s
     if "is not set and no password is saved" in s:
-        return "No password saved. Add it in Settings."
+        return "No password saved. Add it in Settings.", "config", s
     if "no account configured" in s:
-        return "No account yet. Add one in Settings."
+        return "No account yet. Add one in Settings.", "config", s
+    if s.startswith("the settings file ") and "can't be read" in s:
+        return CONFIG_MSG, "config", s
+    if isinstance(e, R.IndexTooNew):
+        return s, "config", s
+    mo = re.match(r"no mail \S+ \(moved or deleted", s)
+    if mo:
+        return GONE_MSG, "server", s
+    mo = re.match(r"cannot open folder (.*?): \[", s, re.S)
+    if mo:
+        return "Can't open the folder %s on the server." % mo.group(1), "server", s
+    mo = re.match(r"the server refused the move after (\d+) mails", s)
+    if mo:
+        return "The server refused to move the mail (%s moved before it stopped)." % mo.group(1), "server", s
     if isinstance(e, socket.gaierror):
-        return "Can't find the mail server. Check the server name and the internet connection."
+        return "Can't find the mail server. Check the server name and the internet connection.", "offline", s
     if isinstance(e, (socket.timeout, TimeoutError)):
-        return "The mail server did not answer in time."
+        return "The mail server did not answer in time.", "offline", s
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return "Secure connection failed. Check the server name and port.", "server", s
     if isinstance(e, ssl.SSLError):
-        return "Secure connection failed (%s). Check the server name and port." % s
+        return "Secure connection failed. Check the server name and port.", "offline", s
     if isinstance(e, ConnectionRefusedError):
-        return "The mail server refused the connection. Check the port."
+        return "The mail server refused the connection. Check the port.", "offline", s
+    if isinstance(e, imaplib.IMAP4.abort):
+        return "The connection to the mail server dropped.", "offline", s
     if isinstance(e, OSError) and not isinstance(e, FileNotFoundError):
-        return "Can't reach the mail server (%s)." % s
-    if isinstance(e, imaplib.IMAP4.error):
-        return "The mail server said: %s" % s
-    return s
+        return "Can't reach the mail server. Check the internet connection.", "offline", s
+    if isinstance(e, (imaplib.IMAP4.error, smtplib.SMTPException)):
+        return "The mail server refused the request.", "server", s
+    return s, "server", s
+
+
+def friendly(e):
+    """A sentence a person can act on, for an exception from IMAP, SMTP or ragdoll."""
+    return explain(e)[0]
+
+
+def error_reply(e):
+    """The page's answer for a call that failed: the sentence, and the raw text as detail."""
+    msg, _, detail = explain(e)
+    if detail and detail != msg:
+        print("%s (%s)" % (msg, detail), file=sys.stderr)
+        return {"ok": False, "error": msg, "detail": detail}
+    return {"ok": False, "error": msg}
 
 
 def config_path():
     return R.move_old_setup(R.env("CONFIG"))[0]
+
+
+def cut(m):
+    """Shut a connection's socket from another thread: a read that waits on it ends at once, and
+    whoever waited gets an error and connects again (#40, #56)."""
+    sock = getattr(m, "sock", None)
+    if sock is not None:
+        with contextlib.suppress(Exception):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
+BUSY_MSG = "Waiting for another sync to finish. New mail comes in when it is done."
+
+IDLE_CHECK = 60     # seconds a kept connection may sit unused before it is asked whether it is still there
+
+
+def still_there(m, used, timeout):
+    """After sleep or a network change a kept connection is dead, and its first command would wait
+    out the whole timeout: past IDLE_CHECK a NOOP with a short wait says whether it lives (#56)."""
+    if time.time() - used <= IDLE_CHECK:
+        return True
+    try:
+        m.sock.settimeout(6)
+        m.noop()
+        return True
+    except Exception:           # noqa: BLE001 - whatever it is, the connection is not usable
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(timeout)
 
 
 def configured():
@@ -164,6 +247,8 @@ def snippet(body):
 
 
 def open_path(path, reveal=False):
+    if not reveal and R.is_program(path):
+        fail("%s is a program, so it was not opened." % os.path.basename(path))
     if sys.platform == "darwin":
         # waits only until macOS has handed the file to an app, so a file no app opens says so
         try:
@@ -365,6 +450,30 @@ def editor_html(html):
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
 
 
+SYNC_EVERY = 60          # seconds between two syncs (sync_loop's wake.wait)
+
+
+def sync_problem(sync):
+    """What the page's problem card needs: error_kind (offline / auth / config / server, or None), last_sync (when
+    mail last came in) and retry_at (the next automatic try while there is a problem), as epoch seconds or None.
+    The sync loop records the kind and the next try itself (Backend.note_error, from the exception: explain());
+    a sentence without them (an older state) is sorted by its words, and tried again a minute on."""
+    err = sync.get("error")
+    kind = None
+    if err:
+        kind = sync.get("kind") or (
+            "config" if err.startswith(("No password saved.", "No account yet.", "The settings file")) else
+            "auth" if err.startswith("Sign-in failed.") else
+            "offline" if err.startswith(("Can't find the mail server.", "The mail server did not answer",
+                                         "Can't reach the mail server", "The connection to the mail server dropped",
+                                         "The mail server refused the connection")) else "server")
+    retry = sync.get("retry_at")
+    if retry is None and "kind" not in sync and sync.get("tried"):
+        retry = sync["tried"] + SYNC_EVERY
+    return {"error_kind": kind, "last_sync": sync.get("last"),
+            "retry_at": retry if err and not sync.get("running") else None}
+
+
 def linkify(escaped):
     def one(mo):
         if mo.group(1):
@@ -376,10 +485,11 @@ def linkify(escaped):
 
 def plain_html(text):
     text = (text or "").replace("\r\n", "\n").strip("\n")
-    mo = R.QUOTE_RE.search(text)
-    if not mo:
+    at = R.quote_start(text)
+    if at < 0:
         mo = re.search(r"(?m)^(>.*\n?){2,}\Z", text)
-    main, quoted = (text[:mo.start()], text[mo.start():]) if mo and mo.start() > 0 else (text, "")
+        at = mo.start() if mo else -1
+    main, quoted = (text[:at], text[at:]) if at > 0 else (text, "")
     out = '<div class="rd-plain">%s</div>' % linkify(htmlmod.escape(main.rstrip()))
     if quoted.strip():
         out += '<div class="rd-plain rd-quote">%s</div>' % linkify(htmlmod.escape(quoted.strip()))
@@ -391,14 +501,12 @@ def has_remote(html):
                           r"\sbackground\s*=\s*[\"']?\s*https?:", html))
 
 
-def file_parts(msg):
-    """The mail's files (not the images shown in the body), in a fixed order."""
-    out = []
-    for p in R.attachments(msg, inline=True):
-        if R.is_inline(p):
-            continue
-        out.append(p)
-    return out
+def file_parts(msg, light=False):
+    """The mail's files, in a fixed order: not the pictures its text shows (R.is_inline with the body's
+    cid: links), whatever their disposition. In a light mail, a picture too big to come with it
+    (R.SHOWN_MAX) cannot show, so it is a file to open."""
+    refs = R.body_refs(msg)
+    return [p for p in R.attachments(msg, inline=True) if not R.is_inline(p, refs) or left_out(p, light)]
 
 
 def left_out(p, light):
@@ -416,7 +524,23 @@ def part_info(k, p, light=False):
         size = int(p["X-Ragdoll-Size"]) if left_out(p, light) and p["X-Ragdoll-Size"] else len(R.part_bytes(p))
     except Exception:
         size = 0
-    return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    out = {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    if R.is_program(disk_name(p)):
+        out["program"] = True       # opening it would run it: the page offers only save and show
+    return out
+
+
+def mail_name(name):
+    """A file's own name as a mail gives it: whole, only without control characters or line breaks."""
+    return R.nfc(re.sub(r"[\x00-\x1f\x7f]+", " ", name or "")).strip()[:1000] or "attachment"
+
+
+def disk_name(p):
+    """The name a mail's file gets on disk."""
+    name = R.safe_name(R.fname(p) or "attachment")
+    if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
+        name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the system knows which app
+    return name
 
 
 
@@ -435,85 +559,759 @@ def list_unsub(msg):
     return {"url": url, "mailto": mailto, "one_click": one}
 
 
-# Outlook names Windows time zones, not IANA ones
-WIN_TZ = {"China Standard Time": "Asia/Shanghai", "Singapore Standard Time": "Asia/Singapore",
-          "Taipei Standard Time": "Asia/Taipei", "Tokyo Standard Time": "Asia/Tokyo", "Korea Standard Time": "Asia/Seoul",
-          "India Standard Time": "Asia/Kolkata", "SE Asia Standard Time": "Asia/Bangkok",
-          "W. Australia Standard Time": "Australia/Perth", "AUS Eastern Standard Time": "Australia/Sydney",
-          "GMT Standard Time": "Europe/London", "W. Europe Standard Time": "Europe/Berlin",
-          "Romance Standard Time": "Europe/Paris", "Central Europe Standard Time": "Europe/Budapest",
-          "Russian Standard Time": "Europe/Moscow", "Arabian Standard Time": "Asia/Dubai",
-          "Eastern Standard Time": "America/New_York", "Central Standard Time": "America/Chicago",
-          "Mountain Standard Time": "America/Denver", "Pacific Standard Time": "America/Los_Angeles",
-          "UTC": "UTC", "Coordinated Universal Time": "UTC"}
+# ---- meeting invitations (iCalendar, RFC 5545; replies per iTIP, RFC 5546)
+
+# Outlook names Windows time zones, not IANA ones: the whole Windows -> IANA table (CLDR windowsZones, "001")
+WIN_TZ = {
+    "Dateline Standard Time": "Etc/GMT+12", "UTC-11": "Etc/GMT+11", "Aleutian Standard Time": "America/Adak",
+    "Hawaiian Standard Time": "Pacific/Honolulu", "Marquesas Standard Time": "Pacific/Marquesas",
+    "Alaskan Standard Time": "America/Anchorage", "UTC-09": "Etc/GMT+9",
+    "Pacific Standard Time (Mexico)": "America/Tijuana", "UTC-08": "Etc/GMT+8",
+    "Pacific Standard Time": "America/Los_Angeles", "US Mountain Standard Time": "America/Phoenix",
+    "Mountain Standard Time (Mexico)": "America/Mazatlan", "Mountain Standard Time": "America/Denver",
+    "Yukon Standard Time": "America/Whitehorse", "Central America Standard Time": "America/Guatemala",
+    "Central Standard Time": "America/Chicago", "Easter Island Standard Time": "Pacific/Easter",
+    "Central Standard Time (Mexico)": "America/Mexico_City", "Mexico Standard Time": "America/Mexico_City",
+    "Mexico Standard Time 2": "America/Chihuahua", "Canada Central Standard Time": "America/Regina",
+    "SA Pacific Standard Time": "America/Bogota", "Eastern Standard Time (Mexico)": "America/Cancun",
+    "Eastern Standard Time": "America/New_York", "Haiti Standard Time": "America/Port-au-Prince",
+    "Cuba Standard Time": "America/Havana", "US Eastern Standard Time": "America/Indiana/Indianapolis",
+    "Turks And Caicos Standard Time": "America/Grand_Turk", "Paraguay Standard Time": "America/Asuncion",
+    "Atlantic Standard Time": "America/Halifax", "Venezuela Standard Time": "America/Caracas",
+    "Central Brazilian Standard Time": "America/Cuiaba", "SA Western Standard Time": "America/La_Paz",
+    "Pacific SA Standard Time": "America/Santiago", "Newfoundland Standard Time": "America/St_Johns",
+    "Tocantins Standard Time": "America/Araguaina", "E. South America Standard Time": "America/Sao_Paulo",
+    "SA Eastern Standard Time": "America/Cayenne", "Argentina Standard Time": "America/Argentina/Buenos_Aires",
+    "Greenland Standard Time": "America/Godthab", "Montevideo Standard Time": "America/Montevideo",
+    "Magallanes Standard Time": "America/Punta_Arenas", "Saint Pierre Standard Time": "America/Miquelon",
+    "Bahia Standard Time": "America/Bahia", "UTC-02": "Etc/GMT+2", "Mid-Atlantic Standard Time": "Etc/GMT+2",
+    "Azores Standard Time": "Atlantic/Azores", "Cape Verde Standard Time": "Atlantic/Cape_Verde",
+    "UTC": "Etc/UTC", "Coordinated Universal Time": "Etc/UTC", "GMT Standard Time": "Europe/London",
+    "Greenwich Standard Time": "Atlantic/Reykjavik", "Sao Tome Standard Time": "Africa/Sao_Tome",
+    "Morocco Standard Time": "Africa/Casablanca", "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest", "Romance Standard Time": "Europe/Paris",
+    "Central European Standard Time": "Europe/Warsaw", "W. Central Africa Standard Time": "Africa/Lagos",
+    "Jordan Standard Time": "Asia/Amman", "GTB Standard Time": "Europe/Bucharest",
+    "Middle East Standard Time": "Asia/Beirut", "Egypt Standard Time": "Africa/Cairo",
+    "E. Europe Standard Time": "Europe/Chisinau", "Syria Standard Time": "Asia/Damascus",
+    "West Bank Standard Time": "Asia/Hebron", "South Africa Standard Time": "Africa/Johannesburg",
+    "FLE Standard Time": "Europe/Kiev", "Israel Standard Time": "Asia/Jerusalem",
+    "Jerusalem Standard Time": "Asia/Jerusalem", "South Sudan Standard Time": "Africa/Juba",
+    "Kaliningrad Standard Time": "Europe/Kaliningrad", "Sudan Standard Time": "Africa/Khartoum",
+    "Libya Standard Time": "Africa/Tripoli", "Namibia Standard Time": "Africa/Windhoek",
+    "Arabic Standard Time": "Asia/Baghdad", "Turkey Standard Time": "Europe/Istanbul",
+    "Arab Standard Time": "Asia/Riyadh", "Belarus Standard Time": "Europe/Minsk",
+    "Russian Standard Time": "Europe/Moscow", "Russia TZ 2 Standard Time": "Europe/Moscow",
+    "E. Africa Standard Time": "Africa/Nairobi", "Volgograd Standard Time": "Europe/Volgograd",
+    "Iran Standard Time": "Asia/Tehran", "Arabian Standard Time": "Asia/Dubai",
+    "Astrakhan Standard Time": "Europe/Astrakhan", "Azerbaijan Standard Time": "Asia/Baku",
+    "Russia Time Zone 3": "Europe/Samara", "Mauritius Standard Time": "Indian/Mauritius",
+    "Saratov Standard Time": "Europe/Saratov", "Georgian Standard Time": "Asia/Tbilisi",
+    "Caucasus Standard Time": "Asia/Yerevan", "Afghanistan Standard Time": "Asia/Kabul",
+    "West Asia Standard Time": "Asia/Tashkent", "Ekaterinburg Standard Time": "Asia/Yekaterinburg",
+    "Pakistan Standard Time": "Asia/Karachi", "Qyzylorda Standard Time": "Asia/Qyzylorda",
+    "India Standard Time": "Asia/Kolkata", "Sri Lanka Standard Time": "Asia/Colombo",
+    "Nepal Standard Time": "Asia/Kathmandu", "Central Asia Standard Time": "Asia/Bishkek",
+    "Bangladesh Standard Time": "Asia/Dhaka", "Omsk Standard Time": "Asia/Omsk",
+    "Myanmar Standard Time": "Asia/Yangon", "SE Asia Standard Time": "Asia/Bangkok",
+    "Altai Standard Time": "Asia/Barnaul", "W. Mongolia Standard Time": "Asia/Hovd",
+    "North Asia Standard Time": "Asia/Krasnoyarsk", "N. Central Asia Standard Time": "Asia/Novosibirsk",
+    "Tomsk Standard Time": "Asia/Tomsk", "China Standard Time": "Asia/Shanghai",
+    "North Asia East Standard Time": "Asia/Irkutsk", "Singapore Standard Time": "Asia/Singapore",
+    "Malay Peninsula Standard Time": "Asia/Singapore", "W. Australia Standard Time": "Australia/Perth",
+    "Taipei Standard Time": "Asia/Taipei", "Ulaanbaatar Standard Time": "Asia/Ulaanbaatar",
+    "Aus Central W. Standard Time": "Australia/Eucla", "Transbaikal Standard Time": "Asia/Chita",
+    "Tokyo Standard Time": "Asia/Tokyo", "North Korea Standard Time": "Asia/Pyongyang",
+    "Korea Standard Time": "Asia/Seoul", "Yakutsk Standard Time": "Asia/Yakutsk",
+    "Cen. Australia Standard Time": "Australia/Adelaide", "AUS Central Standard Time": "Australia/Darwin",
+    "E. Australia Standard Time": "Australia/Brisbane", "AUS Eastern Standard Time": "Australia/Sydney",
+    "West Pacific Standard Time": "Pacific/Port_Moresby", "Tasmania Standard Time": "Australia/Hobart",
+    "Vladivostok Standard Time": "Asia/Vladivostok", "Lord Howe Standard Time": "Australia/Lord_Howe",
+    "Bougainville Standard Time": "Pacific/Bougainville", "Russia Time Zone 10": "Asia/Srednekolymsk",
+    "Magadan Standard Time": "Asia/Magadan", "Norfolk Standard Time": "Pacific/Norfolk",
+    "Sakhalin Standard Time": "Asia/Sakhalin", "Central Pacific Standard Time": "Pacific/Guadalcanal",
+    "Russia Time Zone 11": "Asia/Kamchatka", "Kamchatka Standard Time": "Asia/Kamchatka",
+    "New Zealand Standard Time": "Pacific/Auckland", "UTC+12": "Etc/GMT-12", "Fiji Standard Time": "Pacific/Fiji",
+    "Chatham Islands Standard Time": "Pacific/Chatham", "UTC+13": "Etc/GMT-13",
+    "Tonga Standard Time": "Pacific/Tongatapu", "Samoa Standard Time": "Pacific/Apia",
+    "Line Islands Standard Time": "Pacific/Kiritimati"}
+
+# cities in Outlook's display names ("(UTC+08:00) Beijing, Chongqing, Hong Kong, Urumqi") that are no IANA city
+WIN_CITY = {"beijing": "Asia/Shanghai", "osaka": "Asia/Tokyo", "sapporo": "Asia/Tokyo", "new delhi": "Asia/Kolkata",
+            "mumbai": "Asia/Kolkata", "chennai": "Asia/Kolkata", "hanoi": "Asia/Bangkok", "abu dhabi": "Asia/Dubai",
+            "canberra": "Australia/Sydney", "wellington": "Pacific/Auckland", "brasilia": "America/Sao_Paulo",
+            "eastern time (us & canada)": "America/New_York", "central time (us & canada)": "America/Chicago",
+            "mountain time (us & canada)": "America/Denver", "pacific time (us & canada)": "America/Los_Angeles",
+            "edinburgh": "Europe/London", "bern": "Europe/Zurich", "st. petersburg": "Europe/Moscow",
+            "coordinated universal time": "Etc/UTC", "islamabad": "Asia/Karachi", "astana": "Asia/Bishkek",
+            "ekaterinburg": "Asia/Yekaterinburg", "kuwait": "Asia/Riyadh", "riyadh": "Asia/Riyadh"}
+
+ICS_LINE = re.compile(r'([A-Za-z0-9-]+)((?:;[A-Za-z0-9-]+=(?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)*):(.*)')
+ICS_PARAM = re.compile(r';([A-Za-z0-9-]+)=((?:"[^"]*"|[^";:,]*)(?:,(?:"[^"]*"|[^";:,]*))*)')
 
 
-def ics_time(value, params):
-    """An iCalendar date or date-time -> (unix time, all day)."""
-    v = value.strip()
-    if re.fullmatch(r"\d{8}", v):           # a whole day: midnight where the reader is
-        d = dt.datetime.strptime(v, "%Y%m%d")
-        return int(d.timestamp()), True
-    m = re.fullmatch(r"(\d{8}T\d{4})(\d{2})?(Z?)", v)
+def ics_parse(text):
+    """iCalendar text -> its components as a tree: {"name", "props": [(NAME, {PARAM: value}, value, line)], "subs"}.
+    Quoted parameter values may hold ":" and ";" (Outlook: TZID="(UTC+01:00) Amsterdam, Berlin, ...")."""
+    root = {"name": "", "props": [], "subs": []}
+    stack = [root]
+    for line in re.sub(r"\r?\n[ \t]", "", text or "").splitlines():
+        if not line.strip():
+            continue
+        m = ICS_LINE.match(line) or re.match(r"([A-Za-z0-9-]+)((?:;[^:]*)?):(.*)", line)
+        if not m:
+            continue
+        name, value = m.group(1).upper(), m.group(3)
+        if name == "BEGIN":
+            c = {"name": value.strip().upper(), "props": [], "subs": []}
+            stack[-1]["subs"].append(c)
+            stack.append(c)
+            continue
+        if name == "END":
+            if len(stack) > 1 and stack[-1]["name"] == value.strip().upper():
+                stack.pop()
+            continue
+        params = {k.upper(): v.strip('"') for k, v in ICS_PARAM.findall(m.group(2))}
+        stack[-1]["props"].append((name, params, value, line))
+    return root
+
+
+def ics_find(comp, name):
+    """Every component called name, at any depth."""
+    for s in comp["subs"]:
+        if s["name"] == name:
+            yield s
+        yield from ics_find(s, name)
+
+
+def ics_prop(comp, name, default=None):
+    """The first (value, params) of a property, or default."""
+    for n, p, v, _ in comp["props"]:
+        if n == name:
+            return v, p
+    return default
+
+
+def ics_text(v):
+    """An iCalendar TEXT value, unescaped."""
+    return re.sub(r"\\([,;:\\])", r"\1", re.sub(r"\\[nN]", "\n", v or "")).strip()
+
+
+def ics_offset(v):
+    """"+0100" / "-0530" / "+013000" -> seconds east of UTC, or None."""
+    m = re.fullmatch(r"([+-])(\d\d)(\d\d)(\d\d)?", (v or "").strip())
     if not m:
-        return None, False
-    d = dt.datetime.strptime(m.group(1) + (m.group(2) or "00"), "%Y%m%dT%H%M%S")
-    if m.group(3):
-        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False
-    tz = None
-    name = (params.get("TZID") or "").strip('"')
-    if name:
+        return None
+    s = int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4) or 0)
+    return -s if m.group(1) == "-" else s
+
+
+def ics_local(v):
+    """"20261124T100000" -> a naive datetime, or None."""
+    m = re.fullmatch(r"(\d{8})T(\d{4})(\d{2})?Z?", (v or "").strip())
+    if not m:
+        return None
+    try:
+        return dt.datetime.strptime(m.group(1) + m.group(2) + (m.group(3) or "00"), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def rule_of(v):
+    """An RRULE value -> {KEY: value}."""
+    return {k.upper(): x for k, _, x in (p.partition("=") for p in (v or "").split(";")) if k}
+
+
+def nth_weekday(year, month, wd, n):
+    """The day of month of the nth (1..5, or -1 = last) weekday wd (0 = Monday), or None."""
+    days = [d for d in range(1, 32) if _valid(year, month, d) and dt.date(year, month, d).weekday() == wd]
+    try:
+        return days[n - 1] if n > 0 else days[n]
+    except IndexError:
+        return None
+
+
+def _valid(y, m, d):
+    try:
+        dt.date(y, m, d)
+        return True
+    except ValueError:
+        return False
+
+
+WEEKDAYS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+
+
+class VTimezone(dt.tzinfo):
+    """A time zone as the invitation itself describes it (VTIMEZONE: STANDARD and DAYLIGHT, each with its
+    offsets and a yearly rule or fixed dates). Used when the TZID is no name the system knows."""
+
+    def __init__(self, comp):
+        self.parts = []
+        for s in comp["subs"]:
+            if s["name"] not in ("STANDARD", "DAYLIGHT"):
+                continue
+            start = ics_local((ics_prop(s, "DTSTART") or ("", {}))[0]) or dt.datetime(1601, 1, 1)
+            to = ics_offset((ics_prop(s, "TZOFFSETTO") or ("", {}))[0])
+            frm = ics_offset((ics_prop(s, "TZOFFSETFROM") or ("", {}))[0])
+            if to is None:
+                continue
+            rdates = []
+            for n, _p, v, _l in s["props"]:
+                if n == "RDATE":
+                    rdates += [d for d in (ics_local(x) for x in v.split(",")) if d]
+            rr = ics_prop(s, "RRULE")
+            self.parts.append({"start": start, "to": to, "from": frm if frm is not None else to,
+                               "rule": rule_of(rr[0]) if rr else None, "rdates": rdates, "dst": s["name"] == "DAYLIGHT"})
+        if not self.parts:
+            raise ValueError("no offsets")
+
+    def onsets(self, part, year):
+        """Local times in this year at which part begins."""
+        out = [d for d in [part["start"]] + part["rdates"] if d.year == year]
+        r = part["rule"]
+        if r and r.get("FREQ", "").upper() == "YEARLY":
+            until = ics_local(r.get("UNTIL", "")) or (dt.datetime.strptime(r["UNTIL"][:8], "%Y%m%d")
+                                                      if re.fullmatch(r"\d{8}", r.get("UNTIL", "")) else None)
+            months = [int(x) for x in r.get("BYMONTH", str(part["start"].month)).split(",") if x.strip().isdigit()]
+            for mo in months:
+                days = []
+                for b in [x for x in r.get("BYDAY", "").split(",") if x]:
+                    m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b.strip().upper())
+                    if m:
+                        days.append(nth_weekday(year, mo, WEEKDAYS.index(m.group(2)), int(m.group(1) or 1)))
+                for b in [x for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()]:
+                    d = int(b)
+                    days.append(d if d > 0 else None)
+                if not days:
+                    days = [part["start"].day]
+                for d in days:
+                    if d and _valid(year, mo, d):
+                        when = dt.datetime(year, mo, d, part["start"].hour, part["start"].minute, part["start"].second)
+                        if when >= part["start"] and (until is None or when <= until):
+                            out.append(when)
+        return out
+
+    def offset_at(self, d):
+        """Seconds east of UTC at the wall-clock time d (naive)."""
+        best = None
+        for part in self.parts:
+            for y in (d.year - 1, d.year):
+                for on in self.onsets(part, y):
+                    if on <= d and (best is None or on > best[0]):
+                        best = (on, part)
+        if best is None:                    # before every onset: the earliest part's "from"
+            first = min(self.parts, key=lambda p: p["start"])
+            return first["from"], False
+        return best[1]["to"], best[1]["dst"]
+
+    def utcoffset(self, d):
+        return dt.timedelta(seconds=self.offset_at(d.replace(tzinfo=None))[0])
+
+    def dst(self, d):
+        return dt.timedelta(0)
+
+    def tzname(self, d):
+        return None
+
+
+def zone_city(iana):
+    return iana.rsplit("/", 1)[-1].replace("_", " ") if iana and not iana.startswith("Etc/") else ""
+
+
+_CITIES = None
+
+
+def win_display_zone(name, year):
+    """Outlook's display name "(UTC+01:00) Amsterdam, Berlin, ..." -> (IANA name or None, fixed offset or None).
+    A city is taken only when its standard offset is the one in the name."""
+    global _CITIES
+    m = re.match(r"\(\s*(?:UTC|GMT)\s*(?:([+-])(\d{1,2}):?(\d\d))?\s*\)\s*(.*)", name)
+    if not m:
+        return None, None
+    off = (int(m.group(2)) * 3600 + int(m.group(3)) * 60) * (-1 if m.group(1) == "-" else 1) if m.group(2) else 0
+    try:
+        from zoneinfo import ZoneInfo, available_timezones
+        if _CITIES is None:
+            _CITIES = {zone_city(z).lower(): z for z in sorted(available_timezones()) if "/" in z and zone_city(z)}
+        rest = m.group(4).strip()
+        names = [rest.lower()] + [c.strip().lower() for c in rest.split(",")]
+        for c in names:
+            z = WIN_CITY.get(c) or _CITIES.get(c)
+            if not z:
+                continue
+            tz = ZoneInfo(z)
+            std = min(int(dt.datetime(year, mo, 1, tzinfo=tz).utcoffset().total_seconds()) for mo in (1, 7))
+            if std == off:
+                return z, off
+    except Exception:       # noqa: BLE001 - no time zone database: the offset in the name still holds
+        pass
+    return None, off
+
+
+def ics_zone(name, zones, when=None):
+    """A TZID -> (tzinfo or None, IANA name or None). Tries an IANA name, a Windows name, the invitation's own
+    VTIMEZONE, then the offset in an Outlook display name. None: nobody can tell."""
+    name = (name or "").strip().strip('"').strip()
+    if not name:
+        return None, None
+    year = (when or dt.datetime.now()).year
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        ZoneInfo = None
+    if ZoneInfo:
+        tail = re.search(r"([A-Za-z_]+/[A-Za-z_+-]+(?:/[A-Za-z_+-]+)?)$", name)     # "/mozilla.org/.../Europe/Berlin"
+        for z in (WIN_TZ.get(name), name if "/" in name or name.upper() in ("UTC", "GMT") else None,
+                  tail.group(1) if tail and tail.group(1) != name else None):
+            if z:
+                try:
+                    return ZoneInfo(z), z
+                except Exception:   # noqa: BLE001 - not a name this system knows
+                    pass
+        z, _ = win_display_zone(name, year)
+        if z:
+            try:
+                tz = ZoneInfo(z)
+                vt = zones.get(name)
+                if vt is None or when is None or tz.utcoffset(when) == vt.utcoffset(when):
+                    return tz, z
+            except Exception:       # noqa: BLE001
+                pass
+    if zones.get(name) is not None:
+        return zones[name], None
+    _, off = win_display_zone(name, year)
+    if off is not None:
+        return dt.timezone(dt.timedelta(seconds=off)), None
+    return None, None
+
+
+def ics_zones(cal):
+    """{TZID: VTimezone} for the invitation's VTIMEZONE blocks that can be read."""
+    out = {}
+    for c in ics_find(cal, "VTIMEZONE"):
+        tzid = (ics_prop(c, "TZID") or ("", {}))[0].strip().strip('"')
+        if tzid:
+            with contextlib.suppress(Exception):
+                out[tzid] = VTimezone(c)
+    return out
+
+
+def ics_time(value, params, zones=None):
+    """An iCalendar date or date-time -> (unix time, all day). A whole day is midnight where the reader is;
+    a time with an unknown zone is read as the reader's (ics_when says it is unknown)."""
+    return ics_when(value, params, zones or {})[:2]
+
+
+def ics_when(value, params, zones):
+    """-> (unix time, all day, {"iana", "offset", "label"} of the event's zone, or None when floating,
+    or {"unknown": True}), (None, False, None) when it can't be read."""
+    v = (value or "").strip()
+    if re.fullmatch(r"\d{8}", v):
         try:
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(WIN_TZ.get(name, name))
-        except Exception:
-            tz = None
-    return int(d.replace(tzinfo=tz).timestamp() if tz else d.timestamp()), False
+            d = dt.datetime.strptime(v, "%Y%m%d")
+        except ValueError:
+            return None, False, None
+        return int(d.timestamp()), True, None
+    d = ics_local(v)
+    if d is None:
+        return None, False, None
+    if v.upper().endswith("Z"):
+        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False, None     # UTC says nothing of the zone
+    name = (params.get("TZID") or "").strip().strip('"')
+    if not name:
+        return int(d.timestamp()), False, None          # floating: the same wall-clock time everywhere
+    tz, iana = ics_zone(name, zones, d)
+    if tz is None:
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    try:
+        aware = d.replace(tzinfo=tz)
+        off = int(aware.utcoffset().total_seconds())
+        ts = int(aware.timestamp())
+    except Exception:       # noqa: BLE001 - a zone that can't answer for this date
+        return int(d.timestamp()), False, {"unknown": True, "label": name}
+    mm = re.match(r"\([^)]*\)\s*([^,]*)", name)
+    label = (mm.group(1).strip() if mm and mm.group(1).strip() else "") or zone_city(iana) or name
+    return ts, False, {"iana": iana, "offset": off, "label": label}
+
+
+def ics_duration(v):
+    """"PT1H30M" / "P1D" / "-PT15M" -> seconds, or None."""
+    m = re.fullmatch(r"([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", (v or "").strip())
+    if not m or not any(m.groups()[1:]):
+        return None
+    w, d, h, mi, s = (int(x or 0) for x in m.groups()[1:])
+    n = (((w * 7 + d) * 24 + h) * 60 + mi) * 60 + s
+    return -n if m.group(1) == "-" else n
+
+
+def ics_charset_text(p):
+    """The calendar part as text: its declared charset, then UTF-8, then GB18030 (as for mail text)."""
+    data = R.part_bytes(p)
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
+    for cs, err in ((p.get_content_charset() or "", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
+        if not cs:
+            continue
+        try:
+            return data.decode(cs, err)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", "replace")
 
 
 def ics_part(msg):
-    """The mail's calendar part (an invitation), or None."""
+    """The mail's calendar part (an invitation), or None. The text/calendar part wins over an .ics file."""
+    found = None
     for p in msg.walk():
-        if p.is_multipart():
+        if p.is_multipart() or p.get_content_type() == "message/rfc822":
             continue
-        if p.get_content_type() == "text/calendar" or (R.fname(p) or "").lower().endswith(".ics"):
+        if p.get_content_type() == "text/calendar":
             return p
+        if found is None and (R.fname(p) or "").lower().endswith(".ics"):
+            found = p
+    return found
+
+
+# links that join an online meeting, the service named by the first group
+JOIN_LINKS = (
+    ("teams", r"https://teams\.(?:microsoft|live)\.com/(?:l/meetup-join|meet|dl/launcher)/[^\s<>\"'\\]+"),
+    ("zoom", r"https://(?:[\w-]+\.)?zoom(?:gov)?\.(?:us|com|com\.cn)/(?:j|my|w|s|wc)/[^\s<>\"'\\]+"),
+    ("meet", r"https://meet\.google\.com/[a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4}[^\s<>\"'\\]*"),
+    ("tencent", r"https://(?:meeting\.tencent\.com|voovmeeting\.com|work\.weixin\.qq\.com/meeting)/[^\s<>\"'\\]+"),
+    ("webex", r"https://[\w-]+\.webex\.com(?:\.cn)?/[^\s<>\"'\\]+"),
+)
+
+
+def join_link(ev):
+    """The online meeting's link: {"url", "kind"}, or None. Looks where the services put it."""
+    texts = []
+    for n in ("X-MICROSOFT-SKYPETEAMSMEETINGURL", "X-MICROSOFT-ONLINEMEETINGCONFLINK", "X-GOOGLE-CONFERENCE",
+              "URL", "LOCATION", "DESCRIPTION", "X-ALT-DESC"):
+        for pn, _p, v, _l in ev["props"]:
+            if pn == n:
+                texts.append(htmlmod.unescape(ics_text(v)))
+    for n, _p, v, _l in ev["props"]:
+        if n.startswith("X-") and "http" in v:
+            texts.append(ics_text(v))
+    for t in texts:
+        for kind, pat in JOIN_LINKS:
+            m = re.search(pat, t, re.I)
+            if m:
+                return {"url": m.group(0).rstrip(".,;)>]"), "kind": kind}
     return None
 
 
+def ics_person(value, params):
+    addr = re.sub(r"(?i)^mailto:", "", (value or "").strip()).strip().lower()
+    return {"name": (params.get("CN") or "").strip().strip('"'), "addr": addr if "@" in addr else ""}
+
+
+def rrule_info(v, tz, start_local):
+    """An RRULE -> what the page needs to say it ({"freq", "interval", "byday", "bymonthday", "count", "until"})."""
+    r = rule_of(v)
+    freq = r.get("FREQ", "").upper()
+    if freq not in ("DAILY", "WEEKLY", "MONTHLY", "YEARLY"):
+        return None
+    out = {"freq": freq, "interval": max(1, int(r["INTERVAL"])) if r.get("INTERVAL", "").isdigit() else 1,
+           "byday": [x.strip().upper() for x in r.get("BYDAY", "").split(",") if x.strip()],
+           "bymonthday": [int(x) for x in r.get("BYMONTHDAY", "").split(",") if x.strip().lstrip("-").isdigit()],
+           "count": int(r["COUNT"]) if r.get("COUNT", "").isdigit() else None, "until": None}
+    u = r.get("UNTIL", "").strip()
+    if re.fullmatch(r"\d{8}", u):
+        out["until_day"] = u
+    elif ics_local(u):
+        d = ics_local(u)
+        out["until"] = int((d.replace(tzinfo=dt.timezone.utc) if u.upper().endswith("Z") else
+                            d.replace(tzinfo=tz) if tz else d).timestamp())
+    return out
+
+
+def rrule_next(start, dur, tz, rr, now, exdates=()):
+    """The first occurrence (as a naive local start) of a repeating event that has not ended by now, or None when
+    the series is over. Covers DAILY, WEEKLY (BYDAY), MONTHLY (BYMONTHDAY or nth BYDAY) and YEARLY."""
+    def ts(d):
+        return (d.replace(tzinfo=tz) if tz else d).timestamp()
+    until = rr.get("until")
+    until_day = rr.get("until_day")
+    count = rr.get("count")
+    n = 0
+    k = 0
+    iv = rr["interval"]
+    while k < 5000:
+        if rr["freq"] == "DAILY":
+            cands = [start + dt.timedelta(days=k * iv)]
+        elif rr["freq"] == "WEEKLY":
+            week0 = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * iv)
+            days = [WEEKDAYS.index(b[-2:]) for b in rr["byday"] if b[-2:] in WEEKDAYS] or [start.weekday()]
+            cands = [week0 + dt.timedelta(days=d) for d in sorted(set(days))]
+        elif rr["freq"] == "MONTHLY":
+            mi = start.month - 1 + k * iv
+            y, mo = start.year + mi // 12, mi % 12 + 1
+            days = []
+            for b in rr["byday"]:
+                m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b)
+                if m and m.group(1):
+                    days.append(nth_weekday(y, mo, WEEKDAYS.index(m.group(2)), int(m.group(1))))
+            days += [d for d in rr["bymonthday"] if d > 0] or ([] if days else [start.day])
+            cands = [start.replace(year=y, month=mo, day=d) for d in sorted(x for x in days if x) if _valid(y, mo, d)]
+        else:
+            y = start.year + k * iv
+            cands = [start.replace(year=y)] if _valid(y, start.month, start.day) else []
+        for c in cands:
+            if c < start:
+                continue
+            if until is not None and ts(c) > until or until_day and c.strftime("%Y%m%d") > until_day:
+                return None
+            n += 1
+            if count and n > count:
+                return None
+            if c in exdates:
+                continue
+            if ts(c) + dur > now:
+                return c
+        k += 1
+    return None
+
+
+def pick_event(cal):
+    """The VEVENT the mail is about: the series, unless an occurrence with RECURRENCE-ID was changed later."""
+    evs = list(ics_find(cal, "VEVENT"))
+    if not evs:
+        return None
+    def seq(e):
+        v = (ics_prop(e, "SEQUENCE") or ("0", {}))[0].strip()
+        return int(v) if v.isdigit() else 0
+    master = next((e for e in evs if not ics_prop(e, "RECURRENCE-ID")), None)
+    others = [e for e in evs if e is not master]
+    if master is None:
+        return others[0]
+    newer = [e for e in others if seq(e) > seq(master)]
+    return max(newer, key=seq) if newer else master
+
+
 def invite_of(msg):
-    """What a meeting invitation says: {"title", "start", "end", "all_day", "where", "organizer", "method"}, or None."""
+    """What a meeting invitation (or a reply to one, a cancellation, a new time proposed) says, or None.
+    {"title", "start", "end", "all_day", "where", "organizer", "method", "cancelled", "uid", ...}."""
     p = ics_part(msg)
     if p is None:
         return None
     try:
-        text = R.part_bytes(p).decode("utf-8", "replace")
-    except Exception:
+        cal = ics_parse(ics_charset_text(p))
+    except Exception:       # noqa: BLE001 - a broken calendar part is no invitation
         return None
-    text = re.sub(r"\r?\n[ \t]", "", text)               # unfold
-    method = (re.search(r"(?mi)^METHOD:(.*)$", text) or [None, ""])[1].strip().upper()
-    ev = re.search(r"(?s)BEGIN:VEVENT(.*?)END:VEVENT", text)
-    if not ev:
+    vcal = next(ics_find(cal, "VCALENDAR"), cal)
+    method = ((ics_prop(vcal, "METHOD") or ics_prop(cal, "METHOD") or ("", {}))[0].strip().upper()
+              or (p.get_param("method") or "").upper())
+    ev = pick_event(cal)
+    if ev is None:
         return None
-    props = {}
-    for line in ev.group(1).splitlines():
-        m = re.match(r"([A-Za-z-]+)((?:;[^:]*)?):(.*)", line)
-        if not m or m.group(1).upper() in props:
-            continue
-        params = dict(re.findall(r';([A-Za-z-]+)=("[^"]*"|[^;]*)', m.group(2)))
-        props[m.group(1).upper()] = (m.group(3), {k.upper(): v for k, v in params.items()})
-    unesc = lambda v: re.sub(r"\\([,;\\])", r"\1", v.replace("\\n", "\n").replace("\\N", "\n")).strip()
-    start, all_day = ics_time(*props["DTSTART"]) if "DTSTART" in props else (None, False)
+    zones = ics_zones(cal)
+    g = lambda n: ics_prop(ev, n) or ("", {})
+    if not ics_prop(ev, "DTSTART"):
+        return None
+    start, all_day, zone = ics_when(*g("DTSTART"), zones)
     if start is None:
         return None
-    end = ics_time(*props["DTEND"])[0] if "DTEND" in props else None
-    org = props.get("ORGANIZER")
-    organizer = ""
-    if org:
-        organizer = org[1].get("CN", "").strip('"') or re.sub(r"(?i)^mailto:", "", org[0])
-    return {"title": unesc(props.get("SUMMARY", ("", {}))[0]), "start": start, "end": end, "all_day": all_day,
-            "where": unesc(props.get("LOCATION", ("", {}))[0]), "organizer": organizer,
-            "method": method, "cancelled": method == "CANCEL" or props.get("STATUS", ("", {}))[0].upper() == "CANCELLED"}
+    end = None
+    if ics_prop(ev, "DTEND"):
+        end = ics_when(*g("DTEND"), zones)[0]
+    elif ics_prop(ev, "DURATION"):
+        d = ics_duration(g("DURATION")[0])
+        end = start + d if d is not None else None
+    if all_day and (end is None or end <= start):
+        end = start + 86400
+    org = ics_prop(ev, "ORGANIZER")
+    organizer = ics_person(*org) if org else {"name": "", "addr": ""}
+    people = []
+    for n, pa, v, _l in ev["props"]:
+        if n == "ATTENDEE":
+            x = ics_person(v, pa)
+            if not x["addr"] and not x["name"]:
+                continue
+            x["status"] = (pa.get("PARTSTAT") or "NEEDS-ACTION").upper()
+            x["role"] = (pa.get("ROLE") or "REQ-PARTICIPANT").upper()
+            x["kind"] = (pa.get("CUTYPE") or "INDIVIDUAL").upper()
+            people.append(x)
+    seq_v = g("SEQUENCE")[0].strip()
+    rid = ics_prop(ev, "RECURRENCE-ID")
+    out = {"title": ics_text(g("SUMMARY")[0]), "start": start, "end": end, "all_day": all_day,
+           "where": ics_text(g("LOCATION")[0]), "organizer": organizer["name"] or organizer["addr"],
+           "organizer_addr": organizer["addr"], "method": method or "PUBLISH",
+           "cancelled": method == "CANCEL" or g("STATUS")[0].strip().upper() == "CANCELLED",
+           "uid": g("UID")[0].strip(), "seq": int(seq_v) if seq_v.isdigit() else 0,
+           "occurrence": bool(rid), "rid": rid[0].strip() if rid else "",
+           "zone": zone, "attendees": [x for x in people if x["kind"] not in ("ROOM", "RESOURCE")],
+           "about": ics_about(ics_text(g("DESCRIPTION")[0]))[:2000], "join": join_link(ev), "repeat": None,
+           "first": [start, end]}
+    if all_day:
+        s = g("DTSTART")[0].strip()[:8]
+        out["day0"] = s
+        e = (g("DTEND")[0].strip()[:8] if re.fullmatch(r"\d{8}", g("DTEND")[0].strip()) else None)
+        last = (dt.datetime.strptime(e, "%Y%m%d") - dt.timedelta(days=1)) if e and e > s else dt.datetime.strptime(s, "%Y%m%d")
+        out["day1"] = last.strftime("%Y%m%d")
+    rr = ics_prop(ev, "RRULE")
+    if rr and not rid:
+        tz = None
+        if not all_day and g("DTSTART")[1].get("TZID"):
+            tz = ics_zone(g("DTSTART")[1]["TZID"], zones, ics_local(g("DTSTART")[0]))[0]
+        local = ics_local(g("DTSTART")[0]) or dt.datetime.strptime(g("DTSTART")[0].strip()[:8], "%Y%m%d")
+        if g("DTSTART")[0].strip().upper().endswith("Z"):
+            tz = dt.timezone.utc
+        info = rrule_info(rr[0], tz, local)
+        if info:
+            out["repeat"] = info
+            exd = set()
+            for n, _pa, v, _l in ev["props"]:
+                if n == "EXDATE":
+                    exd |= {d for d in (ics_local(x) for x in v.split(",")) if d}
+            dur = (end - start) if end else 0
+            nxt = rrule_next(local, dur, tz, info, time.time(), exd)
+            if nxt is not None and nxt != local:
+                ns = int((nxt.replace(tzinfo=tz) if tz else nxt).timestamp())
+                out["start"], out["end"] = ns, (ns + dur if end else None)
+                if all_day:
+                    out["day0"] = nxt.strftime("%Y%m%d")
+                    out["day1"] = (nxt + dt.timedelta(seconds=max(0, dur - 86400))).strftime("%Y%m%d")
+                if zone and zone.get("iana") is not None and tz is not None:
+                    out["zone"] = dict(zone, offset=int(nxt.replace(tzinfo=tz).utcoffset().total_seconds()))
+            out["repeat"]["over"] = nxt is None
+    if method in ("REPLY", "COUNTER"):
+        # the attendee who answers (or proposes a new time) is the one ATTENDEE of the reply
+        x = next((a for a in people if a["status"] != "NEEDS-ACTION"), people[0] if people else None)
+        out["reply"] = {"name": (x or {}).get("name", ""), "addr": (x or {}).get("addr", ""),
+                        "status": (x or {}).get("status", ""), "comment": ics_text(g("COMMENT")[0])}
+        if not out["reply"]["addr"]:
+            f = R.addrs(R.hdr(msg, "From"))
+            if f:
+                out["reply"]["name"], out["reply"]["addr"] = f[0]
+    return out
+
+
+def ics_about(text):
+    """The first part of a DESCRIPTION worth reading: without the join boilerplate that Teams puts after a
+    line of underscores, and without lines that are only rules."""
+    text = re.split(r"(?m)^\s*_{10,}\s*$", text or "", maxsplit=1)[0]
+    lines = [x.rstrip() for x in text.splitlines() if not re.fullmatch(r"\s*[-_=*~.]{4,}\s*", x)]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def invite_for(v, me):
+    """What the invitation asks of the person reading it: are they the organizer, are they asked, how they answered
+    in the invitation itself. Changes v."""
+    me = (me or "").lower()
+    v["mine"] = bool(me) and v.get("organizer_addr") == me
+    x = next((a for a in v.get("attendees") or [] if me and a["addr"] == me), None)
+    v["me_status"] = x["status"] if x else None
+    v["can_answer"] = bool(x) and not v["mine"] and v.get("method") == "REQUEST" and not v.get("cancelled")
+    return v
+
+
+RSVP_SUBJECT = {"ACCEPTED": "Accepted: %s", "TENTATIVE": "Tentative: %s", "DECLINED": "Declined: %s"}
+
+
+def ics_fold(line):
+    """One content line folded at 75 octets (RFC 5545 3.1), never inside a UTF-8 character."""
+    out, cur = [], b""
+    for ch in line:
+        e = ch.encode()
+        if len(cur) + len(e) > (75 if not out else 74):
+            out.append(cur)
+            cur = b""
+        cur += e
+    out.append(cur)
+    return "\r\n ".join(x.decode() for x in out)
+
+
+def ics_escape(s):
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\n") \
+        .replace("\r", "\n").replace("\n", "\\n")
+
+
+def ics_param_value(v):
+    v = (v or "").replace('"', "'")
+    return '"%s"' % v if re.search(r"[;:,]", v) else v
+
+
+def ics_lines(comp):
+    """A parsed component back as content lines (each line as it came, unfolded)."""
+    out = ["BEGIN:" + comp["name"]]
+    out += [line for _n, _p, _v, line in comp["props"]]
+    for s in comp["subs"]:
+        out += ics_lines(s)
+    return out + ["END:" + comp["name"]]
+
+
+def rsvp_ics(cal, ev, partstat, me, name, note="", now=None):
+    """The iTIP REPLY (RFC 5546 3.2.3) to the event ev of the invitation cal: the same UID, SEQUENCE and
+    RECURRENCE-ID, the organizer, and one ATTENDEE, the person answering, with PARTSTAT. DTSTAMP is when the
+    reply is made, so a later answer replaces an earlier one."""
+    used = {p.get("TZID", "").strip() for n, p, _v, _l in ev["props"]
+            if n in ("DTSTART", "DTEND", "RECURRENCE-ID") and p.get("TZID")}
+    lines = ["BEGIN:VCALENDAR", "PRODID:-//Ragdoll Mail//EN", "VERSION:2.0", "METHOD:REPLY"]
+    for z in ics_find(cal, "VTIMEZONE"):
+        if (ics_prop(z, "TZID") or ("", {}))[0].strip().strip('"') in used:
+            lines += ics_lines(z)
+    lines.append("BEGIN:VEVENT")
+    for want in ("UID", "RECURRENCE-ID", "SEQUENCE", "DTSTART", "DTEND", "DURATION", "SUMMARY", "LOCATION", "ORGANIZER"):
+        lines += [line for n, _p, _v, line in ev["props"] if n == want][:1]
+    if not ics_prop(ev, "SEQUENCE"):
+        lines.append("SEQUENCE:0")
+    lines.append("DTSTAMP:" + dt.datetime.fromtimestamp(now or time.time(), dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    me = (me or "").lower()
+    params = next((dict(p) for n, p, v, _l in ev["props"]
+                   if n == "ATTENDEE" and ics_person(v, p)["addr"] == me), {})
+    for k in ("PARTSTAT", "RSVP"):
+        params.pop(k, None)
+    if name and not params.get("CN"):
+        params["CN"] = name
+    lines.append("ATTENDEE" + "".join(";%s=%s" % (k, ics_param_value(v)) for k, v in params.items())
+                 + ";PARTSTAT=%s:mailto:%s" % (partstat, me))
+    if note:
+        lines.append("COMMENT:" + ics_escape(note))
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
+
+
+def build_rsvp(orig, partstat, me, name="", note="", subject=None):
+    """The answer to the invitation mail orig, to its organizer: text/plain (the note) beside
+    text/calendar; method=REPLY. ValueError when the mail holds no invitation to answer."""
+    partstat = (partstat or "").upper()
+    if partstat not in RSVP_SUBJECT:
+        raise ValueError("unknown answer")
+    p = ics_part(orig)
+    if p is None:
+        raise ValueError("no invitation")
+    cal = ics_parse(ics_charset_text(p))
+    ev = pick_event(cal)
+    if ev is None or not ics_prop(ev, "UID"):
+        raise ValueError("no invitation")
+    org = ics_prop(ev, "ORGANIZER")
+    to = ics_person(*org)["addr"] if org else ""
+    to_name = ics_person(*org)["name"] if org else ""
+    if not to:
+        f = R.addrs(R.hdr(orig, "From"))
+        to, to_name = (f[0][1], f[0][0]) if f else ("", "")
+    if not to:
+        raise ValueError("the invitation has no organizer")
+    title = ics_text((ics_prop(ev, "SUMMARY") or ("", {}))[0])
+    form = subject if subject and "%s" in subject else RSVP_SUBJECT[partstat]
+    note = re.sub(r"[\r\n]+", " ", (note or "").strip())[:500]
+    msg = EmailMessage()
+    msg["From"] = formataddr((R.one_line(name), me)) if name else me
+    msg["To"] = formataddr((R.one_line(to_name), to)) if to_name else to
+    msg["Subject"] = R.one_line(form.replace("%s", title, 1)).strip()
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=(me.split("@")[-1] or None))
+    mid = R.hdr(orig, "Message-ID").strip()
+    if mid:
+        msg["In-Reply-To"] = mid
+        msg["References"] = ((R.hdr(orig, "References").strip() + " ") if R.hdr(orig, "References").strip() else "") + mid
+    msg.set_content((note or msg["Subject"]) + "\n")
+    msg.add_alternative(rsvp_ics(cal, ev, partstat, me, name, note), subtype="calendar",
+                        params={"method": "REPLY"})
+    return msg
+
 
 def data_images(html):
     """Pasted data: images in the editor -> (html with cid: links, [(cid, bytes, maintype, subtype)])."""
@@ -671,6 +1469,10 @@ DEMO = [
      "Product training next Wednesday",
      "Hi all,\n\nThe product training is next Wednesday at 2 pm in the meeting room on the third floor. "
      "Please be on time.\n\nEmily", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("Daniel Ruiz", "d.ruiz@contoso.com"), [ME], [],
+     "Weekly supplier sync",
+     "Hi Alex,\n\nA short weekly call to go through open orders and shipments. It's on Teams.\n\nDaniel",
+     [("meeting.ics", "teams")], True, None, None),
     ("inbox", 60 * 200, ("Marco Rossi", "marco.rossi@example.it"), [ME], [],
      "Spare parts list",
      "Ciao Alex,\n\nAttached is the list of spare parts we need for next year.\n\nMarco",
@@ -764,6 +1566,9 @@ DEMO_ZH = [
     ("inbox", 60 * 140, ("王芳", "wang.fang@example.cn"), [ME_ZH], [],
      "下周培训安排",
      "各位好，\n\n下周三下午两点在三楼会议室进行产品培训，请准时参加。\n\n王芳", [("invite.ics", "ics")], True, None, None),
+    ("inbox", 60 * 170, ("周敏", "zhou.min@fabrikam.cn"), [ME_ZH], [],
+     "项目周会（腾讯会议）",
+     "各位好，\n\n这周的项目周会改在线上开，请用腾讯会议加入。\n\n周敏", [("meeting.ics", "tencent")], True, None, None),
     ("inbox", 60 * 200, ("陈刚", "chen.gang@example.com"), [ME_ZH], [],
      "备件清单",
      "林工，\n\n附件是明年需要的备件清单。\n\n陈刚", [("备件清单_2027.pdf", "pdf")], True, None, None),
@@ -825,7 +1630,13 @@ def demo_lang(want=None):
     return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
 
 
-def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
+def demo_attendees(people):
+    """ATTENDEE lines for [(name, addr, PARTSTAT)]."""
+    return "".join('ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=%s;RSVP=TRUE;CN="%s":mailto:%s\r\n' % (st, n, a)
+                   for n, a, st in people)
+
+
+def demo_ics(name, ts, event=DEMO_SETS["en"]["event"], to=()):
     """An invitation for a Wednesday at 14:00 local time still to come, as the mail promises."""
     d = dt.datetime.now() + dt.timedelta(days=1)
     d = (d + dt.timedelta(days=(2 - d.weekday()) % 7 or 7)).replace(hour=14, minute=0, second=0, microsecond=0)
@@ -833,9 +1644,71 @@ def demo_ics(name, ts, event=DEMO_SETS["en"]["event"]):
     f = "%Y%m%dT%H%M%SZ"
     title, place, who, addr = event
     return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ragdoll Mail demo//EN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n"
-            "UID:training@demo\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
-            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr))
+            "UID:training@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n"
+            "LOCATION:%s\r\nORGANIZER;CN=%s:mailto:%s\r\n%sEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (u.strftime(f), u.strftime(f), (u + dt.timedelta(hours=1)).strftime(f), title, place, who, addr,
+               demo_attendees([(n, a, "NEEDS-ACTION") for n, a in to])))
+
+
+DEMO_BERLIN = "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"
+
+
+def demo_ics_teams(to):
+    """A weekly Teams meeting from Outlook in Berlin: a Windows zone name with its VTIMEZONE, a repeat rule,
+    the Teams link, people who answered."""
+    from zoneinfo import ZoneInfo
+    berlin = ZoneInfo("Europe/Berlin")
+    d = dt.datetime.now(berlin) + dt.timedelta(days=1)
+    d = (d + dt.timedelta(days=(1 - d.weekday()) % 7)).replace(hour=10, minute=0, second=0, microsecond=0)
+    until = (d + dt.timedelta(days=120)).astimezone(dt.timezone.utc)
+    url = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_RGVtbyBtZWV0aW5n%40thread.v2/0?context=demo"
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("Jane Doe", "jane.doe@acme-industrial.com", "ACCEPTED"), ("Tom Becker", "tom.becker@acme-industrial.com", "TENTATIVE"),
+        ("Priya Natarajan", "priya@fabrikam.com", "DECLINED"), ("Sara Kim", "sara.kim@northwind.io", "NEEDS-ACTION"),
+        ("Marco Rossi", "marco.rossi@example.it", "ACCEPTED")]
+    about = ("A short weekly call to go through open orders and shipments.\\n\\n" + "_" * 80 +
+             "\\nMicrosoft Teams meeting\\nJoin on your computer\\, mobile app or room device\\n" + url +
+             "\\nMeeting ID: 371 552 908 114\\nPasscode: 7xQ2pD\\n" + "_" * 80)
+    z = '"%s"' % DEMO_BERLIN
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN\r\nVERSION:2.0\r\n"
+            "METHOD:REQUEST\r\nBEGIN:VTIMEZONE\r\nTZID:%s\r\nBEGIN:STANDARD\r\nDTSTART:16010101T030000\r\n"
+            "TZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\n"
+            "BEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\n"
+            "RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\n"
+            "ORGANIZER;CN=Daniel Ruiz:mailto:d.ruiz@contoso.com\r\n%s"
+            "DESCRIPTION;LANGUAGE=en-US:%s\r\nRRULE:FREQ=WEEKLY;UNTIL=%s;INTERVAL=1;BYDAY=TU;WKST=SU\r\n"
+            "UID:040000008200E00074C5B7101A82E00800000000DEMO0001\r\nSUMMARY;LANGUAGE=en-US:Weekly supplier sync\r\n"
+            "DTSTART;TZID=%s:%s\r\nDTEND;TZID=%s:%s\r\nCLASS:PUBLIC\r\nPRIORITY:5\r\nDTSTAMP:%s\r\n"
+            "TRANSP:OPAQUE\r\nSTATUS:CONFIRMED\r\nSEQUENCE:0\r\nLOCATION;LANGUAGE=en-US:Microsoft Teams Meeting\r\n"
+            "X-MICROSOFT-SKYPETEAMSMEETINGURL:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (DEMO_BERLIN, demo_attendees(people), about, until.strftime("%Y%m%dT%H%M%SZ"), z,
+               d.strftime("%Y%m%dT%H%M%S"), z, (d + dt.timedelta(minutes=30)).strftime("%Y%m%dT%H%M%S"),
+               dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), url))
+
+
+def demo_ics_tencent(to):
+    """A Tencent Meeting invitation in Chinese, in Shanghai time with its VTIMEZONE."""
+    from zoneinfo import ZoneInfo
+    d = (dt.datetime.now(ZoneInfo("Asia/Shanghai")) + dt.timedelta(days=2)).replace(hour=15, minute=0, second=0,
+                                                                                   microsecond=0)
+    people = [(n, a, "NEEDS-ACTION") for n, a in to] + [
+        ("张伟", "zhang.wei@acme-industrial.cn", "ACCEPTED"), ("赵磊", "zhao.lei@acme-industrial.cn", "NEEDS-ACTION"),
+        ("李明", "li.ming@example.cn", "ACCEPTED"), ("孙佳", "sun.jia@northwind.cn", "TENTATIVE")]
+    url = "https://meeting.tencent.com/dm/Rd9Kx2mDemo"
+    about = ("周敏 邀请您参加腾讯会议\\n会议主题：项目周会\\n\\n点击链接入会，或添加至会议列表：\\n" + url +
+             "\\n\\n#腾讯会议：482-615-730")
+    return ("BEGIN:VCALENDAR\r\nPRODID:-//Tencent//WeMeet//CN\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n"
+            "BEGIN:VTIMEZONE\r\nTZID:Asia/Shanghai\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\n"
+            "TZOFFSETFROM:+0800\r\nTZOFFSETTO:+0800\r\nTZNAME:CST\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n"
+            "BEGIN:VEVENT\r\nUID:wemeet-482615730@demo\r\nSEQUENCE:0\r\nDTSTAMP:%s\r\n"
+            "DTSTART;TZID=Asia/Shanghai:%s\r\nDTEND;TZID=Asia/Shanghai:%s\r\nSUMMARY:项目周会\r\n"
+            "LOCATION:腾讯会议\r\nDESCRIPTION:%s\r\nORGANIZER;CN=周敏:mailto:zhou.min@fabrikam.cn\r\n%s"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+            % (dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), d.strftime("%Y%m%dT%H%M%S"),
+               (d + dt.timedelta(hours=1)).strftime("%Y%m%dT%H%M%S"), about, demo_attendees(people)))
+
+
+DEMO_ICS = {"teams": demo_ics_teams, "tencent": demo_ics_tencent}
 
 
 def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, inline=False,
@@ -865,7 +1738,10 @@ def demo_message(folder, ts, frm, to, cc, subject, body, atts, mid, irt, refs, i
         msg.get_body(("html",)).add_related(demo_photo(), "image", "png", cid="<photo1@demo>")
     for name, kind in atts:
         if kind == "ics":
-            msg.add_attachment(demo_ics(name, ts, event), subtype="calendar", filename=name, params={"method": "REQUEST"})
+            msg.add_attachment(demo_ics(name, ts, event, to), subtype="calendar", filename=name,
+                               params={"method": "REQUEST"})
+        elif kind in DEMO_ICS:
+            msg.add_attachment(DEMO_ICS[kind](to), subtype="calendar", filename=name, params={"method": "REQUEST"})
         elif kind == "pdf":
             msg.add_attachment(demo_pdf(name, demo_size(name, 90, 460)), "application", "pdf", filename=name)
         else:
@@ -881,11 +1757,34 @@ class Backend:
         self.demo = demo
         self.demo_set = DEMO_SETS[demo_lang if demo_lang in DEMO_SETS else "en"]
         self.lock = threading.RLock()           # the action IMAP connection
+        self.dlock = threading.RLock()          # the download connection: big mails and files (#55)
+        self.dm = None
+        self.dm_used = 0
         self.dblock = threading.RLock()         # the request db connection
         self.m = None
         self.m_used = 0
         self.rev = 1
-        self.sync = {"running": False, "error": None, "last": None}
+        # error: the sentence; kind / detail / retry_at: what status_fields() hands the page (#54)
+        self.sync = {"running": False, "error": None, "last": None, "kind": None, "detail": None, "retry_at": None}
+        self.fails = 0                          # sync passes in a row that failed: the retry waits longer
+        self.gen = 0                            # goes up when the account or server changes (#59)
+        self.pass_gen = 0                       # the generation the sync pass under way began with
+        self.redetect = False                   # the folder names are to be found again on the next pass
+        self.lock_busy = None                   # since when another process has held the headers lock
+        self.sync_m = None                      # the sync's own connection
+        self.pre_m = None                       # the head start's own connection
+        self.pass_at = None                     # when the sync pass under way began (time.monotonic)
+        self.pass_cut = False                   # the watchdog has cut that pass's connection
+        self.sync_used = self.pre_used = 0      # when those connections last answered
+        self.clock = None                       # (time.time(), time.monotonic()) at the watchdog's last look
+        self.woke_at = None                     # when the computer last woke from sleep
+        self.body_m = None                      # the body download's own connection (#57)
+        self.body_used = 0
+        self.body_thread = None
+        self.body_wake = threading.Event()
+        self.bodies = None                      # {"done": n, "left": n} while mail text is downloading
+        self.active_at = 0                      # when the user last did something that is not a poll
+        self.watch_thread = None
         self.wake = threading.Event()
         self.stopping = threading.Event()
         self.contacts = (0, {})
@@ -894,6 +1793,7 @@ class Backend:
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
         self.extra_now = False
+        self.folder_status = {}                 # folder -> its STATUS when it was last synced (#39)
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
         self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
@@ -903,9 +1803,13 @@ class Backend:
         self.focus_at = 0                       # when the page last said its window is in front
         self.web_notice_at = 0                  # when a page that shows the browser's own notices last asked
         self.made = set()                       # files the app wrote (only these may be revealed)
+        self.url = None                         # the page's address, token and all (main sets it)
+        self.orig_mids = {}                     # id -> Message-ID of each mail a reply or forward was opened on
         self.demo_raw = {}
         self.thread = None
         self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
+        self.inflight = set()                   # drafts going out right now (by the schedule or Send)
+        self.editing = {}                       # draft id -> when a compose last opened or saved it
         self.data_v = None                      # the index as last seen: changes when the sync or the CLI writes
         self.counts = None                      # (what they were counted from, the folder counts)
         self.pre = collections.deque()          # mail to bring in before it is opened: (folder, uidv, uid, size)
@@ -919,6 +1823,7 @@ class Backend:
         self.flag_thread = None
         self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
         self.marklock = threading.Lock()
+        self.preflock = threading.Lock()        # app.json: read, change, write as one step (#61)
         self.badge_n = None                     # the unread count the Dock icon shows
         self.holding = {}                        # id -> a mail in its undo pause after Send (hold_send)
         self.sendlock = threading.Lock()
@@ -933,7 +1838,10 @@ class Backend:
             with contextlib.suppress(Exception):
                 r = self.q("select v from meta where k='folders'")
                 self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
-            self.prune_cache()
+            with contextlib.suppress(Exception):     # the last good sync, by the app or the ragdoll command
+                r = self.q("select v from meta where k='last_sync'")
+                self.sync["last"] = int(r[0]["v"]) if r else None
+            threading.Thread(target=self.tidy_loop, daemon=True).start()
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -948,17 +1856,22 @@ class Backend:
             return 404, {"ok": False, "error": "unknown call %s" % name}
         if args is not None and not isinstance(args, dict):
             return 400, {"ok": False, "error": "bad request"}
+        if name not in self.PASSIVE:
+            self.active_at = time.time()        # the body download makes way (#57)
         try:
             return 200, {"ok": True, "data": fn(args or {})}
         except ApiError as e:
-            return 200, {"ok": False, "error": str(e)}
-        except SystemExit as e:
-            return 200, {"ok": False, "error": friendly(e)}
-        except (imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
-            return 200, {"ok": False, "error": friendly(e)}
+            return 200, ({"ok": False, "error": str(e), "detail": e.detail} if e.detail
+                         else {"ok": False, "error": str(e)})
+        except (SystemExit, imaplib.IMAP4.error, smtplib.SMTPException, OSError, LookupError) as e:
+            return 200, error_reply(e)
         except Exception as e:      # noqa: BLE001 - a bug must not take the page down with it
             traceback.print_exc(file=sys.stderr)
             return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
+
+    # calls the page makes by itself, not because the user did something
+    PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme",
+                         "settings", "senders", "contacts"))
 
     def q(self, sql, params=()):
         with self.dblock:
@@ -1003,6 +1916,34 @@ class Backend:
                 m.sock.settimeout(3)            # a dead connection would keep LOGOUT waiting its whole timeout
             with contextlib.suppress(Exception):
                 m.logout()
+
+    DOWNLOAD_IDLE = 120     # seconds the download connection stays open with nothing to fetch
+
+    def download(self, fn):
+        """Run fn(m) on a second kept connection, for a big mail or file. That may take minutes, and
+        opening other mail, marks and moves go on meanwhile on the first one (#55)."""
+        if self.demo:
+            fail("not in the demo")
+        with self.dlock:
+            for attempt in (0, 1):
+                try:
+                    if self.dm is not None and not still_there(self.dm, self.dm_used, 90):
+                        self.drop_download()
+                    if self.dm is None:
+                        self.dm = R.imap()
+                        with contextlib.suppress(Exception):
+                            self.dm.sock.settimeout(90)
+                    r = fn(self.dm)
+                    self.dm_used = time.time()
+                    return r
+                except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout, BrokenPipeError):
+                    self.drop_download()
+                    if attempt:
+                        raise
+
+    def drop_download(self):
+        m, self.dm = self.dm, None
+        R.quit_imap(m, quick=True)
 
     def bump(self):
         self.rev += 1
@@ -1054,11 +1995,29 @@ class Backend:
                 time.sleep(0.05)
             raw = R.cache_get(path)
             if not raw:
-                raw = self.imap(lambda m: R.fetch_raw(m, folder, uid))
+                # a big one may take minutes: on its own connection, so other mail opens meanwhile
+                go = self.download if (r["size"] or 0) > R.LIGHT_MIN else self.imap
+                raw = self.gone_check(r, lambda: go(lambda m: R.fetch_raw(m, folder, uid)))
                 R.cache_put(path, raw)
         finally:
             self.fg -= 1
         return raw
+
+    def gone_check(self, r, fetch):
+        """fetch(); a mail the server no longer has (deleted on the phone a moment ago) leaves the
+        list at once, and the page is told so in plain words (#58)."""
+        try:
+            return fetch()
+        except SystemExit as e:
+            if not str(e.code).startswith("no mail "):
+                raise
+            with self.dblock:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+                self.c.commit()
+            self.bump()
+            self.wake.set()
+            fail(GONE_MSG, str(e.code))
 
     def view_raw(self, i):
         return self.view(i)[0]
@@ -1114,16 +2073,14 @@ class Backend:
         self.pre_wake.set()
 
     def prefetch_loop(self):
-        m = None
         while not self.stopping.is_set():
             try:
                 k = self.pre.popleft()
             except IndexError:
                 self.pre_wake.clear()
-                if not self.pre_wake.wait(90) and m is not None:    # idle: let the connection go
-                    with contextlib.suppress(Exception):
-                        m.logout()
-                    m = None
+                if not self.pre_wake.wait(90) and self.pre_m is not None:    # idle: let the connection go
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
                 continue
             k, size = k[:3], k[3]
             path = R.cache_path(*k)
@@ -1132,45 +2089,153 @@ class Backend:
             while self.fg > 0 and not self.stopping.is_set():   # a mail is being opened: stay out of its way
                 time.sleep(0.1)
             try:
-                if m is None:
-                    m = R.imap()
+                if self.pre_m is not None and not still_there(self.pre_m, self.pre_used, 60):
+                    m, self.pre_m = self.pre_m, None
+                    R.quit_imap(m, quick=True)
+                if self.pre_m is None:
+                    self.pre_m = R.imap()
                     with contextlib.suppress(Exception):
-                        m.sock.settimeout(60)
+                        self.pre_m.sock.settimeout(60)
+                m = self.pre_m
                 self.pre_now = k
                 raw = R.fetch_light(m, k[0], k[2]) if size > R.LIGHT_MIN else None
                 if raw:
                     R.cache_put(R.light_path(*k), raw)
                 elif size <= self.PRE_MAX:
                     R.cache_put(path, R.fetch_raw(m, k[0], k[2]))
+                self.pre_used = time.time()
             except SystemExit:
                 pass                            # moved or deleted since
             except Exception:                   # noqa: BLE001 - only a head start; opening the mail fetches it
                 self.pre_now = None
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                m, self.pre_m = self.pre_m, None
+                R.quit_imap(m, quick=True)
                 self.pre.clear()
                 time.sleep(5)
             finally:
                 self.pre_now = None
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.pre_m = self.pre_m, None
+        R.quit_imap(m, quick=True)
 
-    def prune_cache(self, days=90):
-        root = os.path.join(R.CFG.home, "cache")
-        cut = time.time() - days * 86400
+    # ---- files the app keeps on disk: the mail cache, opened files, files kept for a compose.
+    # One job tidies them when the app starts and once a day after (an app left open for weeks too).
+
+    CACHE_DAYS, CACHE_MAX = 90, 2 * 1024 ** 3       # mail not opened for 90 days goes; 2 GB at most
+    OPEN_DAYS, OPEN_MAX = 30, 1024 ** 3             # opened attachments: 30 days, 1 GB
+    UPLOAD_DAYS = 2                                 # a compose's files nothing points at any more
+    STATE_DAYS = 1                                  # a compose state whose draft is gone
+
+    def tidy_loop(self):
+        while not self.stopping.is_set():
+            try:
+                self.tidy()
+            except Exception:       # noqa: BLE001 - tidying must never take the app down
+                traceback.print_exc(file=sys.stderr)
+            self.stopping.wait(86400)
+
+    def tidy(self, now=None):
+        now = time.time() if now is None else now
+        self.prune_cache(self.CACHE_DAYS, now=now, max_bytes=self.CACHE_MAX)
+        self.prune_open(now)
+        self.prune_uploads(now)
+
+    @staticmethod
+    def used_at(path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            return 0
+        return max(st.st_atime, st.st_mtime)
+
+    @staticmethod
+    def files_in(root):
+        """[(path, last used, bytes)] of every file under root."""
+        out = []
         for d, _, files in os.walk(root):
-            gone = set()
             for n in files:
                 p = os.path.join(d, n)
                 with contextlib.suppress(OSError):
-                    if os.path.getatime(p) < cut:
-                        os.remove(p)
-                        gone.add(n)
-            for n in files:         # a file fetched by itself (R.part_path) goes when its light mail goes
-                if ".part" in n and n not in gone and not os.path.exists(
-                        os.path.join(d, n.split(".part")[0] + ".light.eml")):
+                    st = os.stat(p)
+                    out.append((p, max(st.st_atime, st.st_mtime), st.st_size))
+        return out
+
+    def prune_open(self, now, days=None, max_bytes=None, keep_new=86400):
+        """Opened attachments (open/<hash>/name) not used for a while go, the oldest first past the size
+        limit; one used in the last day stays (it may be open in Word right now)."""
+        root = os.path.join(R.CFG.home, "open")
+        days = self.OPEN_DAYS if days is None else days
+        max_bytes = self.OPEN_MAX if max_bytes is None else max_bytes
+        dirs = []
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            files = self.files_in(d)
+            dirs.append((max([t for _, t, _ in files] or [self.used_at(d)]), sum(s for _, _, s in files), d))
+        dirs.sort()
+        total = sum(s for _, s, _ in dirs)
+        for used, size, d in dirs:
+            if used < now - days * 86400 or (total > max_bytes and used < now - keep_new):
+                shutil.rmtree(d, ignore_errors=True)
+                if not os.path.exists(d):
+                    total -= size
+                    self.made = {p for p in self.made if not p.startswith(d + os.sep)}
+
+    def prune_uploads(self, now):
+        """Files kept for a compose (uploads/<token>/name): kept while a saved compose points at them;
+        the others go after UPLOAD_DAYS. A compose state goes when its draft is no longer in Drafts."""
+        states = os.path.join(R.CFG.home, "compose")
+        drafts = {hashlib.sha1((r["msgid"] or "").strip().encode()).hexdigest() for r in
+                  self.q("select msgid from msgs where folder=?", (R.CFG.folders["drafts"],))}
+        keep = set()
+        for n in os.listdir(states) if os.path.isdir(states) else []:
+            p = os.path.join(states, n)
+            if n.endswith(".json") and n[:-5] not in drafts and self.used_at(p) < now - self.STATE_DAYS * 86400:
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                continue
+            with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+                with open(p, encoding="utf-8") as f:
+                    for x in json.load(f).get("atts") or []:
+                        keep.add(os.path.dirname(os.path.realpath(x["path"])))
+        root = os.path.join(R.CFG.home, "uploads")
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            if os.path.realpath(d) in keep:
+                continue
+            if max([t for _, t, _ in self.files_in(d)] or [self.used_at(d)]) < now - self.UPLOAD_DAYS * 86400:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def downloaded_bytes(self):
+        return sum(s for k in ("cache", "open") for _, _, s in self.files_in(os.path.join(R.CFG.home, k)))
+
+    def api_storage(self, a):
+        """How much downloaded mail is kept on this computer (the mail cache and opened files)."""
+        return {"bytes": self.downloaded_bytes()}
+
+    def api_clear_storage(self, a):
+        """Remove the downloaded mail; it is fetched again when it is opened. An opened file changed or
+        used in the last day stays: it may still be open in another app."""
+        self.prune_cache(0, now=time.time() + 1, max_bytes=0)
+        self.prune_open(time.time(), days=1, max_bytes=0)
+        with self.schedlock:
+            self.built.clear()
+        return {"bytes": self.downloaded_bytes()}
+
+    def prune_cache(self, days=90, now=None, max_bytes=None):
+        """Mail not opened for `days` goes from the cache, and past max_bytes the least recently used
+        first. A file fetched by itself (R.part_path) goes when its light mail goes."""
+        root = os.path.join(R.CFG.home, "cache")
+        now = time.time() if now is None else now
+        cut = now - days * 86400
+        files = sorted(self.files_in(root), key=lambda x: x[1])
+        total = sum(s for _, _, s in files)
+        for p, used, size in files:
+            if used < cut or (max_bytes is not None and total > max_bytes):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                    total -= size
+        for d, _, names in os.walk(root):
+            for n in names:
+                if ".part" in n and not os.path.exists(os.path.join(d, n.split(".part")[0] + ".light.eml")):
                     with contextlib.suppress(OSError):
                         os.remove(os.path.join(d, n))
 
@@ -1201,6 +2266,8 @@ class Backend:
             self.found = found
             c.execute("insert or replace into meta values('folders', ?)", (json.dumps(found),))
             c.commit()
+            self.bump()
+        if drop_gone_folders(c, self.server_folders):
             self.bump()
 
     def note_new(self, c):
@@ -1238,74 +2305,308 @@ class Backend:
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self.sync_loop, daemon=True)
             self.thread.start()
+        if self.watch_thread is None or not self.watch_thread.is_alive():
+            self.watch_thread = threading.Thread(target=self.watch_loop, daemon=True)
+            self.watch_thread.start()
         self.wake.set()
 
+    # ---- the watchdog: a pass that hangs is cut off, so the sync never waits for good (#40)
+
+    SYNC_STUCK = 300    # seconds a sync pass may take before its connection is cut and made again
+    WATCH_EVERY = 2     # seconds between the watchdog's looks
+    WAKE_GAP = 20       # seconds the clock may jump between two looks before it counts as a wake from sleep
+
+    def watch_loop(self):
+        while not self.stopping.wait(self.WATCH_EVERY):
+            try:
+                self.watch_tick()
+            except Exception:           # noqa: BLE001 - the watchdog must live on
+                traceback.print_exc(file=sys.stderr)
+
+    def watch_tick(self, mono=None, wall=None):
+        mono = time.monotonic() if mono is None else mono
+        wall = time.time() if wall is None else wall
+        last, self.clock = self.clock, (wall, mono)
+        if last is not None:
+            # macOS stops the monotonic clock in sleep, so the wall clock runs ahead of it; Windows
+            # keeps both running, so only the long gap between two looks shows it
+            dw, dm = wall - last[0], mono - last[1]
+            if dw - dm > self.WAKE_GAP or dm > self.WATCH_EVERY + self.WAKE_GAP:
+                self.woke()
+        if self.pass_at is not None and not self.pass_cut and mono - self.pass_at > self.SYNC_STUCK:
+            # a read that waits on a connection that died while it waited: end it, so the pass
+            # connects again (or fails and says so) instead of hanging for good
+            self.pass_cut = True
+            print("a sync pass took over %d s: its connection was cut" % self.SYNC_STUCK, file=sys.stderr)
+            cut(self.sync_m)
+        if self.dm is not None and time.time() - self.dm_used > self.DOWNLOAD_IDLE and self.dlock.acquire(blocking=False):
+            try:
+                self.drop_download()            # nothing to download for a while: let it go
+            finally:
+                self.dlock.release()
+
+    def woke(self):
+        """The computer woke (or the app was stopped a long while): every kept connection is dead.
+        Cut them all, so nobody waits out a timeout on one, and look for new mail now (#56)."""
+        self.woke_at = time.time()
+        print("woke from sleep: connecting again", file=sys.stderr)
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
+        self.wake.set()
+
+    EXTRA_EVERY = 300   # seconds between full syncs of Junk and the owner's folders; in between, only changed ones
+
+    def sync_pass(self, m, c):
+        """One look at the server: the folder list, then the sync folders, then each of the owner's
+        folders (and Junk) whose STATUS changed since it was last synced (#39), or all of them now and then."""
+        self.note_folders(m, c)
+        if self.redetect:
+            self.redetect = False
+            self.use_detected(detect_folders(self.found))
+        todo = self.sync_folders()
+        extras = self.extra_folders()
+        if self.server_folders:
+            extras = [f for f in extras if f in self.server_folders]
+        full = self.extra_now or time.time() - self.extra_at > self.EXTRA_EVERY
+        self.extra_now = False
+        now = {}
+        for f in extras:
+            now[f] = folder_status(m, f)
+            if full or now[f] is None or now[f] != self.folder_status.get(f):
+                todo.append(f)
+        for f in todo:
+            if self.gen != self.pass_gen:
+                raise Restart()             # the settings changed: this pass belongs to the old ones
+            try:
+                R.sync_headers(m, c, f, held=self.held, deep=True)
+            except LookupError:
+                if f in self.sync_folders():
+                    raise
+                continue        # one of the owner's folders, renamed or deleted a moment ago
+            if f in now:
+                self.folder_status[f] = now[f]
+            if f == (R.CFG.folders.get("inbox") or "INBOX"):
+                self.note_new(c)
+        if full:
+            self.extra_at = time.time()
+
+    # seconds before the next try after 1, 2, 3, ... failed passes: soon while the network comes
+    # back, then less and less often; signing in again with the same password does not help soon
+    RETRY = {"offline": (15, 30, 60, 120, 300), "server": (60, 120, 300, 600), "auth": (300, 900),
+             "config": (300,)}
+
+    def note_error(self, e):
+        """A failed pass: the sentence, its kind and the raw text for the page; when to try again."""
+        msg, kind, detail = explain(e)
+        self.fails += 1
+        steps = self.RETRY.get(kind, self.RETRY["server"])
+        wait = steps[min(self.fails, len(steps)) - 1]
+        self.sync.update(error=msg, kind=kind, detail=detail if detail != msg else None,
+                         retry_at=int(time.time() + wait))
+        return wait
+
+    def clear_error(self):
+        self.fails = 0
+        self.sync.update(error=None, kind=None, detail=None, retry_at=None)
+
+    def status_fields(self):
+        """The problem fields of the status the page polls (#54), from the real sync state:
+        error_kind  "offline" (no network, DNS, refused, timed out, dropped), "auth" (sign-in failed),
+                    "server" (the server said no, another sync holds the index), "config" (no account,
+                    no password saved, the settings file can't be read), or None: no problem;
+        last_sync   epoch seconds of the last sync that went through, or None;
+        retry_at    epoch seconds of the next automatic try while there is a problem, else None;
+        error_detail the raw text behind the error, for "copy details", or None."""
+        s = self.sync
+        if self.demo:
+            return {"error_kind": None, "last_sync": s["last"], "retry_at": None, "error_detail": None}
+        return dict(sync_problem(s), error_detail=s["detail"] if s["error"] else None)
+
+    LOCK_RETRY = 10     # seconds before the sync tries again while another process syncs
+    LOCK_WARN = 180     # seconds of that before the page is told
+
     def sync_loop(self):
-        c, m = None, None
+        c = None
+        wait = 0
         while not self.stopping.is_set():
-            self.wake.wait(60)
+            self.wake.wait(wait or 60)
             self.wake.clear()
+            wait = 0
             if self.stopping.is_set():
                 break
             if not configured():
+                self.config_problem()
                 continue
             self.sync["running"] = True
-            extra = False
+            self.pass_at, self.pass_cut = time.monotonic(), False
+            self.pass_gen = self.gen
             try:
-                c = c or R.db()
+                c = own_db(c)
                 with R.file_lock("headers", wait=False) as got:
                     if got:
                         for attempt in (0, 1):
                             try:
-                                if m is None:
-                                    m = R.imap()
+                                if self.sync_m is not None and not still_there(self.sync_m, self.sync_used, 120):
+                                    m, self.sync_m = self.sync_m, None
+                                    R.quit_imap(m, quick=True)
+                                if self.sync_m is None:
+                                    self.sync_m = R.imap()
                                     with contextlib.suppress(Exception):
-                                        m.sock.settimeout(120)
-                                self.note_folders(m, c)
-                                todo = self.sync_folders()
-                                if self.extra_now or time.time() - self.extra_at > 300:
-                                    self.extra_now = False
-                                    todo = todo + self.extra_folders()
-                                    extra = True
-                                for f in todo:
-                                    try:
-                                        R.sync_headers(m, c, f, held=self.held)
-                                    except LookupError:
-                                        if f in self.sync_folders():
-                                            raise
-                                        continue        # one of the owner's folders, renamed or deleted a moment ago
-                                    if f == (R.CFG.folders.get("inbox") or "INBOX"):
-                                        self.note_new(c)
-                                if extra:
-                                    self.extra_at = time.time()
+                                        self.sync_m.sock.settimeout(120)
+                                self.sync_pass(self.sync_m, c)
+                                self.sync_used = time.time()
                                 break
-                            except (imaplib.IMAP4.abort, ssl.SSLError, ConnectionError, socket.timeout):
-                                with contextlib.suppress(Exception):
-                                    m.logout()
-                                m = None
+                            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                                m, self.sync_m = self.sync_m, None
+                                R.quit_imap(m, quick=True)
+                                if self.gen != self.pass_gen:
+                                    raise Restart() from None
                                 if attempt:
                                     raise
                         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
                         c.commit()
-                self.sync["error"] = None
-                self.sync["last"] = int(time.time())
-                with R.file_lock("bodies", wait=False) as got:
-                    if got:
-                        R.sync_bodies(c, self.sync_folders() + self.extra_folders(), limit=50, workers=2, quiet=True)   # short passes: new mail and a folder just made are not kept waiting
-                        if c.execute("select 1 from msgs where has_body=0 limit 1").fetchone():
-                            threading.Timer(3, self.wake.set).start()     # keep going until all are in
+                if got:
+                    self.lock_busy = None
+                    self.clear_error()
+                    self.sync["last"] = int(time.time())
+                else:
+                    # the ragdoll command (or one that hangs) has the index: nothing was synced, so
+                    # nothing says it was; ask again soon, and say so when it lasts (#53)
+                    now = time.time()
+                    self.lock_busy = self.lock_busy or now
+                    wait = self.LOCK_RETRY
+                    if now - self.lock_busy > self.LOCK_WARN:
+                        self.sync.update(error=BUSY_MSG, kind="server", detail=None, retry_at=int(now + wait))
+                self.start_bodies()
+            except Restart:                     # settings saved: start over with the new ones at once
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
+                wait = 0.01
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
-                self.sync["error"] = friendly(e)
-                with contextlib.suppress(Exception):
-                    m.logout()
-                m = None
+                wait = self.note_error(e)
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
             finally:
                 self.sync["running"] = False
+                self.pass_at = None
+                self.sync["tried"] = int(time.time())
             with contextlib.suppress(Exception):
                 self.folder_counts()            # the Dock count follows new mail with the window in the back too
-        if m is not None:
-            with contextlib.suppress(Exception):
-                m.logout()
+        m, self.sync_m = self.sync_m, None
+        R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
+
+    # ---- the text of mail that has only its headers: one worker, its own connection (#57)
+
+    BODY_ROUND = 400        # rows taken per round, newest first
+    BODY_PAUSE = 0.2        # seconds between two FETCH commands: the server serves a whole company
+    BODY_QUIET = 2          # seconds after the user's last action before the download goes on
+    BODY_IDLE = 300         # seconds with nothing to download before its connection is let go
+
+    def body_folders(self):
+        """The folders whose mail text is fetched: only ones the server still has (#48)."""
+        fs = self.sync_folders() + self.extra_folders()
+        there = self.server_folders
+        return [f for f in fs if f in there] if there else fs
+
+    def start_bodies(self):
+        if self.demo:
+            return
+        if self.body_thread is None or not self.body_thread.is_alive():
+            self.body_thread = threading.Thread(target=self.bodies_loop, daemon=True)
+            self.body_thread.start()
+        self.body_wake.set()
+
+    def bodies_loop(self):
+        c = None
+        while not self.stopping.is_set():
+            if not self.body_wake.wait(self.BODY_IDLE):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                continue
+            self.body_wake.clear()
+            if self.stopping.is_set() or not configured():
+                continue
+            try:
+                c = own_db(c)
+                with R.file_lock("bodies", wait=False) as got:
+                    if got:                     # else the ragdoll command is at it
+                        self.fetch_bodies_now(c)
+            except BaseException as e:          # noqa: B036 - R.imap() dies with SystemExit; the next pass tries again
+                print("mail text download stopped: %s" % friendly(e), file=sys.stderr)
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+            finally:
+                self.bodies = None
+        m, self.body_m = self.body_m, None
+        R.quit_imap(m, quick=True)
+        if c is not None:
+            c.close()
+
+    def quiet_wait(self, gen):
+        """Wait while somebody opens a mail or has just done something: they go first."""
+        while not self.stopping.is_set() and gen == self.gen and (
+                self.fg > 0 or time.time() - self.active_at < self.BODY_QUIET):
+            self.stopping.wait(0.2)
+
+    def body_fetch(self, folder, uids):
+        for attempt in (0, 1):
+            try:
+                if self.body_m is not None and not still_there(self.body_m, self.body_used, 90):
+                    m, self.body_m = self.body_m, None
+                    R.quit_imap(m, quick=True)
+                if self.body_m is None:
+                    self.body_m = R.imap()
+                    with contextlib.suppress(Exception):
+                        self.body_m.sock.settimeout(90)
+                got = R.fetch_bodies_on(self.body_m, folder, uids)
+                self.body_used = time.time()
+                return got
+            except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
+                m, self.body_m = self.body_m, None
+                R.quit_imap(m, quick=True)
+                if attempt:
+                    raise
+
+    def fetch_bodies_now(self, c):
+        """Newest first, many mails per command, one SELECT per folder, at a polite pace, making way
+        for the user; no folder or flag work in between (that was a whole sync per 50 mails)."""
+        gen = self.gen
+        folders = self.body_folders()
+        if not folders:
+            return
+        marks = ",".join("?" * len(folders))
+        count = "select count(*) from msgs where has_body=0 and folder in (%s)" % marks
+        left = c.execute(count, folders).fetchone()[0]
+        skip = set()                    # asked this time and not given: tried again on a later pass
+        self.bodies = {"done": 0, "left": left}
+        while left > len(skip) and not self.stopping.is_set():
+            rows = c.execute("select folder, uid from msgs where has_body=0 and folder in (%s) order by ts desc "
+                             "limit ?" % marks, folders + [self.BODY_ROUND + len(skip)]).fetchall()
+            rows = [r for r in rows if (r["folder"], r["uid"]) not in skip][:self.BODY_ROUND]
+            if not rows:
+                break
+            by = {}
+            for r in rows:
+                by.setdefault(r["folder"], []).append(r["uid"])
+            for f, uids in by.items():
+                for k in range(0, len(uids), R.BODY_BATCH):
+                    part = uids[k:k + R.BODY_BATCH]
+                    self.quiet_wait(gen)
+                    if self.stopping.is_set() or gen != self.gen:
+                        return              # quitting, or the account changed (#59)
+                    try:
+                        got = self.body_fetch(f, part)
+                    except LookupError:     # the folder went (renamed or deleted elsewhere): not again this time
+                        skip.update((f, u) for u in uids)
+                        break
+                    R.store_bodies(c, f, got)
+                    skip.update((f, u) for u in part if u not in got)
+                    self.bodies = {"done": self.bodies["done"] + len(got), "left": max(0, left - len(got))}
+                    left = self.bodies["left"]
+                    self.stopping.wait(self.BODY_PAUSE)
+            left = c.execute(count, folders).fetchone()[0]
 
     def look(self):
         """The index was written by someone else (the sync, the CLI in a terminal): the page loads its list again."""
@@ -1335,8 +2636,19 @@ class Backend:
 
     # ---- api: app state
 
+    def config_problem(self):
+        """The settings file could not be read (#49): {path, error}, and the page may show the file."""
+        e = R.CONFIG_ERROR
+        if not e or self.demo:
+            return None
+        self.made.add(e["path"])
+        if not self.sync["error"]:
+            self.sync.update(error=CONFIG_MSG, kind="config", detail="%s: %s" % (e["path"], e["error"]),
+                             retry_at=None)
+        return {"path": e["path"], "error": e["error"]}
+
     def api_boot(self, a):
-        return {"configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
+        return {"config_error": self.config_problem(), "configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
                 "prefs": self.prefs(), "news": self.news, "asks": self.asks,
@@ -1399,7 +2711,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks}
+                "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
 
     def api_sync(self, a):
         if not self.demo:
@@ -1409,11 +2721,17 @@ class Backend:
     def prefs(self):
         try:
             with open(os.path.join(R.CFG.home, "app.json"), encoding="utf-8") as f:
-                return json.load(f)
+                p = json.load(f)
+            return p if isinstance(p, dict) else {}
         except (OSError, ValueError):
             return {}
 
     def api_prefs(self, a):
+        # one change at a time, each on top of the one before: two at once lost the language (#61)
+        with self.preflock:
+            return self.change_prefs(a)
+
+    def change_prefs(self, a):
         p = self.prefs()
         p.update({k: v for k, v in a.items() if k in ("theme", "sidebar")})
         # widths in pixels (the page puts them in its style): whole numbers in a sane range; 0 is the default width
@@ -1440,12 +2758,34 @@ class Backend:
             p["fmt_bar"] = a["fmt_bar"]
         if isinstance(a.get("notify"), bool):
             p["notify"] = a["notify"]
+        # the window's size and place (keep_window_place)
+        win = a.get("window")
+        if isinstance(win, dict):
+            ok = lambda k, lo, hi, none=False: (none and win.get(k) is None) or (      # noqa: E731
+                type(win.get(k)) is int and lo <= win[k] <= hi)
+            if ok("width", 200, 20000) and ok("height", 200, 20000) and ok("x", -100000, 100000, True) and \
+                    ok("y", -100000, 100000, True) and isinstance(win.get("maximized", False), bool):
+                p["window"] = {k: win.get(k) for k in ("x", "y", "width", "height")} | {"maximized": win.get("maximized", False)}
+        # images from the web: on by default; the senders whose images always load when it is off
+        if isinstance(a.get("remote_images"), bool):
+            p["remote_images"] = a["remote_images"]
+        s = a.get("img_senders")
+        if isinstance(s, list) and len(s) <= 2000 and all(isinstance(x, str) and 0 < len(x) <= 320 and "@" in x for x in s):
+            p["img_senders"] = list(dict.fromkeys(x.strip().lower() for x in s))
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
+        # the owner's own order of their folders, and the folders mail was moved to last (newest first)
+        for k, most in (("folder_order", 2000), ("folder_recent", 8)):
+            f = a.get(k)
+            if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
+                p[k] = f
         os.makedirs(R.CFG.home, exist_ok=True)
-        with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
+        path = os.path.join(R.CFG.home, "app.json")
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:     # a reader never sees half a file
             json.dump(p, f)
+        os.replace(tmp, path)
         return p
 
     # ---- api: lists and reading
@@ -1557,7 +2897,10 @@ class Backend:
 
     def api_search(self, a):
         text = text_in(a, "q").strip()[:500]
-        ns = SimpleNamespace(limit=200, folder=None, from_=None, to=None, since=None, until=None,
+        # one page at a time, as in a folder: the list asks for the next one when it is scrolled to the end
+        limit = max(1, min(int_in(a, "limit", 200), 500))
+        offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
+        ns = SimpleNamespace(limit=limit, offset=offset, folder=None, from_=None, to=None, since=None, until=None,
                              unread=False, att=False)
         words = []
         for w in re.findall(r'(\w+:"[^"]*"|"[^"]*"|\S+)', text):
@@ -1571,13 +2914,15 @@ class Backend:
             else:
                 words.append(w.strip('"'))
         if not words and not any((ns.folder, ns.from_, ns.to, ns.unread, ns.att)):
-            return {"rows": []}
+            return {"rows": [], "more": False}
         with self.dblock:
             rows = R.search_rows(self.c, words, ns)
+        more = len(rows) == limit
         skip = {R.CFG.folders.get("junk")}
         rows = [r for r in rows if r["folder"] not in skip]
-        self.prefetch(rows[:10])
-        return {"rows": [self.row_json(r) for r in rows]}
+        if not offset:
+            self.prefetch(rows[:10])
+        return {"rows": [self.row_json(r) for r in rows], "more": more}
 
     def api_thread(self, a):
         r = self.row(a["id"])
@@ -1616,6 +2961,8 @@ class Backend:
             raise
         if send:
             send()                      # the server hears it in the background, now that the mail is open
+        if out.get("invite"):
+            self.invite_state(out)
         return out
 
     def build_message(self, i):
@@ -1633,7 +2980,7 @@ class Backend:
         out = {"id": i, "from": person(n, ad), "to": people_json(R.hdr(msg, "To")),
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
-               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
+               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg, light))],
                "big": R.big_attachment_lines(R.html_to_text(html) or plain),
                "unsub": list_unsub(msg), "invite": invite_of(msg)}
         return out
@@ -1884,8 +3231,34 @@ class Backend:
                     if dest not in R.CFG.sync_folders and dest_key == "archive":
                         R.CFG.folders["archive"] = dest
                 for f, uids in by.items():
-                    R.move_uids(m, f, sorted(set(uids)), dest)
-            self.imap(go)
+                    todo = sorted(set(uids))
+                    try:
+                        R.move_uids(m, f, todo, dest)
+                    except R.Refused as e:  # the mail moved before the server stopped leaves the list too (#58)
+                        moved[f] = todo[:e.done]
+                        raise
+                    moved[f] = todo
+            moved = {}
+            try:
+                self.imap(go)
+            except BaseException:           # noqa: B036 - re-raised once the index has the part that went
+                self.forget_moved(moved)
+                if moved:
+                    self.wake.set()
+                raise
+        self.forget_moved(by)
+        self.bump()
+        if not self.demo:
+            if (set(by) | {dest}) - set(self.sync_folders()):
+                self.extra_now = True
+            self.wake.set()
+        self.undo_moves.append(undo)
+        return {"moved": sum(len(x) for x in by.values()), "undo": undo["token"]}
+
+    def forget_moved(self, by):
+        """Rows of mail that is no longer in its folder on the server leave the index."""
+        if not any(by.values()):
+            return
         with self.dblock:
             for f, uids in by.items():
                 for u in uids:
@@ -1894,12 +3267,6 @@ class Backend:
                         self.c.execute("delete from fts where rowid=?", (r["id"],))
             self.c.commit()
         self.bump()
-        if not self.demo:
-            if (set(by) | {dest}) - set(self.sync_folders()):
-                self.extra_now = True
-            self.wake.set()
-        self.undo_moves.append(undo)
-        return {"moved": sum(len(x) for x in by.values()), "undo": undo["token"]}
 
     # ---- undo a move that reached the server (Cmd+Z): each mail is found again in the folder it went to by
     # its Message-ID (a new UID there is not known) and moved back to the folder it came from
@@ -1963,7 +3330,7 @@ class Backend:
             self.server_folders = [n for n, _ in list_folders(m)]
         return self.server_folders
 
-    # ---- the owner's own folders: make, rename, delete (only an empty one)
+    # ---- the owner's own folders: make (inside another too), rename, move, delete, and empty Trash or Junk
 
     def own_folder(self, a):
         key = a.get("key")
@@ -1991,23 +3358,60 @@ class Backend:
         if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
             fail("There is already a folder called %s." % label)
 
+    def subtree(self, key, sep):
+        """[(folder, its flags)]: the folder and every folder inside it, the deepest first."""
+        return sorted([(n, f) for n, f in self.found if n == key or n.startswith(key + sep)],
+                      key=lambda x: -x[0].count(sep))
+
     def rename_rows(self, old, new, sep):
-        """The mail already listed follows its folder to the new name (the folders inside it too)."""
+        """The mail already listed follows its folder to the new name (the folders inside it too), and so do
+        the copies of it kept on disk, so nothing is fetched again."""
+        inside = lambda f: f == old or f.startswith(old + sep)     # noqa: E731
         with self.dblock:
             names = {r[0] for r in self.c.execute("select folder from msgs union select folder from state").fetchall()}
+            keep = []
             for f in names:
-                if f == old or f.startswith(old + sep):
+                if inside(f):
                     to = new + f[len(old):]
+                    keep += [(f, to, r[0], r[1]) for r in
+                             self.c.execute("select uidv, uid from msgs where folder=?", (f,)).fetchall()]
                     self.c.execute("delete from state where folder=?", (to,))
                     self.c.execute("update msgs set folder=? where folder=?", (to, f))
                     self.c.execute("update state set folder=? where folder=?", (to, f))
             self.c.commit()
+        for f, to, uidv, uid in keep:
+            cache_move((f, uidv, uid), (to, uidv, uid))
+
+    def drop_rows(self, folder, uids=None):
+        """Mail gone from the server for good: out of the index and off the disk. uids None: the whole folder."""
+        with self.dblock:
+            if uids is None:
+                rows = self.c.execute("select id, uidv, uid from msgs where folder=?", (folder,)).fetchall()
+            else:
+                rows = []
+                uids = sorted(set(uids))
+                for k in range(0, len(uids), 500):
+                    rows += self.c.execute("select id, uidv, uid from msgs where folder=? and uid in (%s)"
+                                           % ",".join("?" * len(uids[k:k + 500])), (folder, *uids[k:k + 500])).fetchall()
+            for r in rows:
+                self.c.execute("delete from msgs where id=?", (r["id"],))
+                self.c.execute("delete from fts where rowid=?", (r["id"],))
+            self.c.commit()
+        for r in rows:
+            self.demo_raw.pop((folder, r["uid"]), None)
+            cache_drop((folder, r["uidv"], r["uid"]))
+        return len(rows)
 
     def api_folder_new(self, a):
+        """{"name", "parent": an own folder to make it in (else beside the others)} -> {"key", "sep"}."""
         label = folder_label(a.get("name"))
+        parent = a.get("parent")
+        if parent is not None:
+            parent = self.own_folder({"key": parent})[0]
         if self.demo:
-            base = self.own_parent("/")
-            name = base + "/" + label if base else label
+            sep = "/"
+            base = parent or self.own_parent(sep)
+            name = base + sep + label if base else label
             self.free_name(name, label)
             self.found.append((name, ""))
         else:
@@ -2016,7 +3420,9 @@ class Backend:
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
-                base = self.own_parent(sep)
+                if parent:
+                    self.own_folder({"key": parent})
+                base = parent or self.own_parent(sep)
                 name = base + sep + label if base else label
                 self.free_name(name, label)
                 typ, data = m.create(R.q(name))
@@ -2025,90 +3431,230 @@ class Backend:
                 with contextlib.suppress(Exception):
                     m.subscribe(R.q(name))
                 self.refresh_folders(m)
-                return name
-            name = self.imap(go)
+                return name, sep
+            name, sep = self.imap(go)
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
+
+    def demo_rename(self, key, name):
+        self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
+        for (f, u) in list(self.demo_raw):
+            if f == key or f.startswith(key + "/"):
+                self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
+        self.rename_rows(key, name, "/")
+
+    def server_rename(self, m, key, name, sep):
+        """RENAME on the server; the folders inside go along, and stay subscribed under their new names."""
+        inner = [n for n, _ in self.subtree(key, sep)]
+        R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+        typ, data = m.rename(R.q(key), R.q(name))
+        if typ != "OK":
+            fail("The mail server said: %s" % said(data))
+        for n in inner:
+            with contextlib.suppress(Exception):
+                m.unsubscribe(R.q(n))
+                m.subscribe(R.q(name + n[len(key):]))
+        self.rename_rows(key, name, sep)
+        self.refresh_folders(m)
 
     def api_folder_rename(self, a):
+        """{"key", "name"} -> {"key": the new name, "sep"}. The folders inside keep their places in it."""
         key, old = self.own_folder(a)
         label = folder_label(a.get("name"))
         name = key[:len(key) - len(old)] + label
-        if name == key:
-            return {"key": key}
         if self.demo:
-            self.free_name(name, label)
-            self.found = [(name + n[len(key):], f) if n == key or n.startswith(key + "/") else (n, f) for n, f in self.found]
-            for (f, u) in list(self.demo_raw):
-                if f == key or f.startswith(key + "/"):
-                    self.demo_raw[(name + f[len(key):], u)] = self.demo_raw.pop((f, u))
-            self.rename_rows(key, name, "/")
+            if name != key:
+                self.free_name(name, label)
+                self.demo_rename(key, name)
+            sep = "/"
         else:
             def go(m):
                 sep = folder_sep(m)
+                if name == key:
+                    return sep
                 if sep in label:
                     fail("A folder name can't have %s in it." % sep)
                 self.refresh_folders(m)
                 self.own_folder(a)
                 self.free_name(name, label)
-                R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                typ, data = m.rename(R.q(key), R.q(name))
-                if typ != "OK":
-                    fail("The mail server said: %s" % said(data))
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                    m.subscribe(R.q(name))
-                self.rename_rows(key, name, sep)
-                self.refresh_folders(m)
-            self.imap(go)
-            self.extra_now = True
-            self.wake.set()
+                self.server_rename(m, key, name, sep)
+                return sep
+            sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
         self.bump()
-        return {"key": name}
+        return {"key": name, "sep": sep}
 
-    def api_folder_delete(self, a):
-        """Only a folder with no mail and no folders inside goes; mail is never deleted this way."""
-        key, label = self.own_folder(a)
+    def move_target(self, key, a, sep):
+        """The new name of an own folder put in a.parent ("" the server's top level), or with a.top where
+        new folders go."""
+        if a.get("top") is True:
+            parent = self.own_parent(sep)
+        elif isinstance(a.get("parent"), str):
+            parent = a["parent"]
+        else:
+            fail("bad request")
+        if parent:
+            if parent.upper() == "INBOX" or parent in [R.CFG.folders.get(k) for k in ("drafts", "sent", "trash", "junk")]:
+                fail("A folder can't go inside %s." % parent)
+            if parent not in [n for n, _ in self.found]:
+                fail("The folder %s is no longer on the server." % parent)
+            if parent == key or parent.startswith(key + sep):
+                fail("A folder can't go inside itself.")
+        leaf = key.rpartition(sep)[2]
+        return (parent + sep + leaf if parent else leaf), leaf
+
+    def api_folder_move(self, a):
+        """{"key": an own folder, "parent": the folder to put it in ("" for the server's top level), or
+        "top": true for where new folders go} -> {"key": its new name, "was": the folder it was in, "sep"}.
+        It is a RENAME: the folders and the mail inside go along."""
+        key, _ = self.own_folder(a)
         if self.demo:
-            if any(n.startswith(key + "/") for n, _ in self.found):
-                fail("%s has folders inside it. Delete those first." % label)
-            if self.q("select 1 from msgs where folder=? limit 1", (key,)):
-                fail("%s still has mail in it. Move the mail out first." % label)
-            self.found = [(n, f) for n, f in self.found if n != key]
+            sep = "/"
+            name, leaf = self.move_target(key, a, sep)
+            if name != key:
+                self.free_name(name, leaf)
+                self.demo_rename(key, name)
         else:
             def go(m):
                 sep = folder_sep(m)
                 self.refresh_folders(m)
                 self.own_folder(a)
-                if any(n.startswith(key + sep) for n, _ in self.found):
+                name, leaf = self.move_target(key, a, sep)
+                if name != key:
+                    self.free_name(name, leaf)
+                    self.server_rename(m, key, name, sep)
+                return name, sep
+            name, sep = self.imap(go)
+            if name != key:
+                self.extra_now = True
+                self.wake.set()
+        self.bump()
+        return {"key": name, "was": key.rpartition(sep)[0], "sep": sep}
+
+    def server_count(self, m, folder):
+        typ, data = m.status(R.q(folder), "(MESSAGES)")
+        mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
+        if typ != "OK" or not mo:
+            fail("The mail server said: %s" % said(data))
+        return int(mo.group(1))
+
+    def api_folder_delete(self, a):
+        """{"key"} deletes a folder with no mail and no folders inside. {"key", "check": true} -> {"mails", "folders"}:
+        what is in it and in the folders inside it. {"key", "trash": true}: that mail goes to Trash (never deleted
+        for good here), then the folders inside and the folder itself are deleted."""
+        key, label = self.own_folder(a)
+        check, trash = a.get("check") is True, a.get("trash") is True
+        bin_ = R.CFG.folders.get("trash")
+        if trash and not bin_:
+            fail("No %s folder is set." % "trash")
+        if self.demo:
+            names = self.subtree(key, "/")
+            mails = self.q("select count(*) n from msgs where folder in (%s)" % ",".join("?" * len(names)),
+                           [n for n, _ in names])[0]["n"]
+            if check:
+                return {"mails": mails, "folders": len(names) - 1}
+            if not trash:
+                if len(names) > 1:
                     fail("%s has folders inside it. Delete those first." % label)
-                typ, data = m.status(R.q(key), "(MESSAGES)")
-                mo = re.search(rb"MESSAGES\s+(\d+)", b" ".join(x for x in data or [] if isinstance(x, bytes)))
-                if typ != "OK" or not mo:
-                    fail("The mail server said: %s" % said(data))
-                if int(mo.group(1)):
+                if mails:
                     fail("%s still has mail in it. Move the mail out first." % label)
+            for n, _ in names:
+                for r in self.q("select uid, ts, seen, answered, flagged from msgs where folder=?", (n,)):
+                    raw = self.demo_raw.get((n, r["uid"]))
+                    if raw:
+                        self.demo_insert(bin_, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+            gone = {n for n, _ in names}
+            self.found = [(n, f) for n, f in self.found if n not in gone]
+        else:
+            def go(m):
+                sep = folder_sep(m)
+                self.refresh_folders(m)
+                self.own_folder(a)
+                names = self.subtree(key, sep)
+                if check:
+                    return {"mails": sum(self.server_count(m, n) for n, f in names if "\\noselect" not in f.split()),
+                            "folders": len(names) - 1}
+                if not trash:
+                    if len(names) > 1:
+                        fail("%s has folders inside it. Delete those first." % label)
+                    if self.server_count(m, key):
+                        fail("%s still has mail in it. Move the mail out first." % label)
+                else:
+                    if bin_ not in self.folders(m):
+                        fail("The folder %s is no longer on the server." % bin_)
+                    for n, f in names:
+                        if "\\noselect" in f.split():
+                            continue
+                        R.select(m, n, readonly=False)
+                        uids = R.uids_of(m)
+                        if uids:
+                            R.move_uids(m, n, uids, bin_)
                 R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
-                with contextlib.suppress(Exception):
-                    m.unsubscribe(R.q(key))
-                typ, data = m.delete(R.q(key))
+                for n, _ in names:
+                    with contextlib.suppress(Exception):
+                        m.unsubscribe(R.q(n))
+                    typ, data = m.delete(R.q(n))
+                    if typ != "OK":
+                        self.refresh_folders(m)
+                        fail("The mail server said: %s" % said(data))
+                self.refresh_folders(m)
+                return names
+            out = self.imap(go)
+            if check:
+                return out
+            names = out
+            self.extra_now = True
+            self.wake.set()
+        for n, _ in names:
+            self.drop_rows(n)
+            self.exec("delete from state where folder=?", (n,))
+        self.bump()
+        return {"deleted": [n for n, _ in names]}
+
+    def api_folder_empty(self, a):
+        """{"key": "trash" or "junk"}: every mail in it is deleted for good -> {"count"}.
+        {"key", "check": true} -> {"count"}: how many there are, nothing deleted."""
+        k = a.get("key")
+        if k not in ("trash", "junk"):
+            fail("can't empty %s" % k)
+        folder = R.CFG.folders.get(k)
+        if not folder:
+            fail("No %s folder is set." % k)
+        if self.demo:
+            n = self.q("select count(*) n from msgs where folder=?", (folder,))[0]["n"]
+            if a.get("check") is not True:
+                self.drop_rows(folder)
+                self.bump()
+            return {"count": n}
+
+        def go(m):
+            if a.get("check") is True:
+                return None, self.server_count(m, folder)
+            R.select(m, folder, readonly=False)
+            uids = R.uids_of(m)
+            for i in range(0, len(uids), 500):
+                batch = ",".join(map(str, uids[i:i + 500]))
+                typ, data = m.uid("STORE", batch, "+FLAGS.SILENT", "(\\Deleted)")
                 if typ != "OK":
                     fail("The mail server said: %s" % said(data))
-                self.refresh_folders(m)
-            self.imap(go)
-        with self.dblock:
-            for r in self.c.execute("select id from msgs where folder=?", (key,)).fetchall():
-                self.c.execute("delete from fts where rowid=?", (r["id"],))
-            self.c.execute("delete from msgs where folder=?", (key,))
-            self.c.execute("delete from state where folder=?", (key,))
-            self.c.commit()
-        self.bump()
-        return {}
+                if R.has_cap(m, "UIDPLUS"):
+                    m.uid("EXPUNGE", batch)
+            if uids and not R.has_cap(m, "UIDPLUS"):
+                m.expunge()
+            R.select(m, R.CFG.folders.get("inbox") or "INBOX", readonly=True)
+            return uids, len(uids)
+        uids, n = self.imap(go)
+        if uids is not None:
+            self.drop_rows(folder, uids)
+            self.bump()
+        return {"count": n}
 
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
         raw, light = self.view(i)
-        return file_parts(R.to_msg(raw)), light
+        return file_parts(R.to_msg(raw), light), light
 
     def whole_part(self, i, p, light):
         """The file with its data. A big one the light mail left on the server is fetched by itself,
@@ -2120,7 +3666,7 @@ class Backend:
         path = R.part_path(r["folder"], r["uidv"], r["uid"], sec)
         raw = R.cache_get(path)
         if not raw:
-            raw = self.imap(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec))
+            raw = self.gone_check(r, lambda: self.download(lambda m: R.fetch_part_raw(m, r["folder"], r["uid"], sec)))
             R.cache_put(path, raw)
         return R.to_msg(raw)
 
@@ -2129,10 +3675,8 @@ class Backend:
         its own to open it from. Returns its path. Opening the same file again opens the copy made the
         first time: a second copy of the same name would not open in Excel ("a workbook with the same
         name is already open"), and changes made in the first copy stay."""
-        name = R.safe_name(R.fname(p) or "attachment")
+        name = disk_name(p)
         data = R.part_bytes(p)
-        if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
-            name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the Mac knows which app
         if save:
             path = R.unique_path(downloads_dir(), name, set())
             n = 2
@@ -2145,12 +3689,14 @@ class Backend:
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, name)
             if os.path.exists(path):
+                R.mark_downloaded(path)
                 self.made.add(path)
                 return path
         tmp = path + ".part"
         with open(tmp, "wb") as f:      # the app that opens it never sees half a file
             f.write(data)
         os.replace(tmp, path)
+        R.mark_downloaded(path)
         self.made.add(path)
         return path
 
@@ -2163,12 +3709,18 @@ class Backend:
             k = next((j for j, p in enumerate(parts) if (R.fname(p) or "attachment") == name), -1)
         if not 0 <= k < len(parts):
             fail("That attachment is not in the mail any more.")
-        save = a.get("action") == "save"
+        action = a.get("action")
+        save = action == "save"
+        if action in (None, "open") and R.is_program(disk_name(parts[k])):
+            # a program runs when it is opened: say so, and let the page offer save and show in folder
+            return {"program": True, "name": disk_name(parts[k])}
         path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
-        if a.get("action") == "drag":
+        if action == "drag":
             # the file under its own name in the app's open folder; Finder copies it where it is dropped
             return {"path": path, "name": os.path.basename(path), "dragging": drag_out(path)}
-        if not save:
+        if action == "show":
+            open_path(path, reveal=True)
+        elif not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
 
@@ -2196,6 +3748,127 @@ class Backend:
         subj = urllib.parse.parse_qs(query).get("subject", ["unsubscribe"])[0]
         return {"mailto": urllib.parse.unquote(to), "subject": subj}
 
+    # ---- meeting invitations: what was answered, what changed (invites.json, per UID and occurrence)
+
+    INVITE_LOCK = threading.Lock()
+
+    def invites_path(self):
+        return os.path.join(R.CFG.home, "invites.json")
+
+    def invites_load(self):
+        try:
+            with open(self.invites_path(), encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def invites_save(self, d):
+        os.makedirs(R.CFG.home, exist_ok=True)
+        if len(d) > 2000:          # the oldest meetings go first
+            for k in sorted(d, key=lambda k: d[k].get("t", 0))[:len(d) - 2000]:
+                del d[k]
+        tmp = self.invites_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, self.invites_path())
+
+    @staticmethod
+    def invite_key(v):
+        return v["uid"] + ("|" + v["rid"] if v.get("rid") else "")
+
+    def invite_state(self, out):
+        """What the invitation means for the person reading it: organizer or asked to answer, how they
+        answered here, and for an updated invitation (a higher SEQUENCE) what changed since the one before."""
+        v = invite_for(out["invite"], R.CFG.user)
+        if not v.get("uid") or v["method"] not in ("REQUEST", "PUBLISH", "ADD", "CANCEL"):
+            return
+        snap = {"start": v["first"][0], "end": v["first"][1], "where": v["where"], "all_day": v["all_day"]}
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            seen = e.setdefault("seen", {})
+            if seen.get(str(v["seq"])) != snap:
+                seen[str(v["seq"])] = snap
+                e["t"] = int(time.time())
+                with contextlib.suppress(OSError):
+                    self.invites_save(d)
+        v["updated"] = v["method"] == "REQUEST" and v["seq"] > 0 and not v["cancelled"]
+        before = [int(s) for s in seen if s.lstrip("-").isdigit() and int(s) < v["seq"]]
+        if before and v["updated"]:
+            old = seen[str(max(before))]
+            was = {}
+            if (old.get("start"), old.get("end")) != (snap["start"], snap["end"]):
+                was.update(start=old.get("start"), end=old.get("end"), all_day=old.get("all_day"))
+            if old.get("where", "") != snap["where"]:
+                was["where"] = old.get("where", "")
+            v["was"] = was or None
+        ans = e.get("answer")
+        v["answer"] = ans["status"] if ans and ans.get("seq", 0) >= v["seq"] and not v["cancelled"] else None
+
+    def invite_in(self, i):
+        """(the mail, its invitation as the reader sees it) for a mail id; fails when it holds none."""
+        msg = R.to_msg(self.view(i)[0])
+        v = invite_of(msg)
+        if v is None:
+            fail("This mail has no invitation.")
+        return msg, invite_for(v, R.CFG.user)
+
+    def save_built(self, msg):
+        """A mail built here (not from the compose page) saved as a draft -> its id."""
+        raw = msg.as_bytes(policy=R.OUT_POLICY)
+        drafts = R.CFG.folders["drafts"]
+        if self.demo:
+            uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
+        else:
+            def go(m):
+                return R.append_draft(m, raw), R.select(m, drafts)
+            uid, uidv = self.imap(go)
+            if uid:
+                with self.dblock:
+                    index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
+        self.bump()
+        if not uid:
+            fail("The draft was saved but the server did not say where. Open Drafts and send it from there.")
+        return R.make_id(drafts, uid)
+
+    def api_rsvp(self, a):
+        """Accept / Maybe / Decline: the iTIP reply to the organizer, saved as a draft. The page sends it with
+        api_rsvp_send after the undo pause, the way a mail from compose goes."""
+        msg, v = self.invite_in(a["id"])
+        if not v["can_answer"]:
+            fail("This invitation can't be answered from here.")
+        try:
+            reply = build_rsvp(msg, a.get("answer"), R.CFG.user, R.CFG.name, a.get("note") or "", a.get("subject"))
+        except ValueError as e:
+            fail("Can't answer this invitation: %s." % e)
+        return {"draft": self.save_built(reply)}
+
+    def api_rsvp_send(self, a):
+        """Send the reply api_rsvp saved, then remember the answer for this meeting."""
+        _msg, v = self.invite_in(a["id"])
+        status = (a.get("answer") or "").upper()
+        if status not in RSVP_SUBJECT:
+            fail("Can't answer this invitation: unknown answer.")
+        r = self.api_send({"id": a["draft"]})
+        with self.INVITE_LOCK:
+            d = self.invites_load()
+            e = d.setdefault(self.invite_key(v), {})
+            e["answer"] = {"status": status, "seq": v["seq"], "at": int(time.time())}
+            e["t"] = int(time.time())
+            with contextlib.suppress(OSError):
+                self.invites_save(d)
+        return {"answer": status, "problems_after_sending": r.get("problems_after_sending") or []}
+
+    def api_join(self, a):
+        """Open the online meeting's link (Teams, Zoom, Google Meet, Tencent Meeting, Webex) in the browser."""
+        _msg, v = self.invite_in(a["id"])
+        if not v.get("join"):
+            fail("This invitation has no meeting link.")
+        if not self.demo:
+            webbrowser.open(v["join"]["url"])
+        return {"url": v["join"]["url"]}
+
     def api_open_invite(self, a):
         """The invitation's .ics, opened by the system: Calendar on a Mac, Outlook on Windows."""
         p = ics_part(R.to_msg(self.view(a["id"])[0]))
@@ -2209,6 +3882,7 @@ class Backend:
             path += ".ics"
         with open(path, "wb") as f:
             f.write(data)
+        R.mark_downloaded(path)
         self.made.add(path)
         if not self.demo:
             open_path(path)
@@ -2240,7 +3914,7 @@ class Backend:
         return {}
 
     def api_window_theme(self, a):
-        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"))
+        window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"), system=a.get("system") is True)
         return {}
 
     def api_contacts(self, a):
@@ -2359,10 +4033,13 @@ class Backend:
         return d
 
     def keep_file(self, name, data):
+        """The file kept for a compose. On disk it has a safe name; "name" is its own, whole name, the one
+        the mail gives it ("PO#123: 最终版?.pdf" stays so)."""
+        name = mail_name(name)
         path = os.path.join(self.upload_dir(), R.safe_name(name))
         with open(path, "wb") as f:
             f.write(data)
-        return {"path": path, "name": os.path.basename(path), "size": len(data)}
+        return {"path": path, "name": name, "size": len(data)}
 
     def api_compose(self, a):
         mode = a.get("mode") or "new"
@@ -2373,6 +4050,7 @@ class Backend:
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
+            self.orig_mids[a["id"]] = R.hdr(orig, "Message-ID").strip()
             q = R.quote_block(orig)
             out["quote"] = page_html(q, cid_map(orig))
             if mode == "forward":
@@ -2385,6 +4063,7 @@ class Backend:
                 out["subject"] = R.reply_subject(R.hdr(orig, "Subject"))
         elif mode == "draft":
             out["replace"] = a["id"]
+            self.editing[a["id"]] = time.time()     # a scheduled one waits while it is being changed
             msg = R.to_msg(self.raw(a["id"]))
             state = self.compose_state(R.hdr(msg, "Message-ID"))
             if state:
@@ -2394,8 +4073,12 @@ class Backend:
                 out["sig_id"], out["signature"] = self.sig_for(state.get("mode"), state.get("sig_id"))
                 if state.get("orig"):
                     with contextlib.suppress(ApiError, SystemExit, Exception):
-                        orig = R.to_msg(self.raw(state["orig"]))
-                        out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        orig, i = self.find_orig(dict(state, replace=a["id"]))
+                        if orig is not None:
+                            out["orig"] = i
+                            out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        else:       # the original is gone: the quote the draft already has
+                            out["quote"] = page_html(R.quote_of(R.bodies(msg)[1]), cid_map(msg))
                 out["atts"] = [x for x in state.get("atts", []) if os.path.isfile(x["path"])]
                 return out
             plain, html = R.bodies(msg)
@@ -2425,11 +4108,58 @@ class Backend:
                 return json.load(f)
         return None
 
+    def body_font(self, body):
+        """The font the body is written in (the page wraps it in data-rd-body), else the one in Settings."""
+        mo = BODY_FONT_RE.match(body or "")
+        if mo:
+            return "%s;%s" % mo.groups()
+        p = self.prefs()
+        size = p.get("font_size") if p.get("font_size") in FONT_SIZES else 14
+        return "font-family:%s;font-size:%dpx" % (FONT_CSS.get(p.get("font"), FONT_CSS["system"]), size)
+
+    def find_orig(self, a):
+        """The mail a reply or forward (a["orig"]) answers: (its message, its id now), or (None, None).
+        Moved since (archived, filed): found again by its Message-ID, which the draft itself keeps."""
+        i = a.get("orig")
+        try:
+            return R.to_msg(self.raw(i)), i
+        except (ApiError, SystemExit):
+            pass
+        mid = a.get("orig_mid") or self.orig_mids.get(i)
+        old = self.old_draft(a)
+        if not mid and old is not None:
+            mid = R.hdr(old, R.FWD_HEADER if a.get("mode") == "forward" else "In-Reply-To").strip()
+        for r in self.q("select folder, uid from msgs where msgid=? order by ts desc", (mid,)) if mid else []:
+            j = R.make_id(r["folder"], r["uid"])
+            if j != i:
+                try:
+                    return R.to_msg(self.raw(j)), j
+                except (ApiError, SystemExit):
+                    continue
+        return None, None
+
+    def old_draft(self, a):
+        """The saved draft this compose replaces, as a message, or None."""
+        i = a.get("replace")
+        if not i:
+            return None
+        try:
+            if self.parse(i)[0] != R.CFG.folders["drafts"]:
+                return None
+            return R.to_msg(self.raw(i))
+        except (ApiError, SystemExit):
+            return None
+
     def build(self, a):
         mode = a.get("mode") or "new"
-        orig = None
+        orig = old = None
         if a.get("orig"):
-            orig = R.to_msg(self.raw(a["orig"]))
+            orig, i = self.find_orig(a)
+            if orig is not None:
+                a["orig"] = i                   # where it is now: the saved state keeps that
+                a["orig_mid"] = R.hdr(orig, "Message-ID").strip()
+            else:
+                old = self.old_draft(a)         # gone for good: the quote the last save made stays
         to, cc, bcc = people_in(a.get("to")), people_in(a.get("cc")), people_in(a.get("bcc"))
         to, cc = R.clean_recipients(to, cc, set())
         subject = (a.get("subject") or "").strip()
@@ -2439,11 +4169,21 @@ class Backend:
             p = os.path.realpath(x["path"])
             if not p.startswith(root + os.sep) or not os.path.isfile(p):
                 fail("An attachment is missing: %s" % x.get("name", ""))
-            atts.append(p)
+            atts.append((p, mail_name(x.get("name") if isinstance(x.get("name"), str) else "") or os.path.basename(p)))
         body, images = data_images(a.get("html") or "")
         sig = self.sig_for(mode, a.get("sig_id"))[1] if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
-                              bcc, atts, sig)
+                              bcc, atts, sig, font=self.body_font(body),
+                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
+        if a.get("orig") and orig is None:
+            # the original is gone: the threading the last save had is kept, so the reply stays in its thread
+            mid = a.get("orig_mid") or self.orig_mids.get(a["orig"]) or ""
+            for h in ("In-Reply-To", "References", R.FWD_HEADER):
+                v = R.hdr(old, h).strip() if old is not None else ""
+                if not v and mid and (h == R.FWD_HEADER) == (mode == "forward"):
+                    v = mid
+                if v and not msg[h]:
+                    msg[h] = v
         if mode == "draft" and not orig and a.get("irt"):
             msg["In-Reply-To"] = a["irt"]
             msg["References"] = a.get("refs") or a["irt"]
@@ -2470,27 +4210,42 @@ class Backend:
                 old = None
             else:
                 with self.schedlock:
-                    self.sched_drop(old)
+                    if old in self.inflight:
+                        fail("This mail is going out right now, so the change was not saved.")
+                    self.editing[old] = time.time()     # not sent by the schedule while it changes
                 self.drop_state(old)
         if self.demo:
             uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
             if old:
                 self.demo_delete(old)
         else:
+            mid, done = R.hdr(msg, "Message-ID").strip(), {}
+
             def go(m):
-                uid = R.append_draft(m, raw)
+                # self.imap runs this again on a new connection when the old one dropped: a draft the
+                # server already took is found by its Message-ID, not saved a second time
+                if "uid" not in done and done.get("sent"):
+                    found = R.uid_of_mid(m, drafts, mid)
+                    if found:
+                        done["uid"] = found
+                if "uid" not in done:
+                    done["sent"] = True
+                    done["uid"] = R.append_draft(m, raw)
                 uidv = R.select(m, drafts)
-                if old:
+                if old and not done.get("old_gone"):
                     with contextlib.suppress(Exception):
                         R.delete_uid(m, *self.parse(old))
-                return uid, uidv
+                    done["old_gone"] = True
+                return done["uid"], uidv
             uid, uidv = self.imap(go)
             with self.dblock:
                 if old:
                     self.db_delete(old)
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
-        state = {k: a.get(k) for k in ("mode", "orig", "to", "cc", "bcc", "subject", "html", "atts",
+        if old and uid:
+            self.sched_move(old, R.make_id(drafts, uid))   # still scheduled, now as the saved draft
+        state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
                                        "use_signature", "irt", "refs", "fwd", "sig_id")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
@@ -2518,9 +4273,23 @@ class Backend:
         """Send the saved draft a["id"] now; with a["delay"] (seconds), after the undo pause (hold_send)."""
         if a.get("delay"):
             return self.hold_send(a["id"], a["delay"])
-        with self.schedlock:
-            self.sched_drop(a["id"])
+        return self.send_listed(a)
+
+    def send_listed(self, a):
+        """Send the saved draft now. The scheduled-send list is locked only to take the mail off it,
+        not while it goes out: a long upload does not hold up the other screens."""
+        i = a["id"]
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), {"id": i})
+            if self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != i]
+            self.inflight.add(i)
+        try:
             return self.send_now(a)
+        finally:
+            with self.schedlock:
+                self.inflight.discard(i)
 
     # ---- the undo pause after Send
     # The page counts the pause down and then asks for the send (api_send_wait). The backend holds the
@@ -2557,9 +4326,7 @@ class Backend:
             job["state"] = "sending"
             job["timer"].cancel()
         try:
-            with self.schedlock:
-                self.sched_drop(i)
-                job["result"] = self.send_now({"id": i})
+            job["result"] = self.send_listed({"id": i})
             job["state"] = "sent"
         except (Exception, SystemExit) as e:       # noqa: BLE001 - the page shows the reason
             job["error"] = str(e) if isinstance(e, ApiError) else friendly(e)
@@ -2633,15 +4400,17 @@ class Backend:
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
-        self.drop_state(a["id"])
         if self.demo:
             raw = self.demo_raw.get((folder, uid))
             if raw is None:
                 fail("The draft is gone.")
             msg = R.to_msg(raw)
+            self.drop_state(a["id"])
             self.demo_delete(a["id"])
+            bcc = R.hdr(msg, "Bcc").strip()
             del msg["Bcc"]
-            self.demo_insert(R.CFG.folders["sent"], msg.as_bytes(policy=R.OUT_POLICY), int(time.time()), 1, 0)
+            sent = R.sent_copy(msg.as_bytes(policy=R.OUT_POLICY), bcc)     # Sent keeps who was Bcc'd
+            self.demo_insert(R.CFG.folders["sent"], sent, int(time.time()), 1, 0)
             fwd = R.forward_source(msg)
             irt = R.hdr(msg, "In-Reply-To").strip()
             if fwd:
@@ -2651,6 +4420,7 @@ class Backend:
             self.bump()
             return {"sent": True, "problems_after_sending": []}
         r = R.send_draft(folder, uid)
+        self.drop_state(a["id"])
         with self.dblock:
             self.db_delete(a["id"])
         self.bump()
@@ -2673,23 +4443,85 @@ class Backend:
             except (OSError, ValueError):
                 return []
 
+    RETRY_MAX = 3600        # a mail that could not go out is tried again after 1, 2, 4, ... minutes, then hourly
+    HOLD = 15 * 60          # a scheduled draft being changed in a compose waits this long after its last save
+
     def sched_save(self, items):
         with self.schedlock:
             os.makedirs(R.CFG.home, exist_ok=True)
-            tmp = self.sched_path() + ".tmp"
+            tmp = "%s.%d.tmp" % (self.sched_path(), os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False)
             os.replace(tmp, self.sched_path())
 
-    def sched_drop(self, i):
-        with self.schedlock:
+    @contextlib.contextmanager
+    def sched_edit(self):
+        """The list to change in place; saved when it changed. Locked for this app's threads and for
+        other processes (the ragdoll command, a second copy of the app) alike, and only for as long as
+        the list changes: never while a mail is going out."""
+        with self.schedlock, R.file_lock("sched", True):
             items = self.sched_list()
-            keep = [x for x in items if x["id"] != i]
-            if len(keep) != len(items):
-                self.sched_save(keep)
+            before = json.dumps(items, sort_keys=True)
+            yield items
+            if json.dumps(items, sort_keys=True) != before:
+                self.sched_save(items)
                 self.bump()
-                return True
+
+    def sched_drop(self, i):
+        with self.sched_edit() as items:
+            n = len(items)
+            items[:] = [x for x in items if x["id"] != i]
+            return len(items) != n
+
+    def sched_move(self, old, new):
+        """A scheduled draft saved again (as a new draft): it stays scheduled, at the same time."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] == old:
+                    x["id"] = new
+                    for k in ("error", "tries", "retry_at", "note", "sending"):
+                        x.pop(k, None)
+            self.editing[new] = time.time()
+            self.editing.pop(old, None)
+
+    def going_out(self, x):
+        """True while the mail of this entry is being sent, here or by another copy of the app."""
+        if x["id"] in self.inflight:
+            return True
+        s = x.get("sending")
+        if not isinstance(s, dict):
             return False
+        # ours but no longer in flight: left by a send that ended without tidying up
+        return s.get("pid") != os.getpid() and R.pid_running(s.get("pid"))
+
+    def sched_claim(self, i, now):
+        """Mark a due mail as going out, so nothing else sends it meanwhile. False when it is not due,
+        is being sent already, or is being changed in a compose."""
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), None)
+            if (x is None or x["at"] > now or x.get("error") or (x.get("retry_at") or 0) > now
+                    or self.going_out(x) or self.editing.get(i, 0) > time.time() - self.HOLD):
+                return False
+            x["sending"] = {"pid": os.getpid(), "at": int(time.time())}
+            self.inflight.add(i)
+            return True
+
+    def sched_after(self, i, now, error=None, later=None):
+        """A scheduled send that failed: for good (error, shown), or before anything left (later: tried
+        again with a growing pause; the already-sent and Sent checks still guard against a double send)."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] != i:
+                    continue
+                x.pop("sending", None)
+                if error:
+                    x["error"] = error
+                    for k in ("tries", "retry_at", "note"):
+                        x.pop(k, None)
+                else:
+                    x["tries"] = int(x.get("tries") or 0) + 1
+                    x["retry_at"] = int(now + min(60 * 2 ** (x["tries"] - 1), self.RETRY_MAX))
+                    x["note"] = later
 
     def api_schedule(self, a):
         """Send the saved draft a["id"] at a["at"] (Unix seconds)."""
@@ -2705,18 +4537,22 @@ class Backend:
             fail("That time has already passed.")
         if at > time.time() + 5 * 366 * 86400:
             fail("Pick a time within the next five years.")
-        with self.schedlock:
+        with self.sched_edit() as items:
             self.row(i)
-            items = [x for x in self.sched_list() if x["id"] != i]
-            items.append({"id": i, "at": at})
-            self.sched_save(items)
-        self.bump()
+            if i in self.inflight:
+                fail("This mail is going out right now.")
+            items[:] = [x for x in items if x["id"] != i] + [{"id": i, "at": at}]
+            self.editing.pop(i, None)
         self.sched_wake.set()
         return {"id": i, "at": at}
 
     def api_unschedule(self, a):
         """Keep the mail as a draft and do not send it."""
-        self.sched_drop(a["id"])
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == a["id"]), None)
+            if x is not None and self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != a["id"]]
         return {}
 
     def scheduled_rows(self):
@@ -2728,6 +4564,8 @@ class Backend:
                 continue
             r["sched"] = x["at"]
             r["sched_error"] = x.get("error")
+            r["sched_retry"] = x.get("retry_at")
+            r["sched_note"] = x.get("note")
             out.append(r)
         return out
 
@@ -2737,30 +4575,32 @@ class Backend:
             self.sched_wake.clear()
             if self.stopping.is_set():
                 break
-            with contextlib.suppress(Exception):
+            try:
                 self.send_due()
+            except (Exception, SystemExit):     # noqa: BLE001 - the loop must outlive any one mail
+                traceback.print_exc(file=sys.stderr)
 
     def send_due(self, now=None):
-        """Send every scheduled mail that is due. A failure stays in the list with its reason and is not
-        tried again by itself: a send that failed half way could otherwise go out twice."""
+        """Send every scheduled mail that is due, one at a time. A failure before anything left this
+        computer (no network after sleep, the server did not answer) is tried again later; any other
+        failure stays in the list with its reason: a send that broke half way could go out twice."""
         now = time.time() if now is None else now
         sent = 0
-        with self.schedlock:
-            for x in self.sched_list():
-                if x["at"] > now or x.get("error"):
-                    continue
-                try:
-                    self.send_now({"id": x["id"]})
-                    self.sched_drop(x["id"])
-                    sent += 1
-                except Exception as e:       # noqa: BLE001 - every reason is shown to the person
-                    msg = str(e) if isinstance(e, ApiError) else friendly(e)
-                    items = self.sched_list()
-                    for y in items:
-                        if y["id"] == x["id"]:
-                            y["error"] = msg
-                    self.sched_save(items)
-                    self.bump()
+        for x in sorted(self.sched_list(), key=lambda x: x["at"]):
+            if not self.sched_claim(x["id"], now):
+                continue
+            try:
+                self.send_now({"id": x["id"]})
+            except R.SendLater as e:
+                self.sched_after(x["id"], now, later=friendly(e))
+            except (Exception, SystemExit) as e:    # noqa: BLE001 - every reason is shown to the person
+                self.sched_after(x["id"], now, error=str(e) if isinstance(e, ApiError) else friendly(e))
+            else:
+                self.sched_drop(x["id"])
+                sent += 1
+            finally:
+                with self.schedlock:
+                    self.inflight.discard(x["id"])
         return sent
 
     def api_delete_draft(self, a):
@@ -2768,6 +4608,8 @@ class Backend:
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be deleted this way.")
         with self.schedlock:
+            if a["id"] in self.inflight:
+                fail("This mail is going out right now.")
             self.sched_drop(a["id"])
         self.drop_state(a["id"])
         if self.demo:
@@ -2795,7 +4637,23 @@ class Backend:
         while not self.stopping.is_set():
             with contextlib.suppress(Exception):
                 self.take_asks()
+            with contextlib.suppress(Exception):
+                self.take_show()
             self.stopping.wait(1)
+
+    def take_show(self):
+        """The app was opened again (a second copy found this one running): show this one's window,
+        or in the browser this one's page."""
+        path = show_flag()
+        if not os.path.exists(path):
+            return False
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        if WINDOW.w is not None:
+            bring_front()
+        elif self.url:
+            webbrowser.open(self.url)
+        return True
 
     def take_asks(self):
         got = R.take_asks()
@@ -2870,12 +4728,13 @@ class Backend:
         try:
             m = imaplib.IMAP4_SSL(ihost, iport, timeout=20)
         except Exception as e:
-            fail("Incoming server: " + friendly(e))
+            fail("Incoming server: " + friendly(e), str(e))
         try:
             try:
                 m.login(user, pw)
             except imaplib.IMAP4.error as e:
-                fail("Incoming server: sign-in failed (%s). Some providers need an app password." % e)
+                fail("Incoming server: sign-in failed. Check the address and password; some providers "
+                     "need an app password.", str(e))
             found = detect_folders(list_folders(m))
         finally:
             with contextlib.suppress(Exception):
@@ -2888,9 +4747,10 @@ class Backend:
                 with contextlib.suppress(Exception):
                     s.quit()
         except smtplib.SMTPAuthenticationError as e:
-            fail("Outgoing server: sign-in failed (%s)." % e.smtp_error.decode(errors="replace")[:200])
+            fail("Outgoing server: sign-in failed. Check the address and password; some providers "
+                 "need an app password.", e.smtp_error.decode(errors="replace")[:200])
         except Exception as e:
-            fail("Outgoing server: " + friendly(e))
+            fail("Outgoing server: " + friendly(e), str(e))
         return {"folders": found}
 
     def api_save_settings(self, a):
@@ -2900,10 +4760,20 @@ class Backend:
         try:
             with open(path, encoding="utf-8") as f:
                 raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("not a JSON object")
         except FileNotFoundError:
             raw = {}
         except ValueError:
-            fail("The settings file %s is broken; fix or remove it first." % path)
+            # a file that can't be read is not written over: a copy of it stays beside the new one (#49)
+            keep = "%s.broken-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+            try:
+                shutil.copy2(path, keep)
+            except OSError as e:
+                fail("The settings file %s can't be read, and no copy of it could be kept." % path, str(e))
+            print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
+            self.made.add(keep)
+            raw = {}
         user = (a.get("user") or R.CFG.user or "").strip().lower()
         if a.get("account", True):
             raw["user"] = user
@@ -2930,24 +4800,75 @@ class Backend:
                 R.keychain_set(user, a["password"])
             except OSError as e:
                 fail("Could not save the password in the system keychain: %s" % e)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(raw, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-        old_home = R.CFG.home
+        write_config(path, raw)
+        old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
         R.CFG = R.load_config(path)
-        if R.CFG.home != old_home:
+        new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
+        if new[3] != old[3]:
             with self.dblock:
                 self.c = R.db()
+        if new != old:
+            # another account or server: no connection, loop or cached mail of the old one goes on (#59)
+            self.restart_sync(clear=bool(old[0]) and new[0] != old[0] and new[3] == old[3],
+                              redetect=not a.get("folders"))
         self.drop()
         self.server_folders = None
         self.contacts = (0, {})
-        self.sync["error"] = None
+        self.clear_error()
         self.start_sync()
         self.bump()
         return self.api_boot({})
+
+    def restart_sync(self, clear, redetect):
+        """The account or server changed: every loop drops its connection and starts again with the
+        new settings. clear: another account in the same index; its mail, folders and cache go."""
+        self.gen += 1
+        self.pre.clear()
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
+        end = time.time() + 10      # the pass and the text download under way end at their next step
+        while (self.sync["running"] or self.bodies is not None) and time.time() < end:
+            time.sleep(0.02)
+        self.drop()
+        with self.dlock:
+            self.drop_download()
+        self.folder_status, self.extra_at, self.redetect = {}, 0, redetect
+        if not clear:
+            return
+        with self.dblock:
+            c = self.c
+            c.execute("delete from msgs")
+            c.execute("delete from fts")
+            c.execute("delete from state")
+            c.execute("delete from links")
+            c.execute("delete from meta where k in ('folders', 'last_sync') or k like 'modseq:%' or k like 'sweep:%'")
+            c.commit()
+        shutil.rmtree(os.path.join(R.CFG.home, "cache"), ignore_errors=True)
+        self.found, self.news, self.news_mark, self.counts = [], [], None, None
+        self.built.clear()
+        with self.marklock:
+            self.marks.clear()
+        self.sync["last"] = None
+
+    def use_detected(self, fs):
+        """The special folders found on the server after a change of account or server, saved without
+        a "Test connection" (which finds them itself): the old provider's names would fail (#59)."""
+        path = config_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        folders = dict(R.DEFAULTS["folders"], **fs)
+        sync = [folders["inbox"], folders["sent"], folders["drafts"]]
+        if raw.get("folders") == folders and raw.get("sync_folders") == sync:
+            return
+        raw["folders"], raw["sync_folders"] = folders, sync
+        write_config(path, raw)
+        R.CFG = R.load_config(path)
+        self.bump()
 
     # ---- demo
 
@@ -3019,7 +4940,10 @@ class Backend:
         self.wake.set()
         self.sched_wake.set()
         self.pre_wake.set()
+        self.body_wake.set()
         self.drop()
+        for m in (self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
 
 
 def ids_in(a):
@@ -3072,6 +4996,76 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
     c.commit()
 
 
+class Restart(Exception):
+    """The settings changed while a sync pass ran: it stops, and the next one uses the new ones."""
+
+
+def own_db(c):
+    """A loop's own index connection, made again when the index moved (another data_dir)."""
+    want = os.path.realpath(os.path.join(R.CFG.home, "index.db"))
+    if c is not None:
+        try:
+            if os.path.realpath(c.execute("pragma database_list").fetchone()[2]) == want:
+                return c
+        except Exception:       # noqa: BLE001 - closed or broken: made again
+            pass
+        with contextlib.suppress(Exception):
+            c.close()
+    return R.db()
+
+
+def write_config(path, raw):
+    """config.json written whole or not at all: to a file beside it, then put in its place."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+STATUS_RE = re.compile(rb"\b(MESSAGES|UIDNEXT|UNSEEN|UIDVALIDITY) (\d+)")
+
+
+def folder_status(m, folder):
+    """(messages, uidnext, unseen, uidvalidity) from STATUS: cheap, and it changes when mail comes,
+    goes or is read elsewhere. None when the server does not say: the folder is then synced."""
+    try:
+        typ, data = m.status(R.q(folder), "(MESSAGES UIDNEXT UNSEEN UIDVALIDITY)")
+    except (imaplib.IMAP4.abort, OSError):
+        raise                                   # the connection: the pass connects again
+    except Exception:                           # noqa: BLE001 - a server without STATUS for it
+        return None
+    if typ != "OK":
+        return None
+    got = dict(STATUS_RE.findall(b" ".join(x for x in data if isinstance(x, bytes))))
+    if not got:
+        return None
+    return tuple(int(got.get(k, -1)) for k in (b"MESSAGES", b"UIDNEXT", b"UNSEEN", b"UIDVALIDITY"))
+
+
+def drop_gone_folders(c, names):
+    """Mail of folders the server no longer has (renamed or deleted in webmail or on the phone) leaves
+    the index, so it shows in no search and keeps no sync busy (#48). Returns how many rows went.
+    Only after a LIST that has the inbox: a failed or empty answer removes nothing."""
+    if not names or not any(n.upper() == "INBOX" for n in names):
+        return 0
+    have = set(names)
+    gone = [r[0] for r in c.execute("select folder from msgs union select folder from state").fetchall()
+            if r[0] not in have and r[0].upper() != "INBOX"]
+    n = 0
+    for f in gone:
+        ids = [r[0] for r in c.execute("select id from msgs where folder=?", (f,)).fetchall()]
+        for i in ids:
+            c.execute("delete from fts where rowid=?", (i,))
+        c.execute("delete from msgs where folder=?", (f,))
+        c.execute("delete from state where folder=?", (f,))
+        n += len(ids)
+    if gone:
+        c.commit()
+    return n
+
+
 def folder_label(v):
     """A folder name the owner typed, tidied; refuses what no server takes."""
     name = " ".join(v.split()) if isinstance(v, str) else ""
@@ -3100,6 +5094,28 @@ def folder_sep(m):
 
 def said(data):
     return b" ".join(x for x in data or [] if isinstance(x, bytes)).decode("utf-8", "replace")
+
+
+def cache_files(k):
+    """The copies of one mail kept on disk (k = folder, uidvalidity, uid): whole, light, and its files."""
+    whole = R.cache_path(*k)
+    return [whole, R.light_path(*k)] + glob.glob(glob.escape(whole[:-4]) + ".part*.eml")
+
+
+def cache_move(old, new):
+    """A renamed folder's mail keeps its copies on disk: they are filed under the folder's name."""
+    for p in cache_files(old):
+        if os.path.exists(p):
+            to = R.cache_path(*new)[:-4] + p[len(R.cache_path(*old)) - 4:]
+            with contextlib.suppress(OSError):
+                os.makedirs(os.path.dirname(to), exist_ok=True)
+                os.replace(p, to)
+
+
+def cache_drop(k):
+    for p in cache_files(k):
+        with contextlib.suppress(OSError):
+            os.remove(p)
 
 
 def list_folders(m):
@@ -3641,7 +5657,15 @@ def hex_ref(c):
     return r | g << 8 | b << 16
 
 
-def window_theme(dark, bg=None, text=None):
+def mac_appearance(AppKit, dark, system):
+    """The window's appearance: None follows macOS (theme System), else Aqua or DarkAqua is forced. A forced one
+    is all the page sees, so with System it would never hear macOS switch between light and dark."""
+    if system:
+        return None
+    return AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua)
+
+
+def window_theme(dark, bg=None, text=None, system=False):
     """Match the native title bar to the app theme (it can differ from the system's)."""
     w = WINDOW.w
     if w is None:
@@ -3657,8 +5681,7 @@ def window_theme(dark, bg=None, text=None):
             nw = w.native
             if nw is None:
                 return
-            nw.setAppearance_(AppKit.NSAppearance.appearanceNamed_(
-                AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua))
+            nw.setAppearance_(mac_appearance(AppKit, dark, system))
             ref = (bg or "").lstrip("#")
             if re.fullmatch(r"[0-9a-fA-F]{6}", ref):
                 nw.setBackgroundColor_(AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -3684,12 +5707,170 @@ def window_theme(dark, bg=None, text=None):
                 put(attr, ref)
 
 
+def one_instance():
+    """The open lock file when this is the only copy of the app on this mailbox, else None. The lock
+    goes with the process, also when it crashes."""
+    os.makedirs(R.CFG.home, exist_ok=True)
+    f = open(os.path.join(R.CFG.home, "app-instance.lock"), "a+")
+    if R.try_lock(f):
+        return f
+    f.close()
+    return None
+
+
+def show_flag():
+    return os.path.join(R.CFG.home, "asks", "show-window")
+
+
+def ask_show():
+    """Ask the copy of the app that runs to show itself (Backend.take_show)."""
+    os.makedirs(os.path.dirname(show_flag()), exist_ok=True)
+    with open(show_flag(), "w") as f:
+        f.write(str(os.getpid()))
+
+
+WINDOW_SIZE = (1280, 820)
+WINDOW_MIN = (880, 560)
+
+
+def fit_window(saved, areas):
+    """Where the window opens and how big: the saved place (prefs "window": x, y, width, height, maximized), kept
+    inside the screen it was on, never larger than that screen's work area. areas: the screens' work areas as
+    (x, y, width, height), top-left origin, the main screen first. A window on a screen that is gone opens in the
+    middle of the main one; with nothing saved it opens at the default size, centred. x and y are None when no
+    screen is known (the window system places it)."""
+    saved = saved if isinstance(saved, dict) else {}
+    num = lambda v: v if type(v) in (int, float) else None     # noqa: E731
+    w, h = num(saved.get("width")), num(saved.get("height"))
+    w, h = (int(w), int(h)) if w and h and w >= 200 and h >= 200 else WINDOW_SIZE
+    x, y = num(saved.get("x")), num(saved.get("y"))
+    out = {"width": w, "height": h, "x": None, "y": None, "maximized": saved.get("maximized") is True}
+    areas = [a for a in areas or () if a[2] > 0 and a[3] > 0]
+    if not areas:
+        return out
+
+    def overlap(a):
+        return max(0, min(x + w, a[0] + a[2]) - max(x, a[0])) * max(0, min(y + h, a[1] + a[3]) - max(y, a[1]))
+    area = max(areas, key=overlap) if x is not None and y is not None else None
+    if area is None or overlap(area) == 0:
+        area, x, y = areas[0], None, None
+    ax, ay, aw, ah = (int(v) for v in area)
+    w = max(min(w, aw), min(WINDOW_MIN[0], aw))
+    h = max(min(h, ah), min(WINDOW_MIN[1], ah))
+    if x is None:
+        x, y = ax + (aw - w) // 2, ay + (ah - h) // 2
+    out.update(width=w, height=h, x=int(min(max(x, ax), ax + aw - w)), y=int(min(max(y, ay), ay + ah - h)))
+    return out
+
+
+def screen_areas():
+    """The screens' work areas (no menu bar, Dock or taskbar), top-left origin, the main screen first; [] if unknown."""
+    try:
+        if sys.platform == "darwin":
+            import AppKit
+            screens = AppKit.NSScreen.screens()
+            top = screens[0].frame().size.height
+            return [(v.origin.x, top - v.origin.y - v.size.height, v.size.width, v.size.height)
+                    for v in (s.visibleFrame() for s in screens)]
+        import webview
+        out = []
+        for s in webview.screens:
+            f = getattr(s, "frame", None)        # Windows: the work area
+            out.append((f.X, f.Y, f.Width, f.Height) if hasattr(f, "Width") else (s.x, s.y, s.width, s.height))
+        return out
+    except Exception:       # noqa: BLE001
+        return []
+
+
+def window_place():
+    """The window's place for this start (see fit_window)."""
+    saved = None
+    with contextlib.suppress(Exception):
+        saved = WINDOW.backend.prefs().get("window")
+    return fit_window(saved, screen_areas())
+
+
+def keep_window_place(w, place):
+    """Remember the window's size and place: on resize and move (a second after the last one) and on close.
+    A maximized, full-screen or minimized window keeps the size it had before. Never stops the window closing."""
+    state = {k: place.get(k) for k in ("x", "y", "width", "height", "maximized")}
+    flags = {"max": bool(place.get("maximized")), "min": False, "timer": None}
+
+    def save():
+        with contextlib.suppress(Exception):
+            WINDOW.backend.api_prefs({"window": dict(state)})
+
+    def later():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        flags["timer"] = threading.Timer(1.0, save)
+        flags["timer"].daemon = True
+        flags["timer"].start()
+
+    def resized(width, height):
+        if not (flags["max"] or flags["min"]):
+            state.update(width=int(width), height=int(height))
+            later()
+
+    def moved(x, y):
+        if not (flags["max"] or flags["min"]) and x > -30000 and y > -30000:     # Windows parks a minimized one there
+            state.update(x=int(x), y=int(y))
+            later()
+
+    def maximized():
+        flags["max"] = True
+        if sys.platform != "darwin":           # on a Mac this is full screen, not kept for the next start
+            state["maximized"] = True
+            later()
+
+    def minimized():
+        flags["min"] = True
+
+    def restored():
+        flags["max"] = flags["min"] = False
+        if state["maximized"]:
+            state["maximized"] = False
+            later()
+
+    def closing():
+        if flags["timer"]:
+            flags["timer"].cancel()
+        save()
+
+    ev = w.events
+    ev.resized += resized
+    ev.moved += moved
+    ev.maximized += maximized
+    ev.minimized += minimized
+    ev.restored += restored
+    ev.closing += closing
+    if sys.platform == "darwin" and place.get("x") is not None:
+        ev.before_show += lambda: mac_place(w, place)
+
+
+def mac_place(w, place):
+    """Put the Mac window where it was (pywebview reads x and y against the focused screen, not the main one)."""
+    try:
+        import AppKit
+        nw = w.native
+        top = AppKit.NSScreen.screens()[0].frame().size.height
+        nw.setFrame_display_(AppKit.NSMakeRect(place["x"], top - place["y"] - place["height"],
+                                               place["width"], place["height"]), True)
+    except Exception:       # noqa: BLE001
+        pass
+
+
 def run_window(url, home):
     import webview
     dark = system_dark()
-    w = webview.create_window(APP_NAME, url, width=1280, height=820, min_size=(880, 560),
+    place = window_place()
+    mac = sys.platform == "darwin"
+    w = webview.create_window(APP_NAME, url, width=place["width"], height=place["height"], min_size=WINDOW_MIN,
+                              x=None if mac else place["x"], y=None if mac else place["y"],
+                              maximized=place["maximized"] and not mac,
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
+    keep_window_place(w, place)
     w.events.closing += window_closing      # a mail on its way is sent or asked about first
     if sys.platform == "darwin":
         mac_full_frame_rate()
@@ -3717,14 +5898,25 @@ def main(argv=None):
     # a plain kill still closes the mailbox and removes the demo's temp folder
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # one copy of the app per mailbox: a second one (a double-click on a slow start, a second app
+    # bundle) would sync and send scheduled mail beside the first. It brings the first one forward.
+    instance = None
+    if not a.demo:
+        instance = one_instance()
+        if instance is None:
+            ask_show()
+            print("Ragdoll Mail is already open; it was brought to the front.", file=sys.stderr)
+            return 0
     try:
         backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
         return too_new(str(e), a.browser)
+    WINDOW.backend = backend                # the window keeps its size and place in the prefs
     token = os.environ.get("RAGDOLL_APP_TOKEN") or secrets.token_urlsafe(24)
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/#t=%s" % (srv.server_address[1], token)
+    backend.url = url
     use_window = not a.browser
     if use_window:
         try:
@@ -3736,7 +5928,6 @@ def main(argv=None):
     try:
         with R.running("app"):
             if use_window:
-                WINDOW.backend = backend
                 run_window(url, R.CFG.home)
             else:
                 print("ragdoll-mail is running at http://127.0.0.1:%d  (Ctrl+C stops it)" % srv.server_address[1])

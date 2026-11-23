@@ -117,8 +117,8 @@ class Keys(unittest.TestCase):
             src = f.read()
         self.assertIn('e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow()', src)
         self.assertIn('[MOD + "R", "sync_now"]', src)
-        # no shortcut takes Ctrl on a Mac any more
-        self.assertNotIn("const mod = e.metaKey || e.ctrlKey", src)
+        # no app shortcut takes Ctrl on a Mac any more (frameKey keeps both: they are the mail's own text keys)
+        self.assertNotIn("const mod = e.metaKey || e.ctrlKey", src.replace(src[src.index("function frameKey("):src.index("function nextAfter(")], ""))
 
     def test_ime_keys_are_left_alone(self):
         self.assertEqual(js('[{ isComposing: true }, { keyCode: 229 }, { key: "Enter", keyCode: 13 }, null].map(K.isIME)'),
@@ -131,8 +131,8 @@ class Keys(unittest.TestCase):
         spots = [m.start() for m in re.finditer(r'"keydown"|onkeydown:', src)]
         self.assertGreater(len(spots), 8)
         for at in spots:
-            near = src[at:at + 160]
-            self.assertTrue("K.isIME(e)" in near or "onKey" in near, near)
+            near = src[at:at + 220]
+            self.assertTrue("K.isIME(e)" in near or "e.isComposing || e.keyCode === 229" in near or "onKey" in near, near)
         self.assertIn("if (K.isIME(e)) return;", src[src.index("function onKey(e)"):][:200])
 
     def test_single_keys_stop_at_an_open_compose(self):

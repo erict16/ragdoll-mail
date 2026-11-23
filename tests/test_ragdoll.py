@@ -35,7 +35,7 @@ class Basics(unittest.TestCase):
         self.assertEqual(ragdoll.bs_names(blob), ["上海.dwg", "plain.pdf"])
 
     def test_new_text_and_bare_subject(self):
-        self.assertEqual(ragdoll.new_text("Noted.\n\n发件人: a\nold"), "Noted.")
+        self.assertEqual(ragdoll.new_text("Noted.\n\n发件人: a\n发送时间: 2026年11月1日\n主题: x\nold"), "Noted.")
         self.assertEqual(ragdoll.bare_subject("回复： Re: Fw: Order 12"), "order 12")
 
     def test_big_attachment_lines_hide_links(self):
@@ -46,7 +46,7 @@ class Basics(unittest.TestCase):
 
     def test_subjects(self):
         self.assertEqual(ragdoll.reply_subject("Order"), "Re: Order")
-        self.assertEqual(ragdoll.reply_subject("回复： Order"), "Re: 回复： Order")
+        self.assertEqual(ragdoll.reply_subject("回复： Order"), "回复： Order")     # its own reply prefix
         self.assertEqual(ragdoll.reply_subject("RE: Order"), "RE: Order")
         self.assertEqual(ragdoll.forward_subject("Re: Order"), "Fw: Re: Order")
 
@@ -82,7 +82,7 @@ class Drafts(unittest.TestCase):
         m = self.build()
         self.assertEqual(m["In-Reply-To"], "<abc@cust.vn>")
         self.assertIn("<root@cust.vn>", m["References"])
-        self.assertEqual(str(m["Subject"]), "Re: 回复： PO-1234")
+        self.assertEqual(str(m["Subject"]), "回复： PO-1234")      # its own reply prefix is not doubled
         html = m.get_body(("html",)).get_content()
         self.assertLess(html.find("+1 555 0100"), html.find("发件人"))
         self.assertIn("cid:logo1", html)
@@ -1168,6 +1168,7 @@ class AppBridge(unittest.TestCase):
         self.assertIn("newer Ragdoll Mail", err)
 
 
+@unittest.skipIf(sys.platform == "win32", "Windows reads the registry, never the login shell")
 class PasswordFromShell(unittest.TestCase):
     """An app opened from the Dock does not get the variables the shell profile exports."""
 
