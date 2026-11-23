@@ -68,7 +68,7 @@ This installs only the command, on Homebrew's Python. It needs no Apple signatur
 **From the code** (no app needed):
 
 1. Python 3.10+ (SQLite 3.34+ for the trigram index; the python.org builds have it).
-2. Copy `config.example.json` to `~/.config/ragdoll-mail/config.json` and fill it in. Dates use the computer's time zone; add `"utc_offset_hours": 8` (for example) to use a fixed one.
+2. Copy `config.example.json` to `~/.config/ragdoll-mail/config.json` and fill it in. Dates use the computer's time zone; add `"utc_offset_hours": 8` (for example) to use a fixed one. Ragdoll checks the mail server's security certificate. If your company's server uses a certificate it made itself, add `"tls_verify": false`.
 3. Put the IMAP app password in the environment variable named by `password_env` (or sign in once in the desktop app, which saves it in the system keychain). Windows (stays set for new programs):
    ```powershell
    [Environment]::SetEnvironmentVariable('RAGDOLL_PASSWORD', '<password>', 'User')

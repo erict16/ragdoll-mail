@@ -64,7 +64,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 FROZEN = bool(getattr(sys, "frozen", False))      # inside the built Ragdoll Mail app
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
@@ -536,10 +536,54 @@ IMAP_TIMEOUT = 60
 BIG_WAIT = 180      # the wait before the first byte of a big mail or file, which the server builds first
 
 
+_TLS = {}
+
+
+def mac_roots():
+    """The root certificates macOS trusts (Apple's and those an admin added), as PEM text, or ""."""
+    out = []
+    for kc in ("/System/Library/Keychains/SystemRootCertificates.keychain", "/Library/Keychains/System.keychain"):
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            r = subprocess.run(["/usr/bin/security", "find-certificate", "-a", "-p", kc],
+                               capture_output=True, text=True, timeout=20)
+            out.append(r.stdout)
+    return "".join(out)
+
+
+def tls_context():
+    """How every connection to a server is secured: the server's certificate must be valid for its name.
+    The Mac app's own OpenSSL looks for root certificates in a folder no Mac has, so there the roots
+    come from the system keychain (else from certifi when it is installed). "tls_verify": false in the
+    settings turns the check off, for a company server with a home-made certificate."""
+    if not CFG.d.get("tls_verify", True):
+        return ssl._create_unverified_context()
+    ctx = _TLS.get("ctx")
+    if ctx is None:
+        ctx = ssl.create_default_context()
+        if not ctx.cert_store_stats().get("x509_ca") and not _default_ca_found():
+            pem = mac_roots() if sys.platform == "darwin" else ""
+            if not pem:
+                with contextlib.suppress(Exception):
+                    import certifi
+                    with open(certifi.where(), encoding="ascii") as f:
+                        pem = f.read()
+            if pem:
+                ctx.load_verify_locations(cadata=pem)
+        _TLS["ctx"] = ctx
+    return ctx
+
+
+def _default_ca_found():
+    """Whether OpenSSL's own certificate file or folder exists (a folder is read only when needed,
+    so its certificates don't show in cert_store_stats)."""
+    p = ssl.get_default_verify_paths()
+    return any(x and os.path.exists(x) for x in (p.cafile, p.capath))
+
+
 def imap(timeout=None):
     need_account()
     # a server that does not answer must not hold the caller (the app's one connection) for minutes
-    m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], timeout=15)
+    m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], ssl_context=tls_context(), timeout=15)
     m.login(CFG.user, password())
     with contextlib.suppress(Exception):
         m.sock.settimeout(timeout or IMAP_TIMEOUT)
@@ -2780,13 +2824,13 @@ def smtp_open(host, port, timeout):
     if int(port) in (587, 25):
         s = smtplib.SMTP(host, int(port), timeout=timeout)
         try:
-            s.starttls(context=ssl.create_default_context())
+            s.starttls(context=tls_context())
         except Exception:
             with contextlib.suppress(Exception):
                 s.close()
             raise
         return s
-    return smtplib.SMTP_SSL(host, int(port), timeout=timeout)
+    return smtplib.SMTP_SSL(host, int(port), timeout=timeout, context=tls_context())
 
 
 # A company domain's mail servers, from who receives its mail (its MX records):

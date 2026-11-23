@@ -300,8 +300,15 @@ function leave(node, ms = 150) {
   setTimeout(() => node.remove(), ms);
 }
 
+// toasts sit at the foot of the reading pane, centered in it; on a narrow window, centered in the window
+function placeToasts() {
+  const box = $("#toasts"), r = $("#reader")?.getBoundingClientRect();
+  box.style.left = r && r.width >= 360 && r.left > 0 ? r.left + r.width / 2 + "px" : "";
+}
+addEventListener("resize", () => placeToasts());
 function toast(text, opts = {}) {
   const box = $("#toasts");
+  placeToasts();
   // a toast with an id takes the place of the one before it (text size steps, for one)
   if (opts.id) for (const old of $$(`.toast[data-id="${opts.id}"]`, box)) old.replaceWith();
   const node = el("div", { "data-id": opts.id, class: "toast" + (opts.error ? " err" : ""), role: "status" },
@@ -879,6 +886,7 @@ function moveFolderMenu(anchor, f) {
 }
 // a sentence from the server about folders, in the chosen language
 MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
+MSGS.push([/^Can't check for updates right now\./, "err_upd"]);
 MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
 const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
@@ -889,6 +897,7 @@ function accountMenu() {
     { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
+    { icon: "download", label: t("upd_check"), run: checkUpdates },
     "-",
     { note: t("version", S.boot.version) },
   ], { above: true });
@@ -4149,10 +4158,21 @@ function drawProblem() {
   col.classList.add("has-banner");
   col.style.setProperty("--banner-h", b.offsetHeight + "px");
 }
-$("#update").addEventListener("click", () => {
-  if (S.update?.url) api("open_url", { url: S.update.url }).catch(fail);
-  else toast(t("run_update"), { ms: 8000 });
-});
+// Homebrew and a clone update from a terminal; the app from the download page (#76)
+function offerUpdate(up) {
+  if (up.command) toast(t("run_cmd", up.command), { ms: 10000, action: { label: t("copy"), run: () => copyText(up.command) } });
+  else api("open_url", { url: up.url }).catch(fail);
+}
+$("#update").addEventListener("click", () => { if (S.update) offerUpdate(S.update); });
+async function checkUpdates() {
+  toast(t("upd_checking"), { id: "upd" });
+  let r;
+  try { r = await api("check_update"); } catch (e) { for (const n of $$('.toast[data-id="upd"]', $("#toasts"))) n.replaceWith(); return fail(e); }
+  S.update = r.update;
+  renderNav();
+  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t("upd_get"), run: () => offerUpdate(r.update) } });
+  else toast(t("upd_latest", "v" + r.version), { id: "upd" });
+}
 
 // ---------------------------------------------------------------- start
 

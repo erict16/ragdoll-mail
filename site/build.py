@@ -97,7 +97,7 @@ EN = {
     "c_more": "Compare with Superhuman, Shortwave, Foxmail and others",
     "quote": "Spark started charging, and I wanted a free alternative to it. Himalaya was too slow to search my mail. "
              "So I built Ragdoll Mail.",
-    "sign": "Eric Tan, who made Ragdoll Mail",
+    "sign": "Eric Tan, who reads his own mail in it every day",
 
     "q_h2": "Questions",
     "q": [
@@ -170,7 +170,7 @@ ZH = dict(EN, **{
     ],
     "c_more": "和 Superhuman、Shortwave、Foxmail 等软件对比",
     "quote": "Spark 开始收费了，我想要一个免费的 Spark 平替。Himalaya 搜邮件又太慢。所以我自己做了 Ragdoll Mail。",
-    "sign": "Eric Tan，Ragdoll Mail 作者",
+    "sign": "Eric Tan，每天都用它收发自己的邮件",
 
     "q_h2": "常见问题",
     "q": [
