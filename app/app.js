@@ -3,6 +3,7 @@ import { ICONS } from "./icons.js";
 import { REMIX } from "./icons-remix.js";
 import { FILE_ICONS, FILE_EXT } from "./fileicons.js";
 import { LANGS, LANG_NAMES } from "./i18n.js";
+import * as K from "./compose-kit.js";
 
 // ---------------------------------------------------------------- basics
 
@@ -18,6 +19,8 @@ if (location.hash) history.replaceState(null, "", location.pathname);
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? "⌘" : "Ctrl+";
+// the app's own shortcuts: Cmd on a Mac (its Ctrl keys stay the system's text keys), Ctrl elsewhere
+const isMod = K.modOf(MAC);
 
 // language: a saved choice, or the system's when it is one of ours
 let LANG = "en", LOCALE = undefined, TZ = undefined, STR = LANGS.en;
@@ -764,7 +767,7 @@ function nameSheet(title, value, run) {
     try { await run(name); closeLayer(); } catch (e) { fail(e); input.focus(); }
     busy = false;
   };
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); go(); } });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, title), el("div", { class: "form" }, input),
     el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("ok")))));
@@ -878,11 +881,12 @@ function moveFolderMenu(anchor, f) {
 MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
 MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
+const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
 function accountMenu() {
   menu($("#account"), [
     { note: S.boot.demo ? t("demo") : S.boot.user },
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
-    { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
+    { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
     "-",
@@ -1370,14 +1374,14 @@ function targets() {
 }
 const rowOf = (id) => S.rows.find((x) => x.id === id) || S.thread?.rows.find((x) => x.id === id);
 async function pickRow(id, e) {
-  if (!(e.metaKey || e.ctrlKey || e.shiftKey)) return selectRow(id);
+  if (!(isMod(e) || e.shiftKey)) return selectRow(id);
   if (S.compose && !(await leaveCompose())) return;
   if (e.shiftKey && (S.anchor || S.sel)) {
     const ids = S.rows.map((x) => x.id);
     let a = ids.indexOf(S.anchor || S.sel), b = ids.indexOf(id);
     if (a < 0) a = b;
     const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
-    S.multi = new Set(e.metaKey || e.ctrlKey ? [...S.multi, ...range] : range);
+    S.multi = new Set(isMod(e) ? [...S.multi, ...range] : range);
   } else {
     if (!S.multi.size && S.sel) S.multi.add(S.sel);
     if (S.multi.has(id)) S.multi.delete(id); else S.multi.add(id);
@@ -1656,21 +1660,39 @@ function moveMail(ids, to) {
   job.commit = async () => {
     if (job.done) return;
     job.done = true; clearTimeout(job.timer);
-    try { await api("move", { ids, to }); refreshCounts(); } catch (e) { fail(e); }
+    // the server's answer names the move, so Cmd+Z can still bring it back later (undoMove)
+    job.sent = api("move", { ids, to }).then((r) => { job.token = r?.undo; refreshCounts(); }, fail);
+    await job.sent;
     unhide(); loadList({ quiet: true });
   };
   job.timer = setTimeout(job.commit, 5000);
   pendingMoves.add(job);
-  toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
+  job.undo = async () => {
+    if (job.done) return;
+    job.done = true; clearTimeout(job.timer); unhide();
+    await loadList({ quiet: true });
+    if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
+    else if (leftThread && S.sel === sel && S.thread) openThread(sel);
+  };
+  UNDO.push(job);
+  if (UNDO.length > 10) UNDO.shift();
+  job.toast = toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
     ms: 5000,
-    action: { label: t("undo"), run: async () => {
-      if (job.done) return;
-      job.done = true; clearTimeout(job.timer); unhide();
-      await loadList({ quiet: true });
-      if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
-      else if (leftThread && S.sel === sel && S.thread) openThread(sel);
-    } },
+    action: { label: t("undo"), run: () => { UNDO.splice(UNDO.indexOf(job) >>> 0, 1); job.undo(); } },
   });
+}
+// Cmd+Z (Ctrl+Z): the last move. While it waits it is called off; once on the server it is moved back.
+const UNDO = [];                // the last 10 moves, newest last
+async function undoMove() {
+  const job = UNDO.pop();
+  if (!job) return toast(t("nothing_undo"), { id: "undo" });
+  if (!job.done) { job.toast?.close(); return job.undo(); }
+  await job.sent;
+  if (!job.token) return toast(t("nothing_undo"), { id: "undo" });
+  try { await api("unmove", { token: job.token }); } catch (e) { return fail(e); }
+  toast(t("moved_back"), { id: "undo" });
+  refreshCounts();
+  loadList({ quiet: true });
 }
 // The window is closing: send the waiting moves now.
 window.addEventListener("pagehide", () => {
@@ -1717,22 +1739,39 @@ $("#search-btn").addEventListener("click", openSearch);
 $("#search").placeholder = t("search");
 $("#search-clear").innerHTML = icon("x");
 $("#search-clear").addEventListener("click", () => { $("#search").value = ""; onSearch(true); $("#search").focus(); });
-$("#search").addEventListener("input", () => onSearch());
-$("#search").addEventListener("keydown", (e) => {
+// while an input method still has letters open ("bao jia" before it becomes 报价) nothing is searched;
+// the search runs when the words are picked
+$("#search").addEventListener("input", (e) => { if (e.isComposing) syncSearchUI(); else onSearch(); });
+$("#search").addEventListener("compositionend", () => onSearch());
+$("#search").addEventListener("keydown", async (e) => {
+  if (K.isIME(e)) return;
   if (e.key === "Escape") { e.preventDefault(); $("#search").value = ""; onSearch(true); $("#search").blur(); $("#rows").focus(); }
-  if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); $("#rows").focus(); if (S.rows.length) selectRow(S.rows[0].id); }
+  if (e.key === "ArrowDown" || e.key === "Enter") {
+    e.preventDefault();
+    // the words typed may not have been searched yet: wait for their results, never open the list before
+    const q = $("#search").value.trim();
+    await runSearch();
+    if (S.query !== q || $("#search").value.trim() !== q) return;
+    $("#rows").focus();
+    if (S.rows.length) selectRow(S.rows[0].id);
+  }
 });
+let searchRun = null;         // the search on its way: [query, promise]
+function runSearch() {
+  clearTimeout(searchTimer);
+  const q = $("#search").value.trim();
+  if (q === S.query) return searchRun && searchRun[0] === q ? searchRun[1] : Promise.resolve();
+  S.query = q;
+  renderNav();
+  const job = [q, loadList().finally(() => { if (searchRun === job) searchRun = null; })];
+  searchRun = job;
+  markOpen();
+  return job[1];
+}
 function onSearch(now = false) {
   syncSearchUI();
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q = $("#search").value.trim();
-    if (q === S.query) return;
-    S.query = q;
-    renderNav();
-    loadList();
-    markOpen();
-  }, now ? 0 : 220);
+  searchTimer = setTimeout(runSearch, now ? 0 : 220);
 }
 
 // ---------------------------------------------------------------- reader
@@ -1766,7 +1805,7 @@ function renderToolbar() {
       iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
-      iconBtn("trash-2", t("discard"), () => discardCompose()));
+      iconBtn("trash-2", t("discard"), () => discardCompose(), { disabled: !!S.compose.busy }));
     return;
   }
   if (S.sched) {
@@ -2319,7 +2358,7 @@ function attNode(a, id) {
   };
   let dragged = false;
   const node = el("div", { class: "att" + (a.program ? " att-program" : ""), role: "button", tabindex: "0", title: a.name,
-    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter" && !K.isIME(e)) open(); } },
     el("div", fileTile(a.name)),
     el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }),
       a.program ? el("div", { class: "att-size att-warn", html: icon("triangle-alert", "small") + esc(t("program_file") + " · " + size(a.size)) })
@@ -2734,18 +2773,8 @@ function collapseQuote(st) {
 
 // ---------------------------------------------------------------- compose
 
-const ADDR_RE = /^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$/;
-function parseAddrs(text) {
-  const out = [];
-  for (const part of text.split(/[,;\n]+/)) {
-    const s = part.trim();
-    if (!s) continue;
-    const m = s.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
-    if (m) out.push({ name: m[1].trim(), addr: m[2].trim().toLowerCase() });
-    else out.push({ name: "", addr: s.replace(/^mailto:/i, "").toLowerCase() });
-  }
-  return out;
-}
+// addresses: commas in quoted names and the full-width ，； of a Chinese input method (compose-kit.js)
+const { ADDR_RE, parseAddrs } = K;
 
 async function openCompose(opts) {
   if (S.compose && !(await leaveCompose())) return;
@@ -2760,6 +2789,8 @@ async function openCompose(opts) {
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;
+  // a draft made elsewhere carries the mail's own HTML: only plain content goes into the editor
+  c.html = cleanHTML(c.html || "");
   // a draft we wrote before comes back inside our own font wrapper: take it off
   if (c.html) {
     const d = el("div", { html: c.html });
@@ -2779,25 +2810,32 @@ function renderCompose() {
   if (c.showBcc) box.append(addrField("bcc", t("bcc")));
   const subj = el("input", { class: "subject-input", type: "text", placeholder: t("subject"), value: c.subject, spellcheck: "true" });
   subj.addEventListener("input", () => { c.subject = subj.value; touched(); });
-  subj.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ed.focus(); } });
+  subj.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); ed.focus(); } });
   const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
-    style: `font-family:${mailFont()};font-size:${mailSize()}px` });
-  ed.innerHTML = c.html || "";
+    style: `font-family:${mailFont()};font-size:${mailSize()}px;--p-gap:${K.paraGap(mailSize())}px` });
+  ed.innerHTML = cleanHTML(c.html || "");
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
+  // Return starts a paragraph (<p>, a small gap below the one before), Shift+Return a line inside it (<br>)
+  ed.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "p"));
   ed.addEventListener("keydown", (e) => {
-    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    if (K.isIME(e)) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      document.execCommand("defaultParagraphSeparator", false, "p");
+      // a first line typed straight into the box has no paragraph of its own yet: give it one, so it
+      // keeps the same gap below it (an editing command, so Undo still works)
+      if (blockOf(getSelection().anchorNode, ed) === ed) document.execCommand("formatBlock", false, "p");
+      return;
+    }
+    const mod = isMod(e), k = e.key.toLowerCase();
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
     else if (k === "b" || k === "i" || k === "u") { e.preventDefault(); edCmd({ b: "bold", i: "italic", u: "underline" }[k]); }
-    else if (e.shiftKey && (k === "7" || k === "8")) { e.preventDefault(); edCmd(k === "7" ? "insertOrderedList" : "insertUnorderedList"); }
+    // with Shift held e.key is "&" or "*" on many layouts: the key's place says which it is
+    else if (e.shiftKey && (e.code === "Digit7" || e.code === "Digit8")) { e.preventDefault(); edCmd(e.code === "Digit7" ? "insertOrderedList" : "insertUnorderedList"); }
   });
   box.append(subj, fmtBar(), ed);
-  if (c.signature && c.use_signature) {
-    const sig = el("div", { class: "sig" });
-    sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), () => { c.use_signature = false; touched(); sig.remove(); }, { cls: "tiny" }));
-    box.append(sig);
-  }
+  if (c.signature && c.use_signature) box.append(sigBox(c));
   if (c.quote) {
     const qbox = el("div", { hidden: true });
     const tog = el("button", { class: "quote-toggle", "data-tip": t("show_quote"), "aria-label": t("show_quote") }, "•••");
@@ -2819,7 +2857,29 @@ function renderCompose() {
   });
 }
 
+// the signature under the text: a click on it picks another one (when there are more), × leaves it out
+const sigName = (x, k) => x.name || t("sig_n", k + 1);
+function sigBox(c) {
+  const many = (c.signatures || []).filter((x) => x.html.trim()).length > 1;
+  const sig = el("div", { class: "sig" + (many ? " pick" : ""), "data-tip": many ? t("sig_change") : null });
+  sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), (e) => { e.stopPropagation(); c.use_signature = false; touched(c); sig.remove(); }, { cls: "tiny" }));
+  if (many) sig.addEventListener("click", () => menu(sig, c.signatures.map((x, k) => ({ icon: "square-pen", label: sigName(x, k), on: x.id === c.sig_id,
+    run: () => {
+      if (x.id === c.sig_id) return;
+      c.sig_id = x.id; c.signature = x.html; touched(c);
+      sig.replaceWith(sigBox(c));
+    } })).filter((it, k) => c.signatures[k].html.trim())));
+  return sig;
+}
+
 // ---------------------------------------------------------------- formatting
+
+// the paragraph-like box a node is in, or the editor itself when it sits straight in it
+const BLOCKS = /^(P|DIV|LI|BLOCKQUOTE|H[1-6]|PRE|TD|TH|UL|OL|TABLE)$/;
+function blockOf(node, ed) {
+  for (let n = node; n && n !== ed; n = n.parentNode) if (n.nodeType === 1 && BLOCKS.test(n.tagName)) return n;
+  return ed;
+}
 
 const fmtBarOn = () => PREFS.fmt_bar !== false;
 function toggleFmtBar() {
@@ -2861,12 +2921,10 @@ function edCmd(cmd, val = null) {
 }
 function fmtSize(px) {
   if (!edFocus()) return;
+  // the browser's own sizes 1-7, left as they are so Undo works and a bare caret gets the size it shows;
+  // style.css draws them at K.FONT_PX and outHTML sends those pixels
   document.execCommand("styleWithCSS", false, false);
-  document.execCommand("fontSize", false, "7");
-  for (const f of $$(".compose .editor font[size='7']")) {
-    const sp = el("span", { style: `font-size:${px}px` });
-    sp.append(...f.childNodes); f.replaceWith(sp);
-  }
+  document.execCommand("fontSize", false, K.sizeKey(px));
   edChanged();
 }
 const FMT_SIZES = [["12", "size_small"], ["14", "size_normal"], ["18", "size_large"], ["24", "size_huge"]];
@@ -2920,7 +2978,7 @@ function linkSheet() {
     else document.execCommand("insertHTML", false, `<a href="${esc(href)}">${esc(words)}</a>`);
     edChanged();
   };
-  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, t("link")), el("div", { class: "form" },
     el("label", {}, el("span", { class: "lab" }, t("link_url")), url),
     el("label", {}, el("span", { class: "lab" }, t("link")), label)),
@@ -2929,13 +2987,21 @@ function linkSheet() {
   requestAnimationFrame(() => url.focus());
 }
 
-function touched() {
-  const c = S.compose;
+// a change to the compose: it counts edits, so a save knows whether more came in while it ran
+function touched(c = S.compose) {
   if (!c) return;
   c.dirty = true;
-  setStatus("");
+  c.edits = (c.edits || 0) + 1;
+  if (S.compose === c) setStatus("");
   clearTimeout(c.autosave);
-  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty) saveDraft(c).catch(() => {}); }, 15000);
+  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty && !c.busy) saveDraft(c, { auto: true }).catch(() => {}); }, 15000);
+}
+// while Send checks and saves the mail, the compose can't change under it
+function lockCompose(c, on) {
+  c.busy = on;
+  const box = $(".compose");
+  if (box && S.compose === c) box.inert = on;
+  renderToolbar();
 }
 function setStatus(s) {
   if (S.compose) S.compose.status = s;
@@ -2961,12 +3027,15 @@ function addrField(key, label, first = false) {
     if (sug) chips.append(sug);
   };
   const closeSug = () => { sug?.remove(); sug = null; sugItems = []; };
-  const add = (list) => {
+  const add = (list, focus = true) => {
     const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
     for (const p of list) if (p.addr && !have.has(p.addr)) { c[key].push(p); have.add(p.addr); }
-    input.value = ""; closeSug(); draw(); touched(); input.focus();
+    input.value = ""; closeSug(); draw(); touched(); if (focus) input.focus();
   };
-  const commit = () => { const v = input.value.trim(); if (v) add(parseAddrs(v)); };
+  const commit = (focus = true) => { const v = input.value.trim(); if (v) add(parseAddrs(v), focus); };
+  // Send turns what is still typed into chips, shown (composeState)
+  input.rdCommit = () => commit(false);
+  input.dataset.k = key;
   const showSug = async () => {
     const q = input.value.trim();
     if (!q) return closeSug();
@@ -2983,8 +3052,14 @@ function addrField(key, label, first = false) {
       el("span", { class: "n" }, p.name || p.addr), p.name ? el("span", { class: "a" }, p.addr) : null)));
     chips.append(sug);
   };
-  input.addEventListener("input", () => { clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); if (/[,;]\s*$/.test(input.value)) commit(); });
+  // typing counts as a change (Esc saves it); a separator after a whole address makes the chip
+  input.addEventListener("input", (e) => {
+    clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); touched();
+    if (!e.isComposing && K.commitReady(input.value)) commit();
+  });
+  input.addEventListener("compositionend", () => { if (K.commitReady(input.value)) commit(); });
   input.addEventListener("keydown", (e) => {
+    if (K.isIME(e)) return;
     if (sug && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       sugOn = (sugOn + (e.key === "ArrowDown" ? 1 : -1) + sugItems.length) % sugItems.length;
@@ -2998,7 +3073,7 @@ function addrField(key, label, first = false) {
   });
   input.addEventListener("paste", (e) => {
     const txt = e.clipboardData.getData("text");
-    if (/[,;\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
+    if (/[,;，；\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
   });
   input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) { commit(); closeSug(); } }, 150));
   chips.addEventListener("mousedown", (e) => { if (e.target === chips) { e.preventDefault(); input.focus(); } });
@@ -3052,7 +3127,7 @@ async function uploadFiles(files) {
       const j = await r.json();
       if (!j.ok) throw new Error(tr(j.error) || t("error"));
       Object.assign(a, j.data, { uploading: false });
-      touched();
+      if (S.compose === c) touched(c); else c.dirty = true;
     } catch (e) {
       c.atts = c.atts.filter((x) => x !== a);
       fail(e);
@@ -3061,73 +3136,101 @@ async function uploadFiles(files) {
   }
 }
 
-function onPaste(e) {
+const readURL = (f) => new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result); rd.onerror = () => ok(null); rd.readAsDataURL(f); });
+const LOCAL_SRC = /^\s*(file|blob|webkit-fake-url):/i;
+async function onPaste(e) {
   const dt = e.clipboardData;
+  // what the clipboard holds is read now: it is gone once this event ends
   const imgs = [...dt.files].filter((f) => f.type.startsWith("image/"));
-  if (imgs.length) {
-    e.preventDefault();
-    for (const f of imgs) {
-      const rd = new FileReader();
-      rd.onload = () => { document.execCommand("insertHTML", false, `<img src="${rd.result}" alt="">`); };
-      rd.readAsDataURL(f);
-    }
-    return;
-  }
-  const html = dt.getData("text/html");
+  const html = dt.getData("text/html"), plain = dt.getData("text/plain");
+  if (!html && !imgs.length) return;
+  e.preventDefault();
+  // Excel and Word put a picture of the table on the clipboard as well: the table itself is what is meant
   if (html) {
-    e.preventDefault();
-    document.execCommand("insertHTML", false, cleanHTML(html));
-  }
-}
-
-function cleanHTML(html) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script,style,meta,link,title,iframe,object,embed,form,input,button,select,textarea,svg,video,audio").forEach((n) => n.remove());
-  const keep = { href: 1, src: 1, alt: 1, colspan: 1, rowspan: 1, width: 1, height: 1, style: 1, align: 1, valign: 1 };
-  for (const n of doc.body.querySelectorAll("*")) {
-    for (const a of [...n.attributes]) {
-      const k = a.name.toLowerCase();
-      if (!keep[k]) n.removeAttribute(a.name);
-      else if ((k === "href" || k === "src") && /^\s*(javascript|vbscript|data:text)/i.test(a.value)) n.removeAttribute(a.name);
-      else if (k === "style") n.setAttribute("style", a.value.replace(/(position|z-index|behavior|expression)\s*:[^;]*;?/gi, ""));
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // a picture the HTML points to on this computer can't go out with the mail: the clipboard's own
+    // pictures take those places in turn; any left over are dropped
+    const local = [...doc.querySelectorAll("img")].filter((i) => LOCAL_SRC.test(i.getAttribute("src") || ""));
+    const data = await Promise.all(imgs.slice(0, local.length).map(readURL));
+    local.forEach((img, k) => { if (data[k]) img.setAttribute("src", data[k]); });
+    // white text from a dark page or app would not show on the white mail
+    const body = K.sanitizeBody(doc.body, { paste: true });
+    if (body.textContent.trim() || body.querySelector("img, table, hr")) {
+      document.execCommand("insertHTML", false, body.innerHTML);
+      return;
     }
+    if (!imgs.length) { if (plain) document.execCommand("insertText", false, plain); return; }
   }
-  return doc.body.innerHTML;
+  for (const src of await Promise.all(imgs.map(readURL))) {
+    if (src && K.safeURL(src, "src")) document.execCommand("insertHTML", false, `<img src="${esc(src)}" alt="">`);
+  }
 }
 
-function composeState() {
+// HTML for the editor, which sits in the app's own window: an allow-list of plain content (compose-kit.js).
+// DOMParser's document runs nothing and loads nothing while it is cleaned.
+function cleanHTML(html, opts = {}) {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return K.sanitizeBody(doc.body, opts).innerHTML;
+}
+
+function composeState(opts = {}) {
   const c = S.compose;
   const ed = $(".compose .editor");
   if (ed) c.html = ed.innerHTML;
-  const inputs = $$(".compose .chips input");
-  // an address still being typed counts
-  ["to", "cc", "bcc"].filter((k) => k === "to" || (k === "cc" ? c.showCc : c.showBcc)).forEach((k, idx) => {
-    const v = inputs[idx]?.value.trim();
-    if (v) { c[k].push(...parseAddrs(v)); inputs[idx].value = ""; }
-  });
+  // an address still being typed counts. Send turns it into a chip; a save only reads it and leaves the
+  // box as it is (an autosave in the middle of typing takes whole addresses only)
+  const typed = { to: [], cc: [], bcc: [] };
+  for (const inp of $$(".compose .chips input")) {
+    const k = inp.dataset.k;
+    if (!typed[k] || !inp.value.trim()) continue;
+    if (opts.commit) inp.rdCommit?.();
+    else typed[k] = parseAddrs(inp.value).filter((p) => !opts.auto || ADDR_RE.test(p.addr));
+  }
+  const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
+  const list = (k) => [...c[k], ...typed[k].filter((p) => !have.has(p.addr))];
   return {
-    mode: c.mode, orig: c.orig, replace: c.replace, to: c.to, cc: c.cc, bcc: c.bcc, subject: c.subject,
+    mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
-    use_signature: c.use_signature, irt: c.irt, refs: c.refs,
+    use_signature: c.use_signature, sig_id: c.sig_id, irt: c.irt, refs: c.refs, fwd: c.fwd,
   };
 }
 
 // Outlook shows unstyled mail in Times: always say which font the body is in
 function wrapBody(html) {
-  if (!html || !html.replace(/<br\s*\/?>|<\/?div>|&nbsp;|\s/gi, "")) return html || "";
-  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${html}</div>`;
+  if (!html || !html.replace(/<br\s*\/?>|<\/?(div|p)>|&nbsp;|\s/gi, "")) return html || "";
+  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${outHTML(html)}</div>`;
+}
+// the editor's HTML as it goes out: the gap under each paragraph is written on it (the editor shows it
+// with style.css), so Outlook, Gmail and phones show it too
+function outHTML(html) {
+  const box = document.createElement("template");
+  box.innerHTML = html;
+  const gap = `margin:0 0 ${K.paraGap(mailSize())}px`;
+  for (const p of box.content.querySelectorAll("p")) {
+    const st = p.getAttribute("style") || "";
+    if (!/(^|;)\s*margin(-bottom)?\s*:/i.test(st)) p.setAttribute("style", st ? `${gap};${st}` : gap);
+  }
+  for (const f of box.content.querySelectorAll("font[size]")) {
+    const px = K.FONT_PX[f.getAttribute("size").trim()];
+    if (px) { f.style.fontSize = px + "px"; f.removeAttribute("size"); }
+  }
+  return box.innerHTML;
 }
 
 let saving = Promise.resolve();
-function saveDraft(c = S.compose) {
+function saveDraft(c = S.compose, opts = {}) {
   const job = saving.then(async () => {
-    if (!c) return;
-    const st = S.compose === c ? composeState() : c.lastState;
+    if (!c || c.busy) return;         // Send has it: a second copy would stay in Drafts
+    const edits = c.edits;
+    const st = S.compose === c ? composeState(opts) : c.lastState;
     if (!st) return;
     if (S.compose === c) setStatus(t("saving"));
     try {
       const r = await api("save_draft", st);
-      c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
+      c.replace = r.id; c.lastState = { ...st, replace: r.id };
+      // words typed while it saved are not in this copy: they still need saving
+      if (c.edits === edits) c.dirty = false;
       if (S.compose === c) setStatus(t("saved"));
       refreshCounts();
     } catch (e) {
@@ -3145,6 +3248,8 @@ async function leaveCompose() {
   if (!c) return true;
   clearTimeout(c.autosave);
   if (c.busy) return false;
+  // a draft saved now would go without the file still uploading
+  if (c.atts.some((a) => a.uploading)) { toast(t("att_wait"), { id: "att-wait" }); return false; }
   if (c.dirty) {
     try { await saveDraft(c); toast(t("draft_saved")); }
     catch (e) { fail(e); return false; }
@@ -3164,8 +3269,9 @@ async function closeCompose() {
 
 async function discardCompose() {
   const c = S.compose;
-  if (!c) return;
+  if (!c || c.busy) return;           // Send is checking it: Discard waits for that to end
   clearTimeout(c.autosave);
+  c.busy = true;
   await saving;
   S.compose = null;
   if (c.replace) {
@@ -3179,19 +3285,20 @@ async function discardCompose() {
 async function sendCompose(force = false, at = null) {
   const c = S.compose;
   if (!c || c.busy) return;
+  if (c.atts.some((a) => a.uploading)) return toast(t("att_wait"), { id: "att-wait" });
   clearTimeout(c.autosave);
-  if (c.atts.some((a) => a.uploading)) return toast(t("uploading"));
+  // busy before the first wait: a second Send, Discard or Cmd+S in the meantime does nothing
+  lockCompose(c, true);
   await saving;
-  const st = composeState();
-  c.busy = true; renderToolbar();
+  const st = composeState({ commit: true });
   let r;
   try { r = await api("prepare_send", { ...st, force }); }
-  catch (e) { c.busy = false; renderToolbar(); return fail(e); }
-  c.busy = false;
+  catch (e) { lockCompose(c, false); return fail(e); }
   if (r.problems && r.problems.length) {
-    renderToolbar();
+    lockCompose(c, false);
     return problemsSheet(r.problems, at);
   }
+  c.busy = false;
   c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
   const reopen = async () => { if (S.compose && !(await leaveCompose())) return; S.compose = c; renderCompose(); };
   // out of the way while it waits
@@ -3211,29 +3318,74 @@ async function sendCompose(force = false, at = null) {
 }
 
 // the pause after Send: Undo stops the mail before it leaves; after that it can't be called back
+// The backend holds the mail through the pause as well (api send with a delay), so closing the window or
+// the page does not drop it: the window asks first (ragdollClosing), a page that is gone still sends.
+const HELD = new Map();         // id -> the mail in its pause: { undo, now, quiet, ok, done }
 async function sendWithUndo(id, onUndo) {
   const wait = undoSeconds() * 1000;
-  let undone = false;
-  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
-  for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
-  if (undone) { tt.close(); return onUndo?.(); }
-  tt.node.querySelector(".toast-act")?.remove();
-  tt.node.querySelector(".toast-bar")?.remove();
+  if (wait) {
+    try { await api("send", { id, delay: wait / 1000 }); }
+    catch (e) { fail(e); return onUndo?.(); }
+  }
+  let undone = false, rush = false, finish;
+  const held = { undo: () => { undone = true; }, now: () => { rush = true; }, quiet: false, ok: false, done: new Promise((r) => { finish = r; }) };
+  HELD.set(id, held);
+  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: held.undo }, ms: 0, bar: wait } : { ms: 0 });
+  const end = Date.now() + wait;
   try {
-    const res = await api("send", { id });
+    while (wait && Date.now() < end && !undone && !rush) await sleep(100);
+    if (undone) {
+      const r = await api("send_cancel", { id }).catch(() => ({ cancelled: false }));
+      // too late: it had started to go out, so it is waited for below like any other send
+      if (r.cancelled) { tt.close(); if (!held.quiet) onUndo?.(); return; }
+    }
+    tt.node.querySelector(".toast-act")?.remove();
+    tt.node.querySelector(".toast-bar")?.remove();
+    await sendHeld(id, tt, onUndo, held, wait);
+  } finally { HELD.delete(id); finish(); }
+}
+async function sendHeld(id, tt, onUndo, held, wait) {
+  try {
+    const res = await api(wait ? "send_wait" : "send", { id });
+    if (res.cancelled) { tt.close(); return; }
+    held.ok = true;
     tt.close();
     const after = res.problems_after_sending || [];
     if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
     else toast(t("sent_ok"));
     refreshCounts();
     if (["sent", "drafts", "scheduled"].includes(S.folder)) loadList({ quiet: true });
-    if (S.thread) openThread(S.focus || S.sel);
+    if (S.thread && !S.compose) openThread(S.focus || S.sel);
   } catch (e) {
     tt.close();
     fail(e);
     onUndo?.();
   }
 }
+// the window is being closed while a mail waits out its pause (ragdoll_app.py window_closing)
+window.ragdollClosing = () => {
+  if (!HELD.size) return api("quit_window").catch(() => {});
+  api("close_asked", { open: true }).catch(() => {});
+  let leaving = false;
+  const away = () => { if (!leaving) api("close_asked", { open: false }).catch(() => {}); };
+  const go = async (send) => {
+    leaving = true;
+    closeLayer();
+    const all = [...HELD.values()];
+    for (const h of all) { h.quiet = !send; if (send) h.now(); else h.undo(); }
+    await Promise.all(all.map((h) => h.done));
+    // a mail that could not go out stays open in the window, with its reason
+    if (send && all.some((h) => !h.ok)) return api("close_asked", { open: false }).catch(() => {});
+    api("quit_window").catch(() => {});
+  };
+  const box = sheet(el("div", {},
+    el("h2", { html: icon("send") + esc(t("closing_sending")) }),
+    el("div", { class: "sheet-acts" },
+      el("button", { class: "btn", onclick: () => { closeLayer(); away(); } }, t("keep_window")),
+      el("button", { class: "btn", onclick: () => go(false) }, t("cancel_sending")),
+      el("button", { class: "btn primary", onclick: () => go(true) }, t("send_now")))), { onclose: away });
+  box.querySelector(".btn.primary").focus();
+};
 
 function problemsSheet(problems, at = null) {
   const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
@@ -3285,7 +3437,7 @@ function pickTimeSheet() {
     el("div", { class: "sheet-acts" },
       el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("schedule")))));
-  box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   date.focus();
 }
 
@@ -3316,8 +3468,8 @@ async function openSettings(opts) {
   opts = opts && !(opts instanceof Event) ? opts : {};
   let s;
   try { s = await api("settings"); } catch (e) { return fail(e); }
-  const v = { ...s, password: "", theme: S.theme };
-  let tab = opts.tab || "account";
+  const v = { ...s, password: "", theme: S.theme, signatures: (s.signatures || []).map((x) => ({ ...x })) };
+  let tab = opts.tab || "account", sigOn = 0;
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
@@ -3337,7 +3489,8 @@ async function openSettings(opts) {
   let sigEd = null;
   const grab = () => {
     for (const inp of $$("input[data-k]", body)) v[inp.dataset.k] = inp.value;
-    if (sigEd) v.signature = sigEd.innerHTML;
+    const cur = v.signatures[sigOn];
+    if (sigEd && cur) { cur.html = sigEd.innerHTML; cur.name = $("input[data-sig-name]", body)?.value.trim() || ""; }
   };
   const draw = () => {
     body.replaceChildren();
@@ -3362,10 +3515,45 @@ async function openSettings(opts) {
       f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
+      // a list of signatures, each with a name; one is the default for new mail, one for replies
+      const sigs = v.signatures;
+      sigOn = Math.min(sigOn, Math.max(0, sigs.length - 1));
+      const list = el("div", { class: "seg sig-list" });
+      sigs.forEach((x, k) => list.append(el("button", { class: k === sigOn ? "on" : "", onclick: () => { grab(); sigOn = k; draw(); } }, sigName(x, k))));
+      const add = iconBtn("plus", t("sig_add"), () => {
+        grab();
+        sigs.push({ id: "s" + Date.now().toString(36), name: "", html: "" });
+        sigOn = sigs.length - 1;
+        if (sigs.length === 1) { v.sig_new = v.sig_new || sigs[0].id; v.sig_reply = v.sig_reply || sigs[0].id; }
+        draw();
+        $("input[data-sig-name]", body)?.focus();
+      }, { cls: "tiny" });
+      const head = el("div", { class: "sig-head" }, list, add);
+      const pick = (k) => selectBox([["", t("sig_none")], ...sigs.map((x, n) => [x.id, sigName(x, n)])], v[k] || "", (val) => { grab(); v[k] = val; draw(); });
+      const defaults = el("div", { class: "two-even" },
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_new")), pick("sig_new")),
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_reply")), pick("sig_reply")));
+      if (!sigs.length) {
+        body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head));
+        return;
+      }
+      const cur = sigs[sigOn];
+      const name = el("input", { type: "text", "data-sig-name": "", value: cur.name, placeholder: sigName({}, sigOn), maxlength: "60", spellcheck: "false", autocomplete: "off" });
+      name.addEventListener("input", () => { const b = list.children[sigOn]; if (b) b.textContent = name.value.trim() || sigName({}, sigOn); });
+      const del = el("button", { class: "btn", onclick: () => {
+        sigs.splice(sigOn, 1);
+        for (const k of ["sig_new", "sig_reply"]) if (v[k] === cur.id) v[k] = "";
+        sigOn = Math.max(0, sigOn - 1);
+        sigEd = null;
+        draw();
+      }, html: icon("trash-2", "small") + esc(t("sig_delete")) });
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
-      sigEd.innerHTML = v.signature || "";
-      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
-      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
+      sigEd.innerHTML = cleanHTML(cur.html || "");
+      sigEd.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "div"));
+      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h, { paste: true })); } });
+      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head,
+        el("label", {}, el("span", { class: "lab" }, t("sig_name")), name), sigEd,
+        el("div", {}, del), defaults));
     } else if (tab === "sending") {
       const seg = segmented(UNDO_CHOICES.map((n) => [n, n ? t("seconds", n) : t("undo_off")]), undoSeconds(), (n) => setPref({ undo: n }));
       const font = selectBox(FONTS.map(([k]) => [k, fontLabel(k)]), PREFS.font || "system", (val) => { setPref({ font: val }); draw(); });
@@ -3458,12 +3646,19 @@ async function openSettings(opts) {
   };
   async function save() {
     grab();
-    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "signature"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
-    if (!changed) return closeLayer();
+    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
+    const sigKey = (o) => JSON.stringify([(o.signatures || []).map(({ id, name, html }) => [id, name, html]), o.sig_new || "", o.sig_reply || ""]);
+    const sigChanged = sigKey(v) !== sigKey(s);
+    if (!changed && !sigChanged) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
     try {
-      const b = await api("save_settings", { ...v, account: true, folders: v.folders });
+      if (sigChanged) {
+        Object.assign(s, await api("save_signatures", { signatures: v.signatures, sig_new: v.sig_new, sig_reply: v.sig_reply }));
+        if (!changed) { closeLayer(); toast(t("saved")); return; }
+      }
+      const { signature, signatures, sig_new, sig_reply, ...acct } = v;
+      const b = await api("save_settings", { ...acct, account: true, folders: v.folders });
       S.boot = { ...S.boot, ...b };
       closeLayer();
       renderNav();
@@ -3558,7 +3753,7 @@ function relabel() {
   syncFilterUI();
   renderNav();
   renderRows();
-  if (S.compose) { composeState(); renderCompose(); }
+  if (S.compose) { composeState({ commit: true }); renderCompose(); }
   else if (S.sched) openScheduled(S.sched);
   else if (S.thread) openThread(S.focus || S.sel);
   else renderToolbar();
@@ -3603,7 +3798,7 @@ function showSetup(boot = {}) {
     }
     const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
-    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
+    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e) && e.target.tagName === "INPUT") signIn(); });
     const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
       PREFS.lang = val; api("prefs", { lang: val }).catch(() => {}); setLocale(PREFS); draw();
     });
@@ -3644,7 +3839,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "Z", "undo"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -3665,7 +3860,10 @@ function typing(e) {
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
 }
 function onKey(e) {
-  const mod = e.metaKey || e.ctrlKey;
+  if (K.isIME(e)) return;             // Esc, Enter and Backspace belong to the input method's candidate
+  const mod = isMod(e);
+  // Sync now; the web view would otherwise reload the whole page and drop what is open, a compose too
+  if ((mod && !e.altKey && e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow(); return; }
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
@@ -3676,9 +3874,14 @@ function onKey(e) {
   if (e.key === "Escape" && $("#app").classList.contains("side-open")) { e.preventDefault(); sideOpen(false); return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
-    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
+    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!S.compose.busy) saveDraft().catch(fail); return; }
     if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeCompose(); return; }
+    // the mailbox's single keys (Backspace, R, J...) never act while a mail is being written, even when
+    // focus fell to the page after a click on a button
+    return;
   }
+  // in a text box Cmd+Z stays the text's own undo; a compose never gets here
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && !typing(e)) { e.preventDefault(); undoMove(); return; }
   if (mod && e.key.toLowerCase() === "a" && !typing(e) && !S.compose) { e.preventDefault(); selectAll(); return; }
   if (typing(e) || mod || e.altKey) return;
   const id = S.focus || S.sel;

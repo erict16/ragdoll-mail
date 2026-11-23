@@ -16,6 +16,7 @@ import datetime as dt
 import glob
 import hashlib
 import html as htmlmod
+import html.parser as htmlparser
 import imaplib
 import json
 import locale
@@ -319,6 +320,131 @@ def page_html(html, cids):
     html = re.sub(r"(?i)cid:(<?)([^\"'\s>)]+)", lambda mo: cids.get(urllib.parse.unquote(mo.group(2)).strip("<>"),
                                                                   "data:,"), html)
     return styles + html
+
+
+# A draft's HTML goes into the editor in the app's own window (not the sandboxed reading frame): only
+# plain content tags and attributes pass, rebuilt from the parse so nothing the parser read differently
+# survives. The page cleans it once more with the same lists (app/compose-kit.js).
+EDITOR_DROP = {"script", "style", "meta", "link", "title", "base", "head", "iframe", "frame", "frameset", "object",
+               "embed", "applet", "form", "input", "button", "select", "option", "textarea", "svg", "math", "video",
+               "audio", "source", "track", "canvas", "template", "noscript", "portal", "dialog", "marquee", "param",
+               "xml"}
+EDITOR_KEEP = set("a abbr address article aside b bdi bdo big blockquote br caption center cite code col colgroup dd "
+                  "del dfn div dl dt em figcaption figure font footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li "
+                  "main mark nav ol p pre q s samp section small span strike strong sub sup table tbody td tfoot th "
+                  "thead tr tt u ul var wbr".split())
+EDITOR_VOID = {"br", "hr", "img", "col", "wbr", "meta", "link", "base", "input", "source", "track", "param", "embed"}
+EDITOR_ATTRS = {"href", "src", "alt", "title", "colspan", "rowspan", "width", "height", "style", "align", "valign",
+                "border", "cellpadding", "cellspacing", "bgcolor", "color", "face", "size", "dir", "start", "type",
+                "data-rd-body"}
+EDITOR_ATTR_ON = {"href": {"a"}, "src": {"img"}, "start": {"ol"}, "type": {"ol", "ul", "li"}, "data-rd-body": {"div"},
+                  "face": {"font"}, "size": {"font"}, "color": {"font"}}
+EDITOR_BAD_PROPS = {"position", "z-index", "behavior", "-moz-binding", "-webkit-user-modify", "user-modify",
+                    "content", "inset"}
+
+
+def safe_url(v, attr):
+    s = re.sub(r"[\x00-\x20\x7f-\x9f]", "", v or "").lower()
+    if attr == "src":
+        return bool(re.match(r"(https?:|cid:|data:image/(png|jpe?g|gif|webp|bmp)[;,])", s))
+    return bool(re.match(r"(https?:|mailto:|tel:|#)", s))
+
+
+def clean_style(style):
+    out, cur, depth, quote = [], "", 0, ""
+    for ch in (style or "") + ";":
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == ";" and not depth and not quote:
+            prop, _, val = cur.partition(":")
+            prop, val = prop.strip().lower(), val.strip()
+            cur = ""
+            if not prop or not val or prop in EDITOR_BAD_PROPS:
+                continue
+            if re.search(r"(?i)expression\s*\(|javascript:|vbscript:|-moz-binding|@import", val):
+                continue
+            if re.search(r"(?i)url\s*\(", val) and not re.search(
+                    r"(?i)url\s*\(\s*[\"']?\s*(https?:|data:image/(png|jpe?g|gif|webp|bmp)[;,]|cid:)", val):
+                continue
+            out.append("%s: %s" % (prop, val))
+        else:
+            cur += ch
+    return "; ".join(out)
+
+
+class _EditorHTML(htmlparser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.skip, self.open = [], [], []
+
+    def handle_starttag(self, tag, attrs):
+        if self.skip:
+            if tag == self.skip[-1] and tag not in EDITOR_VOID:
+                self.skip.append(tag)
+            return
+        if tag in EDITOR_DROP:
+            if tag not in EDITOR_VOID:
+                self.skip.append(tag)
+            return
+        if tag not in EDITOR_KEEP:
+            return
+        kept = []
+        for k, v in attrs:
+            k = (k or "").lower()
+            v = v or ""
+            if k not in EDITOR_ATTRS or (k in EDITOR_ATTR_ON and tag not in EDITOR_ATTR_ON[k]):
+                continue
+            if k in ("href", "src") and not safe_url(v, k):
+                continue
+            if k == "style":
+                v = clean_style(v)
+                if not v:
+                    continue
+            kept.append(' %s="%s"' % (k, htmlmod.escape(v, quote=True)))
+        if tag == "img" and not any(x.startswith(' src="') for x in kept):
+            return
+        self.out.append("<%s%s>" % (tag, "".join(kept)))
+        if tag not in EDITOR_VOID:
+            self.open.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in EDITOR_VOID and self.open and self.open[-1] == tag:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self.skip:
+            if tag == self.skip[-1]:
+                self.skip.pop()
+            return
+        if tag in EDITOR_VOID or tag not in self.open:
+            return
+        while self.open:
+            t = self.open.pop()
+            self.out.append("</%s>" % t)
+            if t == tag:
+                break
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(htmlmod.escape(data, quote=False))
+
+    def result(self):
+        self.close()
+        return "".join(self.out) + "".join("</%s>" % t for t in reversed(self.open))
+
+
+def editor_html(html):
+    """A draft's HTML made safe for the compose editor (see EDITOR_KEEP)."""
+    p = _EditorHTML()
+    p.feed(html or "")
+    return p.result()
 
 
 LINK_RE = re.compile(r"(https?://[^\s<>\"']+[^\s<>\"'.,;:!?)\]}])|([\w.+-]+@[\w-]+(?:\.[\w-]+)+)")
@@ -1699,6 +1825,10 @@ class Backend:
         self.marklock = threading.Lock()
         self.preflock = threading.Lock()        # app.json: read, change, write as one step (#61)
         self.badge_n = None                     # the unread count the Dock icon shows
+        self.holding = {}                        # id -> a mail in its undo pause after Send (hold_send)
+        self.sendlock = threading.Lock()
+        self.sending_n = 0                      # sends talking to the mail server right now
+        self.undo_moves = collections.deque(maxlen=10)    # the last moves, so they can be undone (api_unmove)
         if demo:
             self.make_demo()                    # opens self.c on the demo's own index
         else:
@@ -3079,6 +3209,7 @@ class Backend:
                 if dest_key == "inbox":         # mail the owner put back is not new mail
                     for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
                         self.moved_in[r["msgid"]] = time.time()
+        undo = self.note_move(by, dest)
         if self.demo:
             for f, uids in by.items():
                 for u in uids:
@@ -3121,7 +3252,8 @@ class Backend:
             if (set(by) | {dest}) - set(self.sync_folders()):
                 self.extra_now = True
             self.wake.set()
-        return {"moved": sum(len(x) for x in by.values())}
+        self.undo_moves.append(undo)
+        return {"moved": sum(len(x) for x in by.values()), "undo": undo["token"]}
 
     def forget_moved(self, by):
         """Rows of mail that is no longer in its folder on the server leave the index."""
@@ -3135,6 +3267,63 @@ class Backend:
                         self.c.execute("delete from fts where rowid=?", (r["id"],))
             self.c.commit()
         self.bump()
+
+    # ---- undo a move that reached the server (Cmd+Z): each mail is found again in the folder it went to by
+    # its Message-ID (a new UID there is not known) and moved back to the folder it came from
+
+    def note_move(self, by, dest):
+        items = []
+        for f, uids in by.items():
+            for u in uids:
+                for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
+                    if (r["msgid"] or "").strip():
+                        items.append((f, r["msgid"].strip()))
+        return {"token": secrets.token_hex(6), "dest": dest, "items": items}
+
+    def api_unmove(self, a):
+        job = next((x for x in self.undo_moves if x["token"] == a.get("token")), None)
+        if job is None:
+            fail("That move can't be undone any more.")
+        self.undo_moves.remove(job)
+        dest, back = job["dest"], {}
+        for f, mid in job["items"]:
+            back.setdefault(f, []).append(mid)
+        moved = 0
+        if self.demo:
+            for f, mids in back.items():
+                for mid in mids:
+                    for r in self.q("select * from msgs where folder=? and msgid=?", (dest, mid)):
+                        raw = self.demo_raw.pop((dest, r["uid"]), None)
+                        if raw:
+                            self.demo_insert(f, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+                            self.demo_delete(R.make_id(dest, r["uid"]))
+                            moved += 1
+        else:
+            def go(m):
+                n = 0
+                for f, mids in back.items():
+                    R.use(m, dest, write=True)
+                    uids = []
+                    for mid in mids:
+                        typ, data = m.uid("SEARCH", "HEADER", "Message-ID", '"%s"' % mid.replace('"', ""))
+                        if typ == "OK" and data and data[0]:
+                            uids += [int(x) for x in data[0].split()]
+                    if uids:
+                        R.move_uids(m, dest, sorted(set(uids)), f)
+                        n += len(set(uids))
+                return n
+            moved = self.imap(go)
+            with self.dblock:
+                for mids in back.values():
+                    for mid in mids:
+                        for r in self.c.execute("select id from msgs where folder=? and msgid=?", (dest, mid)).fetchall():
+                            self.c.execute("delete from msgs where id=?", (r["id"],))
+                            self.c.execute("delete from fts where rowid=?", (r["id"],))
+                self.c.commit()
+            self.extra_now = True
+            self.wake.set()
+        self.bump()
+        return {"moved": moved}
 
     def folders(self, m):
         if self.server_folders is None:
@@ -3760,6 +3949,84 @@ class Backend:
                 return f.read()
         return R.text_to_html(s) if "\n" in s or "/" not in s else ""
 
+    # ---- signatures: a list in the config, each with a name, and one default for new mail and one for
+    # replies and forwards. Before there was a list, the one signature file is the list's only entry.
+    # The file stays the default for new mail, so the ragdoll command goes on using it.
+
+    def signatures(self):
+        """[{id, name, html}]"""
+        got = R.CFG.d.get("signatures")
+        if isinstance(got, list):
+            return [{"id": str(x.get("id") or k + 1), "name": str(x.get("name") or ""), "html": str(x.get("html") or "")}
+                    for k, x in enumerate(got) if isinstance(x, dict)]
+        one = self.signature()
+        return [{"id": "1", "name": "", "html": one}] if one.strip() else []
+
+    def sig_defaults(self):
+        """(id for new mail, id for replies and forwards); "" is none"""
+        ids = [x["id"] for x in self.signatures()]
+        if not isinstance(R.CFG.d.get("signatures"), list):
+            return (ids[0], ids[0]) if ids else ("", "")
+        pick = lambda k: R.CFG.d.get(k) if R.CFG.d.get(k) in ids else ""     # noqa: E731
+        return pick("signature_new"), pick("signature_reply")
+
+    def sig_for(self, mode, sid=None):
+        """(id, html) of the signature a compose in this mode starts with, or of sid when it is one"""
+        sigs = {x["id"]: x["html"] for x in self.signatures()}
+        if sid is None or sid not in sigs:
+            new, reply = self.sig_defaults()
+            sid = reply if mode in ("reply", "replyall", "forward") else new
+        return sid, sigs.get(sid, "")
+
+    def api_signatures(self, a):
+        new, reply = self.sig_defaults()
+        return {"signatures": self.signatures(), "sig_new": new, "sig_reply": reply}
+
+    def api_save_signatures(self, a):
+        """Keep the list of signatures and the two defaults. The demo keeps them until it closes."""
+        sigs, seen = [], set()
+        for x in a.get("signatures") or []:
+            if not isinstance(x, dict):
+                continue
+            sid = str(x.get("id") or "").strip()[:40] or secrets.token_hex(4)
+            if sid in seen:
+                sid = secrets.token_hex(4)
+            seen.add(sid)
+            sigs.append({"id": sid, "name": str(x.get("name") or "").strip()[:60], "html": str(x.get("html") or "")})
+        ids = [x["id"] for x in sigs]
+        new = a.get("sig_new") if a.get("sig_new") in ids else ""
+        reply = a.get("sig_reply") if a.get("sig_reply") in ids else ""
+        keep = {"signatures": sigs, "signature_new": new, "signature_reply": reply}
+        if self.demo:
+            R.CFG.d.update(keep)
+            self.bump()
+            return self.api_signatures({})
+        path = config_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except FileNotFoundError:
+            raw = {}
+        except ValueError:
+            fail("The settings file %s is broken; fix or remove it first." % path)
+        raw.update(keep)
+        html = next((x["html"] for x in sigs if x["id"] == new), "")
+        cur = os.path.expanduser(R.CFG.signature or "")
+        mine = os.path.join(os.path.dirname(path), "signature.html")
+        target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(html)
+        raw["signature"] = target if html.strip() else ""
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(raw, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+        R.CFG = R.load_config(path)
+        self.bump()
+        return self.api_signatures({})
+
     def upload_dir(self):
         d = os.path.join(R.CFG.home, "uploads", secrets.token_hex(6))
         os.makedirs(d, exist_ok=True)
@@ -3776,8 +4043,10 @@ class Backend:
 
     def api_compose(self, a):
         mode = a.get("mode") or "new"
+        sid, sig = self.sig_for(mode)
         out = {"mode": mode, "orig": None, "replace": None, "to": [], "cc": [], "bcc": [], "subject": "",
-               "html": "", "atts": [], "quote": "", "signature": self.signature(), "use_signature": True}
+               "html": "", "atts": [], "quote": "", "signature": sig, "sig_id": sid, "use_signature": True,
+               "signatures": self.signatures()}
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
@@ -3799,8 +4068,9 @@ class Backend:
             state = self.compose_state(R.hdr(msg, "Message-ID"))
             if state:
                 out.update(state)
+                out["html"] = editor_html(state.get("html") or "")
                 out["replace"] = a["id"]
-                out["signature"] = self.signature()
+                out["sig_id"], out["signature"] = self.sig_for(state.get("mode"), state.get("sig_id"))
                 if state.get("orig"):
                     with contextlib.suppress(ApiError, SystemExit, Exception):
                         orig, i = self.find_orig(dict(state, replace=a["id"]))
@@ -3814,7 +4084,8 @@ class Backend:
             plain, html = R.bodies(msg)
             out.update({"to": people_json(R.hdr(msg, "To")), "cc": people_json(R.hdr(msg, "Cc")),
                         "bcc": people_json(R.hdr(msg, "Bcc")), "subject": R.hdr(msg, "Subject"),
-                        "html": page_html(html, cid_map(msg)) if html.strip() else R.text_to_html(plain),
+                        "html": editor_html(page_html(html, cid_map(msg))) if html.strip()
+                        else R.text_to_html(plain),
                         "use_signature": False, "irt": R.hdr(msg, "In-Reply-To").strip(),
                         "refs": R.hdr(msg, "References").strip(), "fwd": R.hdr(msg, R.FWD_HEADER).strip(),
                         "atts": [self.keep_file(R.fname(p) or "attachment", R.part_bytes(p))
@@ -3900,7 +4171,7 @@ class Backend:
                 fail("An attachment is missing: %s" % x.get("name", ""))
             atts.append((p, mail_name(x.get("name") if isinstance(x.get("name"), str) else "") or os.path.basename(p)))
         body, images = data_images(a.get("html") or "")
-        sig = self.signature() if a.get("use_signature", True) else ""
+        sig = self.sig_for(mode, a.get("sig_id"))[1] if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
                               bcc, atts, sig, font=self.body_font(body),
                               quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
@@ -3975,7 +4246,7 @@ class Backend:
         if old and uid:
             self.sched_move(old, R.make_id(drafts, uid))   # still scheduled, now as the saved draft
         state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
-                                       "use_signature", "irt", "refs", "fwd")}
+                                       "use_signature", "irt", "refs", "fwd", "sig_id")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
             with open(self.state_path(R.hdr(msg, "Message-ID")), "w", encoding="utf-8") as f:
@@ -3999,6 +4270,12 @@ class Backend:
         return {"id": i, "problems": []}
 
     def api_send(self, a):
+        """Send the saved draft a["id"] now; with a["delay"] (seconds), after the undo pause (hold_send)."""
+        if a.get("delay"):
+            return self.hold_send(a["id"], a["delay"])
+        return self.send_listed(a)
+
+    def send_listed(self, a):
         """Send the saved draft now. The scheduled-send list is locked only to take the mail off it,
         not while it goes out: a long upload does not hold up the other screens."""
         i = a["id"]
@@ -4014,7 +4291,112 @@ class Backend:
             with self.schedlock:
                 self.inflight.discard(i)
 
+    # ---- the undo pause after Send
+    # The page counts the pause down and then asks for the send (api_send_wait). The backend holds the
+    # mail too, so a closed page does not drop it: a mail still held a moment after its pause ends goes out
+    # by itself. The window's closing handler asks the page first, and waits for a send that has started.
+
+    SEND_GRACE = 3          # seconds after the pause before the backend sends a mail the page never asked for
+
+    def hold_send(self, i, delay):
+        folder, _ = self.parse(i)
+        if folder != R.CFG.folders["drafts"]:
+            fail("Only drafts can be sent.")
+        try:
+            delay = max(0.0, min(120.0, float(delay)))
+        except (TypeError, ValueError):
+            fail("bad delay")
+        with self.sendlock:
+            job = self.holding.get(i)
+            if job and job["state"] in ("held", "sending"):
+                return {"held": True, "at": job["at"]}
+            job = {"state": "held", "at": time.time() + delay, "done": threading.Event(), "result": None, "error": None}
+            job["timer"] = threading.Timer(delay + self.SEND_GRACE, self.run_held, (i,))
+            job["timer"].daemon = True
+            self.holding[i] = job
+        job["timer"].start()
+        return {"held": True, "at": job["at"]}
+
+    def run_held(self, i):
+        """Send the held mail i now, once (the page and the timer may both ask). Returns its job."""
+        with self.sendlock:
+            job = self.holding.get(i)
+            if not job or job["state"] != "held":
+                return job
+            job["state"] = "sending"
+            job["timer"].cancel()
+        try:
+            job["result"] = self.send_listed({"id": i})
+            job["state"] = "sent"
+        except (Exception, SystemExit) as e:       # noqa: BLE001 - the page shows the reason
+            job["error"] = str(e) if isinstance(e, ApiError) else friendly(e)
+            job["state"] = "failed"
+        finally:
+            job["done"].set()
+        return job
+
+    def api_send_cancel(self, a):
+        """Undo: keep the held mail as a draft. cancelled is false when it had already started to go."""
+        with self.sendlock:
+            job = self.holding.get(a["id"])
+            if job is None or job["state"] in ("held", "cancelled"):
+                if job is not None:
+                    job["timer"].cancel()
+                    job["state"] = "cancelled"
+                    job["done"].set()
+                    del self.holding[a["id"]]
+                return {"cancelled": True}
+        return {"cancelled": False}
+
+    def api_send_wait(self, a):
+        """The pause is over: send the held mail now, or wait for the send already on its way."""
+        i = a["id"]
+        job = self.run_held(i)
+        if job is None:
+            return self.api_send({"id": i})
+        job["done"].wait(600)
+        with self.sendlock:
+            if self.holding.get(i) is job and job["state"] in ("sent", "failed"):
+                del self.holding[i]
+        if job["state"] == "failed":
+            fail(job["error"])
+        if job["state"] != "sent":
+            return {"sent": False, "cancelled": job["state"] == "cancelled", "problems_after_sending": []}
+        return job["result"]
+
+    def send_state(self):
+        """(mails held in their undo pause, sends talking to the server now)"""
+        with self.sendlock:
+            return sum(1 for j in self.holding.values() if j["state"] == "held"), self.sending_n
+
+    def wait_sends(self, most=120):
+        end = time.time() + most
+        while time.time() < end and (self.send_state()[1] or any(
+                j["state"] == "sending" for j in list(self.holding.values()))):
+            time.sleep(0.1)
+
+    def api_close_asked(self, a):
+        """The page shows its question about the mail on its way (window_closing), or put it away."""
+        WINDOW.asked = 2 if a.get("open", True) else 0
+        return {}
+
+    def api_quit_window(self, a):
+        """The page has dealt with the mail on its way: let the window close."""
+        WINDOW.quit_ok = True
+        if WINDOW.w is not None:
+            threading.Thread(target=close_window, daemon=True).start()
+        return {}
+
     def send_now(self, a):
+        with self.sendlock:
+            self.sending_n += 1
+        try:
+            return self.send_draft_now(a)
+        finally:
+            with self.sendlock:
+                self.sending_n -= 1
+
+    def send_draft_now(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
@@ -4310,7 +4692,7 @@ class Backend:
         return {"name": R.CFG.name, "user": R.CFG.user, "imap_host": R.CFG.imap.get("host", ""),
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
                 "smtp_port": R.CFG.smtp.get("port", 465),
-                "signature": self.signature(), "has_password": self.has_password(),
+                "signature": self.signature(), **self.api_signatures({}), "has_password": self.has_password(),
                 "password_env": R.CFG.password_env if not self.demo and (
                     os.environ.get(R.CFG.password_env) or R._SHELL_ENV.get(R.CFG.password_env)) else "",
                 "folders": dict(R.CFG.folders), "config": config_path(), "demo": self.demo}
@@ -4503,6 +4885,13 @@ class Backend:
         with open(sig, "w", encoding="utf-8") as f:
             f.write('<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"])
         d["signature"] = sig
+        # a full signature for new mail and a short one for replies, to switch between
+        zh = ds is DEMO_SETS["zh"]
+        full = '<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"]
+        short = '<div style="color:#6b6b6b;font-size:13px">%s</div>' % ds["signature"].split("<br>")[0]
+        d["signatures"] = [{"id": "full", "name": "完整" if zh else "Full", "html": full},
+                           {"id": "short", "name": "简短" if zh else "Short", "html": short}]
+        d["signature_new"], d["signature_reply"] = "full", "short"
         R.CFG = R.Cfg(d)
         self.c = R.db()
         now = int(time.time())
@@ -5017,7 +5406,49 @@ def system_dark():
     return False
 
 
-WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None)
+WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False, asked=0)
+
+
+def close_window():
+    with contextlib.suppress(Exception):
+        WINDOW.w.destroy()
+
+
+def page_call(js):
+    """Run a line in the page, from any thread but the window's own (run_js waits for that one)."""
+    def go():
+        with contextlib.suppress(Exception):
+            run = getattr(WINDOW.w, "run_js", None) or WINDOW.w.evaluate_js
+            run(js)
+    threading.Thread(target=go, daemon=True).start()
+
+
+def window_closing():
+    """The window is closing, or the app quitting. A mail in its undo pause: the page asks whether to send
+    it now, cancel it or keep the window open (and closes it itself, api_quit_window). A send talking to
+    the mail server: it finishes first, then the window closes. False keeps the window open."""
+    b = WINDOW.backend
+    if WINDOW.quit_ok or b is None:
+        return True
+    held, active = b.send_state()
+    if held and WINDOW.asked == 0:
+        WINDOW.asked = 1
+        page_call("window.ragdollClosing && window.ragdollClosing()")
+        return False
+    if held and WINDOW.asked == 2:          # the page answers: it shows its question (again)
+        page_call("window.ragdollClosing && window.ragdollClosing()")
+        return False
+    # (asked before and the page never showed its question: it can't answer, so what it holds goes now)
+    if held or active:
+        def finish():
+            for i in [k for k, j in list(b.holding.items()) if j["state"] == "held"]:
+                b.run_held(i)
+            b.wait_sends()
+            WINDOW.quit_ok = True
+            close_window()
+        threading.Thread(target=finish, daemon=True).start()
+        return False
+    return True
 
 
 def bring_front():
@@ -5440,6 +5871,7 @@ def run_window(url, home):
                               background_color="#191919" if dark else "#FFFFFF", text_select=True)
     WINDOW.w = w
     keep_window_place(w, place)
+    w.events.closing += window_closing      # a mail on its way is sent or asked about first
     if sys.platform == "darwin":
         mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
