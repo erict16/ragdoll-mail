@@ -376,7 +376,7 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 let navSig = "", navKeys = null;
 function renderNav() {
   const nav = $("#nav");
-  const folders = [...S.boot.folders];
+  const folders = [...S.boot.folders.filter((f) => !f.other), ...ownFolders()];
   for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
@@ -462,6 +462,37 @@ function applyFold() {
   if (sec) { sec.classList.toggle("folded", all); $(".count", sec).textContent = all && secSum ? secSum : ""; }
 }
 
+// The owner's own folders in the sidebar's order: each folder's own folders right under it. At each level the
+// order the owner dragged them into comes first (PREFS.folder_order), the rest A-Z as the chosen language sorts
+// (Chinese by pinyin, 2 before 10). Each comes with `up`, the folder it is in (null at the top level).
+let collator = null;
+function ownFolders() {
+  if (collator?.lang !== LOCALE) collator = { lang: LOCALE, c: new Intl.Collator(LOCALE, { numeric: true, sensitivity: "base" }) };
+  const order = new Map((PREFS.folder_order || []).map((k, i) => [k, i]));
+  const cmp = (a, b) => order.has(a.key) && order.has(b.key) ? order.get(a.key) - order.get(b.key)
+    : order.has(a.key) ? -1 : order.has(b.key) ? 1 : collator.c.compare(a.label, b.label) || (a.key < b.key ? -1 : 1);
+  const root = [], stack = [];
+  for (const f of S.boot.folders) {
+    if (!f.other) continue;
+    const d = f.depth || 0;
+    while (stack.length && (stack.at(-1).depth || 0) >= d) stack.pop();
+    const n = { ...f, up: stack.at(-1)?.key ?? null, kids: [] };
+    (stack.at(-1)?.kids || root).push(n);
+    stack.push(n);
+  }
+  const out = [];
+  const walk = (list) => { for (const { kids, ...f } of list.sort(cmp)) { out.push(f); walk(kids); } };
+  walk(root);
+  return out;
+}
+// a folder and the folders inside it, from ownFolders()
+function subtreeOf(list, key) {
+  const i = list.findIndex((f) => f.key === key);
+  if (i < 0) return [];
+  let j = i + 1;
+  while (j < list.length && (list[j].depth || 0) > (list[i].depth || 0)) j++;
+  return list.slice(i, j);
+}
 // the owner's own folders: make one, rename one, delete an empty one
 function nameSheet(title, value, run) {
   const input = el("input", { type: "text", value, maxlength: "60", dir: "auto", spellcheck: "false", autocomplete: "off", "aria-label": title });

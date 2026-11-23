@@ -1314,6 +1314,11 @@ class Backend:
         f = a.get("folded")
         if isinstance(f, list) and len(f) <= 500 and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
             p["folded"] = f
+        # the owner's own order of their folders, and the folders mail was moved to last (newest first)
+        for k, most in (("folder_order", 2000), ("folder_recent", 8)):
+            f = a.get(k)
+            if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
+                p[k] = f
         os.makedirs(R.CFG.home, exist_ok=True)
         with open(os.path.join(R.CFG.home, "app.json"), "w", encoding="utf-8") as f:
             json.dump(p, f)

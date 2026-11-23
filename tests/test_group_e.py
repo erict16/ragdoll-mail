@@ -100,6 +100,15 @@ class Demo(OwnBackend):
         self.assertEqual((counts["trash"]["total"], counts["junk"]["total"]), (0, 0))
 
 
+    def test_order_and_recent_prefs(self):
+        p = self.b.api_prefs({"folder_order": ["Projects/Acme", "Projects"], "folder_recent": ["inbox", "Projects"]})
+        self.assertEqual((p["folder_order"], p["folder_recent"]), (["Projects/Acme", "Projects"], ["inbox", "Projects"]))
+        p = self.b.api_prefs({"folder_order": "Projects", "folder_recent": ["x"] * 9})
+        self.assertEqual((p["folder_order"], p["folder_recent"]), (["Projects/Acme", "Projects"], ["inbox", "Projects"]))
+        p = self.b.api_prefs({"folder_recent": [3]})
+        self.assertEqual(p["folder_recent"], ["inbox", "Projects"])
+
+
 class Server:
     """A fake IMAP server with folders and mail: what LIST, STATUS, SELECT, SEARCH, MOVE, STORE, EXPUNGE,
     CREATE, RENAME and DELETE do, with "." or "/" between a folder and the ones inside it. Names travel
