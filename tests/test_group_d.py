@@ -873,5 +873,74 @@ class BrokenConfig(OwnBackend):
         with open(os.path.join(self.home, kept[0]), encoding="utf-8") as f:
             self.assertEqual(f.read(), '{"user": "a@b.c",}')
 
+class SettingsChange(OwnBackend):
+    """#59: saving another account or server applies at once; the old one stops syncing."""
+
+    def setUp(self):
+        super().setUp()
+        self.path = os.path.join(self.home, "config.json")
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"user": "you@example.com", "data_dir": self.home, "imap": {"host": "demo", "port": 993},
+                       "smtp": {"host": "demo", "port": 465}}, f)
+        self.patch(A, "config_path", lambda: self.path)
+        self.addCleanup(setattr, R, "CONFIG_ERROR", None)
+        self.online()
+        self.b.start_sync = lambda: None
+        self.b.sync_m, self.b.pre_m, self.b.body_m = Works(), Works(), Works()
+        self.old = [self.b.sync_m, self.b.pre_m, self.b.body_m]
+
+    def save(self, **kw):
+        a = {"user": "you@example.com", "name": "Alex", "imap_host": "demo", "imap_port": 993,
+             "smtp_host": "demo", "smtp_port": 465}
+        a.update(kw)
+        return self.b.api_save_settings(a)
+
+    def count(self):
+        return self.b.q("select count(*) n from msgs")[0]["n"]
+
+    def test_same_account_changes_nothing(self):
+        n, gen = self.count(), self.b.gen
+        self.save(name="Alex Morgan")
+        self.assertEqual((self.count(), self.b.gen), (n, gen))
+        self.assertFalse(any(m.sock.down.is_set() for m in self.old))
+
+    def test_other_server_reconnects_and_keeps_the_mail(self):
+        n, gen = self.count(), self.b.gen
+        self.save(imap_host="imap.other.example")
+        self.assertEqual(self.b.gen, gen + 1)
+        self.assertTrue(all(m.sock.down.is_set() for m in self.old))      # every loop's connection
+        self.assertEqual(self.count(), n)
+        self.assertTrue(self.b.redetect)                                   # saved without "Test connection"
+
+    def test_other_account_starts_clean(self):
+        b = self.b
+        r = b.q("select * from msgs limit 1")[0]
+        cached = R.cache_path(r["folder"], r["uidv"], r["uid"])
+        R.cache_put(cached, b"old account's mail")
+        b.exec("insert or replace into meta values('modseq:INBOX', '1 5')")
+        self.save(user="other@example.org", imap_host="imap.example.org")
+        self.assertEqual(self.count(), 0)
+        self.assertFalse(os.path.exists(cached))
+        self.assertFalse(b.q("select 1 from meta where k like 'modseq:%'"))
+        self.assertEqual(R.CFG.user, "other@example.org")
+
+    def test_folder_names_found_again(self):
+        b = self.b
+        self.save(user="other@example.org", imap_host="imap.example.org")
+        b.found = [("INBOX", ""), ("已发送", "\\sent"), ("草稿箱", "\\drafts"), ("已删除", "\\trash")]
+        b.use_detected(A.detect_folders(b.found))
+        self.assertEqual(R.CFG.folders["sent"], "已发送")
+        self.assertEqual(R.CFG.sync_folders, ["INBOX", "已发送", "草稿箱"])
+        with open(self.path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["folders"]["drafts"], "草稿箱")
+
+    def test_pass_under_way_stops(self):
+        b = self.b
+        b.pass_gen = b.gen
+        b.gen += 1
+        b.note_folders = lambda m, c: None
+        with self.assertRaises(A.Restart), b.dblock:
+            b.sync_pass(Works(), b.c)
+
 if __name__ == "__main__":
     unittest.main()

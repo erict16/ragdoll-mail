@@ -837,6 +837,9 @@ class Backend:
         # error: the sentence; kind / detail / retry_at: what status_fields() hands the page (#54)
         self.sync = {"running": False, "error": None, "last": None, "kind": None, "detail": None, "retry_at": None}
         self.fails = 0                          # sync passes in a row that failed: the retry waits longer
+        self.gen = 0                            # goes up when the account or server changes (#59)
+        self.pass_gen = 0                       # the generation the sync pass under way began with
+        self.redetect = False                   # the folder names are to be found again on the next pass
         self.lock_busy = None                   # since when another process has held the headers lock
         self.sync_m = None                      # the sync's own connection
         self.pre_m = None                       # the head start's own connection
@@ -1313,6 +1316,9 @@ class Backend:
         """One look at the server: the folder list, then the sync folders, then each of the owner's
         folders (and Junk) whose STATUS changed since it was last synced (#39), or all of them now and then."""
         self.note_folders(m, c)
+        if self.redetect:
+            self.redetect = False
+            self.use_detected(detect_folders(self.found))
         todo = self.sync_folders()
         extras = self.extra_folders()
         if self.server_folders:
@@ -1325,6 +1331,8 @@ class Backend:
             if full or now[f] is None or now[f] != self.folder_status.get(f):
                 todo.append(f)
         for f in todo:
+            if self.gen != self.pass_gen:
+                raise Restart()             # the settings changed: this pass belongs to the old ones
             try:
                 R.sync_headers(m, c, f, held=self.held, deep=True)
             except LookupError:
@@ -1388,8 +1396,9 @@ class Backend:
                 continue
             self.sync["running"] = True
             self.pass_at, self.pass_cut = time.monotonic(), False
+            self.pass_gen = self.gen
             try:
-                c = c or R.db()
+                c = own_db(c)
                 with R.file_lock("headers", wait=False) as got:
                     if got:
                         for attempt in (0, 1):
@@ -1407,6 +1416,8 @@ class Backend:
                             except (imaplib.IMAP4.abort, ssl.SSLError, OSError):
                                 m, self.sync_m = self.sync_m, None
                                 R.quit_imap(m, quick=True)
+                                if self.gen != self.pass_gen:
+                                    raise Restart() from None
                                 if attempt:
                                     raise
                         c.execute("insert or replace into meta values('last_sync', ?)", (str(int(time.time())),))
@@ -1424,6 +1435,10 @@ class Backend:
                     if now - self.lock_busy > self.LOCK_WARN:
                         self.sync.update(error=BUSY_MSG, kind="server", detail=None, retry_at=int(now + wait))
                 self.start_bodies()
+            except Restart:                     # settings saved: start over with the new ones at once
+                m, self.sync_m = self.sync_m, None
+                R.quit_imap(m, quick=True)
+                wait = 0.01
             except BaseException as e:          # noqa: B036 - die() raises SystemExit
                 wait = self.note_error(e)
                 m, self.sync_m = self.sync_m, None
@@ -1470,7 +1485,7 @@ class Backend:
             if self.stopping.is_set() or not configured():
                 continue
             try:
-                c = c or R.db()
+                c = own_db(c)
                 with R.file_lock("bodies", wait=False) as got:
                     if got:                     # else the ragdoll command is at it
                         self.fetch_bodies_now(c)
@@ -1485,9 +1500,10 @@ class Backend:
         if c is not None:
             c.close()
 
-    def quiet_wait(self):
+    def quiet_wait(self, gen):
         """Wait while somebody opens a mail or has just done something: they go first."""
-        while not self.stopping.is_set() and (self.fg > 0 or time.time() - self.active_at < self.BODY_QUIET):
+        while not self.stopping.is_set() and gen == self.gen and (
+                self.fg > 0 or time.time() - self.active_at < self.BODY_QUIET):
             self.stopping.wait(0.2)
 
     def body_fetch(self, folder, uids):
@@ -1512,6 +1528,7 @@ class Backend:
     def fetch_bodies_now(self, c):
         """Newest first, many mails per command, one SELECT per folder, at a polite pace, making way
         for the user; no folder or flag work in between (that was a whole sync per 50 mails)."""
+        gen = self.gen
         folders = self.body_folders()
         if not folders:
             return
@@ -1532,9 +1549,9 @@ class Backend:
             for f, uids in by.items():
                 for k in range(0, len(uids), R.BODY_BATCH):
                     part = uids[k:k + R.BODY_BATCH]
-                    self.quiet_wait()
-                    if self.stopping.is_set():
-                        return
+                    self.quiet_wait(gen)
+                    if self.stopping.is_set() or gen != self.gen:
+                        return              # quitting, or the account changed (#59)
                     try:
                         got = self.body_fetch(f, part)
                     except LookupError:     # the folder went (renamed or deleted elsewhere): not again this time
@@ -2962,17 +2979,17 @@ class Backend:
                 R.keychain_set(user, a["password"])
             except OSError as e:
                 fail("Could not save the password in the system keychain: %s" % e)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(raw, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-        old_home = R.CFG.home
+        write_config(path, raw)
+        old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
         R.CFG = R.load_config(path)
-        if R.CFG.home != old_home:
+        new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
+        if new[3] != old[3]:
             with self.dblock:
                 self.c = R.db()
+        if new != old:
+            # another account or server: no connection, loop or cached mail of the old one goes on (#59)
+            self.restart_sync(clear=bool(old[0]) and new[0] != old[0] and new[3] == old[3],
+                              redetect=not a.get("folders"))
         self.drop()
         self.server_folders = None
         self.contacts = (0, {})
@@ -2980,6 +2997,57 @@ class Backend:
         self.start_sync()
         self.bump()
         return self.api_boot({})
+
+    def restart_sync(self, clear, redetect):
+        """The account or server changed: every loop drops its connection and starts again with the
+        new settings. clear: another account in the same index; its mail, folders and cache go."""
+        self.gen += 1
+        self.pre.clear()
+        for m in (self.m, self.dm, self.sync_m, self.pre_m, self.body_m):
+            cut(m)
+        end = time.time() + 10      # the pass and the text download under way end at their next step
+        while (self.sync["running"] or self.bodies is not None) and time.time() < end:
+            time.sleep(0.02)
+        self.drop()
+        with self.dlock:
+            self.drop_download()
+        self.folder_status, self.extra_at, self.redetect = {}, 0, redetect
+        if not clear:
+            return
+        with self.dblock:
+            c = self.c
+            c.execute("delete from msgs")
+            c.execute("delete from fts")
+            c.execute("delete from state")
+            c.execute("delete from links")
+            c.execute("delete from meta where k in ('folders', 'last_sync') or k like 'modseq:%' or k like 'sweep:%'")
+            c.commit()
+        shutil.rmtree(os.path.join(R.CFG.home, "cache"), ignore_errors=True)
+        self.found, self.news, self.news_mark, self.counts = [], [], None, None
+        self.built.clear()
+        with self.marklock:
+            self.marks.clear()
+        self.sync["last"] = None
+
+    def use_detected(self, fs):
+        """The special folders found on the server after a change of account or server, saved without
+        a "Test connection" (which finds them itself): the old provider's names would fail (#59)."""
+        path = config_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        folders = dict(R.DEFAULTS["folders"], **fs)
+        sync = [folders["inbox"], folders["sent"], folders["drafts"]]
+        if raw.get("folders") == folders and raw.get("sync_folders") == sync:
+            return
+        raw["folders"], raw["sync_folders"] = folders, sync
+        write_config(path, raw)
+        R.CFG = R.load_config(path)
+        self.bump()
 
     # ---- demo
 
@@ -3098,6 +3166,34 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
                    R.hdr(msg, "To") + " " + R.hdr(msg, "Cc"), " | ".join(names), body))
     c.commit()
+
+
+class Restart(Exception):
+    """The settings changed while a sync pass ran: it stops, and the next one uses the new ones."""
+
+
+def own_db(c):
+    """A loop's own index connection, made again when the index moved (another data_dir)."""
+    want = os.path.realpath(os.path.join(R.CFG.home, "index.db"))
+    if c is not None:
+        try:
+            if os.path.realpath(c.execute("pragma database_list").fetchone()[2]) == want:
+                return c
+        except Exception:       # noqa: BLE001 - closed or broken: made again
+            pass
+        with contextlib.suppress(Exception):
+            c.close()
+    return R.db()
+
+
+def write_config(path, raw):
+    """config.json written whole or not at all: to a file beside it, then put in its place."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 STATUS_RE = re.compile(rb"\b(MESSAGES|UIDNEXT|UNSEEN|UIDVALIDITY) (\d+)")
