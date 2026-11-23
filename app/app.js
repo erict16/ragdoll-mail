@@ -507,8 +507,8 @@ function confirmSheet({ title, text, ok, run, safe = false }) {
   (safe ? no : go).focus();
 }
 
-// A renamed or moved folder: the open folder and the selection follow it to its new name, and so do
-// the folders inside it (old + sep + ...).
+// A renamed or moved folder: the open folder, the selection, the fold state, the order and the recent
+// folders follow it to its new name, and so do the folders inside it (old + sep + ...).
 function followFolder(old, nu, sep) {
   if (old === nu) return false;
   const map = (k) => (k === old ? nu : typeof k === "string" && k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
@@ -519,6 +519,9 @@ function followFolder(old, nu, sep) {
   if (S.anchor) S.anchor = mapId(S.anchor);
   if (S.focus) S.focus = mapId(S.focus);
   S.multi = new Set([...S.multi].map(mapId));
+  const patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => map(x) !== x)) patch[k] = [...new Set(PREFS[k].map(map))];
+  if (Object.keys(patch).length) savePref(patch);
   return S.folder !== was || !!S.thread?.rows.some((r) => mapId(r.id) !== r.id);
 }
 // deleted folders leave nothing behind in the prefs
