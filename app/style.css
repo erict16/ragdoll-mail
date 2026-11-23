@@ -674,6 +674,13 @@ button:focus-visible, [role="button"]:focus-visible, a:focus-visible { outline: 
 
 
 /* ---- 0.11 group B_SEND: new rules for this group only ---- */
+/* a program file in a mail: its whole name shows (invoice.pdf.exe), with a warning */
+.att-program .att-name { white-space: normal; overflow-wrap: anywhere; }
+.att-size.att-warn { color: var(--danger); display: flex; align-items: center; gap: 4px; }
+.att-size.att-warn .i.small { width: 13px; height: 13px; }
+/* Settings: downloaded mail and its Clear button */
+.storage-line { display: flex; gap: 12px; align-items: center; }
+.storage-size { color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 56px; }
 
 
 /* ---- 0.11 group C1_LIST: new rules for this group only ---- */

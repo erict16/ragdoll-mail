@@ -153,7 +153,20 @@ WEEK = "一二三四五六日"
 # Fold only at the RFC 5322 hard limit: folding at 78 made Python encode long Message-IDs as
 # =?utf-8?q?...?=, which broke threading (sent:1431, 16th Nov 2026); no limit at all let a
 # reply-all To line pass 998 characters.
-OUT_POLICY = policy.SMTP.clone(max_line_length=998)
+# The subject and the names in the address lines are the exception: at 998 a Chinese subject became one
+# encoded word of hundreds of characters, and RFC 2047 allows 75. Those fold at 76, into words of at most 72.
+WORD_HEADERS = frozenset(("subject", "from", "to", "cc", "bcc", "reply-to", "sender"))
+WORD_POLICY = policy.SMTP.clone(max_line_length=76)
+
+
+class OutPolicy(policy.EmailPolicy):
+    def _fold(self, name, value, refold_binary=False):
+        if name.lower() in WORD_HEADERS:
+            return WORD_POLICY._fold(name, value, refold_binary)
+        return super()._fold(name, value, refold_binary)
+
+
+OUT_POLICY = OutPolicy(linesep="\r\n", max_line_length=998)
 PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{0,40}\]|\bX{3,}\b|\bTBD\b|\{\{|待定|待补|待填|【[^】\n]{0,20}】")
 ATTACH_WORDS_RE = re.compile(r"(?i)\battach(ed|ment|ments)?\b|\benclosed\b|附件|附上|随附|见附|附图|đính kèm")
 
@@ -1000,13 +1013,64 @@ def fmt_addrs(lst):
     return ", ".join(formataddr((one_line(n), one_line(a))) if n else one_line(a) for n, a in lst)
 
 
+BLOCK_TAGS = frozenset("""div p li ul ol tr table thead tbody tfoot h1 h2 h3 h4 h5 h6 blockquote pre hr
+    section article header footer nav main aside address center dl dt dd figure figcaption form fieldset
+    details summary""".split())
+TOKEN_RE = re.compile(r"<[^<>]*>|[^<]+|<")      # [^<>]: a stray "<" must not make it quadratic
+TAG_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>")
+
+
 def html_to_text(h):
-    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", " ", h or "")
-    h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>|</blockquote>", "\n", h)
-    h = re.sub(r"(?i)</t[dh]>", "\t", h)
-    h = htmlmod.unescape(re.sub(r"<[^<>]+>", "", h))      # [^<>]: a stray "<" must not make it quadratic
-    h = re.sub(r"[ \t ​]+", " ", h)
-    return re.sub(r"\n\s*\n+", "\n\n", h).strip()
+    """The text of an HTML mail, line by line as it shows: a block (<div>, <p>, a table row, ...) starts
+    a line of its own, also after a bare first line ("Hi,<div>Thanks</div>"); list items keep their
+    bullet or number."""
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>|<!--.*?-->", " ", h or "")
+    out = []
+    lists = []                  # the lists we are in: [ordered, next number]
+
+    def line():
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+    for mo in TOKEN_RE.finditer(h):
+        tok = mo.group()
+        tag = TAG_RE.fullmatch(tok) if tok.startswith("<") else None
+        if tag is None:
+            if tok.startswith("<") and len(tok) > 1 and (tok[1] in "!?/" or tok[1].isalpha()):
+                continue        # some other markup: <!doctype>, <?xml>, <o:p>, ...
+            text = htmlmod.unescape(tok)
+            if "\n" in text and not text.strip():
+                continue        # the HTML's own line breaks between tags show as nothing
+            out.append(text.replace("\x00", "").replace("\x01", ""))
+            continue
+        close, name, rest = tag.group(1), tag.group(2).lower(), tag.group(3)
+        if name == "br":
+            out.append("\n")
+        elif name in ("td", "th"):
+            if close:
+                out.append("\t")
+        elif name in ("ul", "ol"):
+            line()
+            if close:
+                if lists:
+                    lists.pop()
+            else:
+                start = re.search(r"""(?i)\bstart\s*=\s*["']?(-?\d{1,6})""", rest)
+                lists.append([name == "ol", int(start.group(1)) if start else 1])
+        elif name == "li":
+            line()
+            if not close:
+                ordered, n = lists[-1] if lists else (False, 1)
+                if ordered:
+                    lists[-1][1] += 1
+                # \x00: two spaces of a nested list's indent, \x01: the space after the bullet;
+                # the clean-up below leaves them alone
+                out.append("\x00" * max(0, len(lists) - 1) + ("%d.\x01" % n if ordered else "-\x01"))
+        elif name in BLOCK_TAGS:
+            line()
+    text = re.sub("[  ​　]+", " ", "".join(out))
+    text = re.sub(r"(?m)^[ \t]+|[ \t]+$|(?<=\x01) +", "", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return text.replace("\x00", "  ").replace("\x01", " ")
 
 
 def b64_cut(p):
@@ -1158,14 +1222,29 @@ def image_type(p):
     return next((t for magic, t in IMAGE_MAGIC if head.startswith(magic)), "")
 
 
-def is_inline(p):
-    """An image shown in the body (cid:), not a file: a PDF with a Content-ID is still a file."""
-    return (bool(p.get("Content-ID")) and p.get_content_disposition() != "attachment"
-            and bool(image_type(p)))
+def is_inline(p, refs=None):
+    """A picture shown in the mail's text, not a file. refs: the Content-IDs the HTML body shows
+    (body_refs). Then a part is such a picture when its Content-ID is one of them and it is an image
+    (by its type, its name or its bytes, or a nameless octet-stream a light mail left on the server),
+    whatever its disposition: Outlook, Foxmail and QQ Mail mark these pictures as attachments. An image
+    the body does not show is a file. A PDF with a Content-ID is always a file.
+    Without refs: an image with a Content-ID that is not marked as an attachment."""
+    cid = (p.get("Content-ID") or "").strip().strip("<>")
+    if not cid:
+        return False
+    if refs is None:
+        return p.get_content_disposition() != "attachment" and bool(image_type(p))
+    return cid in refs and (bool(image_type(p)) or p.get_content_type() == "application/octet-stream")
+
+
+def body_refs(msg):
+    """The Content-IDs the mail's HTML body shows."""
+    return cid_refs(bodies(msg)[1])
 
 
 def attachments(msg, inline=False):
     out = []
+    refs = body_refs(msg)
     for p in leaf_parts(msg):
         if p is msg and (msg.is_multipart() or not (
                 p.get_content_disposition() == "attachment" or p.get_filename()
@@ -1173,8 +1252,8 @@ def attachments(msg, inline=False):
             continue     # a mail that is only a file (a scanner's PDF) still shows that file
         is_file = (p.get_content_disposition() == "attachment" or p.get_filename()
                    or p.get_content_type() == "message/rfc822"
-                   or (p.get("Content-ID") and not is_inline(p)))
-        if is_file and (inline or not is_inline(p)):
+                   or (p.get("Content-ID") and not is_inline(p, refs)))
+        if is_file and (inline or not is_inline(p, refs)):
             out.append(p)
     return out
 
@@ -1201,7 +1280,7 @@ FWD_HEADER = "X-Forwarded-Message-Id"     # as Thunderbird does; Exmail keeps no
 
 
 def is_forward_subject(s):
-    return bool(re.match(r"(?i)\s*(fw|fwd|转发)\s*[:：]", s or ""))
+    return bool(FWD_PREFIX_RE.match(s or ""))
 
 
 def forward_source(msg):
@@ -2072,7 +2151,7 @@ def cmd_read(a):
     plain, html = bodies(msg)
     text = plain.strip() or html_to_text(html)
     atts = [{"name": fname(p) or "(no name)", "kb": len(part_bytes(p)) // 1024,
-             "inline": is_inline(p)} for p in attachments(msg, inline=True)]
+             "inline": is_inline(p, body_refs(msg))} for p in attachments(msg, inline=True)]
     atts = [x for x in atts if not (x["inline"] and INLINE_ID.match(x["name"]))]
     if a.html:
         with open(a.html, "w", encoding="utf-8") as f:
@@ -2113,6 +2192,48 @@ def safe_name(n, max_bytes=200):
     return n
 
 
+# Files that run code when opened (Windows, macOS, Linux). The app never opens one of these from a mail:
+# it only saves it or shows it in its folder.
+PROGRAM_EXTS = frozenset("""
+    exe com scr pif cpl msi msp mst msc msix msixbundle appx appxbundle appinstaller application appref-ms
+    bat cmd ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 vb vbe vbs js jse ws wsc wsf wsh hta jar jnlp
+    lnk url scf inf reg gadget chm hlp diagcab library-ms search-ms searchconnector-ms settingcontent-ms
+    xbap xll iso img vhd vhdx py pyw pyc pyz pyzw pl rb
+    app command terminal tool pkg mpkg workflow action scpt scptd applescript osax prefpane kext
+    mobileconfig fileloc inetloc webloc
+    sh bash zsh csh ksh fish run bin desktop
+""".split())
+
+
+def is_program(name):
+    """True when opening a file of this name would run it. Windows ignores dots and spaces at the end
+    of a name, so "invoice.exe." counts too."""
+    n = (name or "").strip().rstrip(". ").lower()
+    return "." in n and n.rsplit(".", 1)[1] in PROGRAM_EXTS
+
+
+ZONE_ID = "[ZoneTransfer]\r\nZoneId=3\r\n"     # Windows: "this file came from the internet"
+
+
+def mark_downloaded(path):
+    """Mark a file written from a mail as downloaded, as a browser does: Windows' Mark-of-the-Web
+    (Zone.Identifier, so SmartScreen and Office Protected View step in) and the macOS quarantine flag
+    (so Gatekeeper asks before anything in it runs). Best effort: some disks cannot hold the mark."""
+    try:
+        if sys.platform == "win32":
+            with open(path + ":Zone.Identifier", "w", encoding="ascii", newline="") as f:
+                f.write(ZONE_ID)
+        elif sys.platform == "darwin":
+            import ctypes
+            libc = ctypes.CDLL("/usr/lib/libc.dylib", use_errno=True)
+            libc.setxattr.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                                      ctypes.c_uint32, ctypes.c_int)
+            v = ("0081;%08x;Ragdoll Mail;" % int(time.time())).encode()
+            libc.setxattr(os.fsencode(path), b"com.apple.quarantine", v, len(v), 0, 0)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
 def unique_path(folder, name, used):
     """folder/name, or folder/name (2).ext when this run already wrote that name."""
     stem, ext = os.path.splitext(name)
@@ -2141,6 +2262,7 @@ def cmd_attach(a):
         path = unique_path(out, safe_name(name), used)
         with open(path, "wb") as f:
             f.write(part_bytes(p))
+        mark_downloaded(path)
         print("saved %s (%d KB)" % (os.path.abspath(path), os.path.getsize(path) // 1024))
         n += 1
     if not n:
@@ -2176,6 +2298,15 @@ def clean_quoted_html(html):
     return html
 
 
+QUOTE_HEAD = '<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+
+
+def quote_of(html):
+    """The quoted history (quote_block) in a mail made here, or ""."""
+    k = (html or "").find(QUOTE_HEAD)
+    return html[k:] if k >= 0 else ""
+
+
 def quote_block(orig):
     plain, html = bodies(orig)
     if not html:
@@ -2191,14 +2322,16 @@ def quote_block(orig):
     f = addrs(hdr(orig, "From"))
     fn, fa = f[0] if f else ("", "")
 
+    esc = htmlmod.escape        # every name, address and subject here comes from the sender
+
     def people(v):
-        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (htmlmod.escape(n or a_), a_) for n, a_ in addrs(v))
+        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
     cc = people(hdr(orig, "Cc"))
-    head = ('<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+    head = (QUOTE_HEAD +
             '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
             '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
-            % (htmlmod.escape(fn or fa), fa, t.year, t.month, t.day, WEEK[t.weekday()],
-               t.strftime("%H:%M"), htmlmod.escape(hdr(orig, "Subject")), people(hdr(orig, "To")),
+            % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
+               t.strftime("%H:%M"), esc(hdr(orig, "Subject")), people(hdr(orig, "To")),
                "<div>抄送：%s</div>" % cc if cc else ""))
     return head + ('<blockquote style="margin:0 0 0 4px;padding-left:8px;border-left:2px solid #d0d3d6">'
                    + html + "</blockquote>")
@@ -2236,13 +2369,18 @@ def clean_recipients(to, cc, drop):
     return out_to, out_cc
 
 
+# a reply or forward prefix as mail apps write it, with an ASCII or a full-width colon (RE：, 回复：)
+REPLY_PREFIX_RE = re.compile(r"(?i)\s*(re|aw|回复|答复|回覆|答覆|trả lời)\s*[:：]")
+FWD_PREFIX_RE = re.compile(r"(?i)\s*(fw|fwd|wg|tr|转发|轉寄|轉發|chuyển tiếp)\s*[:：]")
+
+
 def reply_subject(s):
-    """Re: + the full original subject; only an existing Re: is not doubled."""
-    return s if re.match(r"(?i)\s*re\s*:", s) else "Re: " + s
+    """Re: + the full original subject; only an existing reply prefix is not doubled."""
+    return s if REPLY_PREFIX_RE.match(s or "") else "Re: " + (s or "")
 
 
 def forward_subject(s):
-    return s if re.match(r"(?i)\s*(fw|fwd)\s*:", s) else "Fw: " + s
+    return s if FWD_PREFIX_RE.match(s or "") else "Fw: " + (s or "")
 
 
 def text_to_html(t):
@@ -2250,11 +2388,18 @@ def text_to_html(t):
 
 
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False):
-    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'."""
+                  signature_html="", high=False, font="", quote_html="", quote_src=None):
+    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
+    (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times.
+    quote_html, quote_src: with no orig, a quote already made (quote_of an earlier draft) and the mail
+    that holds its pictures."""
+    if font and signature_html.strip():
+        signature_html = '<div data-rd-sig="1" style="%s">%s</div>' % (re.sub(r'["<>&\\]', "", font), signature_html)
     html = body_html + "<div><br></div>" + signature_html
     if orig is not None:
         html += "<div><br></div>" + quote_block(orig)
+    elif quote_html:
+        html += "<div><br></div>" + quote_html
     msg = EmailMessage()
     msg["From"] = formataddr((CFG.name, CFG.user)) if CFG.name else CFG.user
     if to:
@@ -2281,32 +2426,70 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
     msg.add_alternative(html, subtype="html")
     hpart = msg.get_body(("html",))
     used = set(re.findall(r"(?i)cid:([^\"'\s>)]+)", html))
-    if orig is not None:
+    src = orig if orig is not None else quote_src
+    if src is not None:
         done = set()
-        for p in orig.walk():
+        for p in src.walk():
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
-            if cid in used and cid not in done and is_inline(p):
+            if cid in used and cid not in done and is_inline(p, used):
                 mt, st = image_type(p).split("/", 1)
-                hpart.add_related(p.get_payload(decode=True) or b"", mt, st, cid="<%s>" % cid,
-                                  filename=fname(p))
+                add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
                 done.add(cid)
-        if mode == "forward":
+        if mode == "forward" and orig is not None:
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
-                    msg.add_attachment(part_bytes(p), "application", "octet-stream", filename=one_line(fname(p)))
+                    add_file(msg, part_bytes(p), "application", "octet-stream", fname(p))
                     continue
                 mt, st = p.get_content_type().split("/", 1)
-                msg.add_attachment(part_bytes(p), mt, st, filename=one_line(fname(p)))
+                add_file(msg, part_bytes(p), mt, st, fname(p))
     for f in attach:
-        ctype = mimetypes.guess_type(f)[0] or "application/octet-stream"
+        # a path, or (path, the file's own name): the name on disk may be a safe stand-in for it
+        f, name = f if isinstance(f, tuple) else (f, os.path.basename(f))
+        name = one_line(name or "").strip() or os.path.basename(f)
+        ctype = mimetypes.guess_type(name)[0] or mimetypes.guess_type(f)[0] or "application/octet-stream"
         if ctype.startswith("message/"):     # a .eml file: add_attachment wants a Message object for these
             ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
-            msg.add_attachment(fh.read(), mt, st, filename=one_line(os.path.basename(f)))
+            add_file(msg, fh.read(), mt, st, name)
     return msg
+
+
+def add_file(holder, data, mt, st, name, cid=None):
+    """Add a file to the mail, or with cid a picture its HTML shows (holder: the HTML part), under the
+    file's own name: as RFC 2231 filename*= (what the email module writes) and, for the mail apps that
+    read only that, as name= in RFC 2047 words on Content-Type, as Thunderbird and Outlook write it."""
+    name = one_line(name or "").strip() or None
+    if cid:
+        holder.add_related(data, mt, st, cid=cid, filename=name)
+    else:
+        holder.add_attachment(data, mt, st, filename=name)
+    if name:
+        name_param(list(holder.iter_parts())[-1], name)
+
+
+def name_param(part, name):
+    if name.isascii():
+        part.set_param("name", name)
+        return
+    words, cur = [], b""
+    for ch in name:         # whole characters in each word; 42 bytes = 56 base64 = a 68-character word
+        b = ch.encode()
+        if cur and len(cur) + len(b) > 42:
+            words.append(cur)
+            cur = b""
+        cur += b
+    words.append(cur)
+    value = "=?utf-8?B?%s?=" % "?=\n =?utf-8?B?".join(base64.b64encode(w).decode() for w in words)
+    keep = "".join('; %s="%s"' % (k, v) for k, v in (part.get_params() or [])[1:]
+                   if k.lower() != "name" and isinstance(v, str) and v.isascii() and '"' not in v)
+    # set as it is to be written: the email module would turn the words back into RFC 2231
+    for k, (h, _) in enumerate(part._headers):
+        if h.lower() == "content-type":
+            part._headers[k] = (h, '%s%s;\n name="%s"' % (part.get_content_type(), keep, value))
+            break
 
 
 def append_draft(m, raw):
@@ -2529,6 +2712,20 @@ def in_folder(m, folder, mid, last=15):
     return (mid.strip().strip("<>") + ">").encode() in blob
 
 
+def uid_of_mid(m, folder, mid, last=30):
+    """The UID of the mail with this Message-ID among the folder's last ones, or 0."""
+    select(m, folder)
+    u = uids_of(m)[-last:]
+    want = (mid or "").strip().strip("<>").encode()
+    if not u or not want:
+        return 0
+    typ, data = m.uid("FETCH", ",".join(map(str, u)), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    for seg in segments(data or []):
+        if b"<" + want + b">" in b"".join(p for p in seg if isinstance(p, bytes)):
+            return seg_uid(seg) or 0
+    return 0
+
+
 def sent_log():
     return os.path.join(CFG.home, "sent.log")
 
@@ -2545,11 +2742,22 @@ def already_sent(mid):
     return None
 
 
-def log_sent(mid, subject):
+def log_sent(mid, subject, bcc=""):
+    """One line per mail sent: Message-ID, when, subject, and who was Bcc'd (the mail itself no longer says)."""
     os.makedirs(CFG.home, exist_ok=True)
     with open(sent_log(), "a", encoding="utf-8") as f:
-        f.write("%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
-                                  re.sub(r"\s+", " ", subject)[:200]))
+        f.write("%s\t%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
+                                      re.sub(r"\s+", " ", subject)[:200], re.sub(r"\s+", " ", bcc or "")))
+
+
+def sent_copy(out, bcc):
+    """The copy for Sent: the mail as it went out, plus its Bcc line, as other mail apps keep it.
+    Only this copy has it; the mail sent over SMTP never does."""
+    if not bcc:
+        return out
+    copy = to_msg(out)
+    copy["Bcc"] = one_line(bcc)
+    return copy.as_bytes(policy=OUT_POLICY)
 
 
 def cmd_send(a):
@@ -2616,15 +2824,63 @@ def servers_from_mx(domain):
     return None
 
 
+class SendLater(SystemExit):
+    """Sending stopped before anything left this machine (no network, the server did not answer,
+    it said "try later"): trying again later cannot send the mail twice. .cause is what went wrong."""
+    def __init__(self, cause):
+        super().__init__("not sent, nothing left this computer: %s" % (cause or type(cause).__name__))
+        self.cause = cause
+
+
+MAYBE_SENT = ("The connection broke while the mail was going out, so it may have been sent. "
+              "Check Sent before you send it again.")
+
+
+def smtp_send(s, frm, rcpts, out):
+    """sendmail in its two halves: until DATA nothing has left (SendLater on a failure there); a break
+    while the mail itself goes out may have sent it (MAYBE_SENT). Returns the refused recipients."""
+    try:
+        s.ehlo_or_helo_if_needed()
+        code, resp = s.mail(frm)
+        if code != 250:
+            raise smtplib.SMTPSenderRefused(code, resp, frm)
+        refused = {}
+        for r in rcpts:
+            code, resp = s.rcpt(r)
+            if code not in (250, 251):
+                refused[r] = (code, resp)
+        if len(refused) == len(rcpts):
+            raise smtplib.SMTPRecipientsRefused(refused)
+    except (smtplib.SMTPSenderRefused, smtplib.SMTPRecipientsRefused):
+        raise                                   # the server will not take it: trying again does not help
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        code, resp = s.data(out)
+    except smtplib.SMTPDataError as e:          # the server answered: it did not take the mail
+        if 400 <= e.smtp_code < 500:
+            raise SendLater(e) from e
+        raise
+    except (OSError, smtplib.SMTPException):
+        die(MAYBE_SENT)
+    return refused
+
+
 def send_draft(folder, uid, wait=3):
     """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
-    answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
+    answered. Returns what happened; dies (SystemExit) before sending when it must not go out, and
+    raises SendLater when it stopped before anything left (a network or server hiccup)."""
     sent = CFG.folders["sent"]
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
-        msg = to_msg(raw)
-        mid = hdr(msg, "Message-ID").strip()
-        when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    try:
+        with session() as m:
+            raw = fetch_raw(m, folder, uid)
+            msg = to_msg(raw)
+            mid = hdr(msg, "Message-ID").strip()
+            when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    except SystemExit:
+        raise
+    except Exception as e:      # noqa: BLE001 - the draft was not even read: nothing went out
+        raise SendLater(e) from e
     if when:
         die("NOT SENT AGAIN: this draft already went out %s. Check Sent; remove the draft with delete-draft."
             % when)
@@ -2634,20 +2890,31 @@ def send_draft(folder, uid, wait=3):
     rcpts = [x for _, x in addrs(hdr(msg, "To")) + addrs(hdr(msg, "Cc")) + addrs(hdr(msg, "Bcc"))]
     if not rcpts:
         die("the draft has no recipients")
+    bcc = hdr(msg, "Bcc").strip()
     del msg["Bcc"]
     del msg["Date"]
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
-    out = msg.as_bytes(policy=OUT_POLICY)
-    s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    out = msg.as_bytes(policy=OUT_POLICY)        # what goes out: never a Bcc line
+    keep = sent_copy(out, bcc)
+    pw = password()
     try:
-        s.login(CFG.user, password())
-        refused = s.sendmail(CFG.user, rcpts, out)
+        s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        try:
+            s.login(CFG.user, pw)
+        except smtplib.SMTPAuthenticationError:
+            raise                               # a wrong password stays wrong
+        except (OSError, smtplib.SMTPException) as e:
+            raise SendLater(e) from e
+        refused = smtp_send(s, CFG.user, rcpts, out)
     finally:
         try:
             s.quit()
         except Exception:
             pass
-    log_sent(mid, hdr(msg, "Subject"))           # from here on a retry refuses instead of sending twice
+    log_sent(mid, hdr(msg, "Subject"), bcc)      # from here on a retry refuses instead of sending twice
     saved, cleanup = False, []
     try:
         # a fresh connection: the first one may have timed out during a long upload
@@ -2658,7 +2925,7 @@ def send_draft(folder, uid, wait=3):
                     saved = True
                     break
             if not saved:
-                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), out)
+                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), keep)
                 if typ == "OK":
                     pass
                 elif b"saved by smtp" in b" ".join(x for x in data if isinstance(x, bytes)).lower():
@@ -2981,6 +3248,26 @@ def running(cmd):
             f.close()
             with contextlib.suppress(OSError):
                 os.remove(path)
+
+
+def pid_running(pid, cmd="app"):
+    """True when process pid still runs `cmd` (its run marker is locked)."""
+    if not isinstance(pid, int):
+        return False
+    path = os.path.join(CFG.home, "run", "%d-%s.lock" % (pid, cmd))
+    if not os.path.exists(path):
+        return False
+    try:
+        f = open(path, "a+")
+    except OSError:
+        return True
+    try:
+        free = try_lock(f)
+        if free:
+            unlock(f)
+        return not free
+    finally:
+        f.close()
 
 
 def busy_commands():
@@ -3422,11 +3709,15 @@ def cmd_schedule(a):
         return
     drafts_only(a.id, "schedule")
     if a.cancel:
-        items = sched_read()
-        keep = [x for x in items if x["id"] != a.id]
-        if len(keep) == len(items):
-            die("%s is not scheduled" % a.id)
-        sched_write(keep)
+        with file_lock("sched", True):      # the app changes the list too (ragdoll_app.sched_edit)
+            items = sched_read()
+            keep = [x for x in items if x["id"] != a.id]
+            if len(keep) == len(items):
+                die("%s is not scheduled" % a.id)
+            if any(isinstance(x.get("sending"), dict) and pid_running(x["sending"].get("pid"))
+                   for x in items if x["id"] == a.id):
+                die("%s is going out right now" % a.id)
+            sched_write(keep)
         print(json.dumps({"id": a.id, "scheduled": False}))
         return
     if not a.yes:
@@ -3440,8 +3731,9 @@ def cmd_schedule(a):
         die("that time has already passed")
     if at > time.time() + 5 * 366 * 86400:
         die("pick a time within the next five years")
-    items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
-    sched_write(items)
+    with file_lock("sched", True):
+        items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
+        sched_write(items)
     print(json.dumps({"id": a.id, "at": local_time(at), "app_running": app_running(),
                       "note": "Ragdoll Mail sends it at that time while the app is open; if the app is "
                               "closed then, it goes out when the app next starts."}, ensure_ascii=False, indent=1))

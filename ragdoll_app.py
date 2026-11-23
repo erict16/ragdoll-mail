@@ -101,6 +101,14 @@ def fail(msg, detail=None):
 LANGS = ("system", "en", "zh-Hans", "zh-Hant", "ja", "ko", "es", "fr", "de")
 UNDO_SECONDS = (0, 5, 10, 20, 30)
 FONTS = ("system", "arial", "helvetica", "georgia", "times", "verdana", "courier", "yahei", "pingfang", "simsun")
+# what each font is in CSS, as the page writes it (app.js FONTS, SAFE_FONT for "system")
+FONT_CSS = {
+    "system": "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Helvetica, Arial, sans-serif",
+    "arial": "Arial, Helvetica, sans-serif", "helvetica": "Helvetica, Arial, sans-serif", "georgia": "Georgia, serif",
+    "times": "'Times New Roman', Times, serif", "verdana": "Verdana, Geneva, sans-serif",
+    "courier": "'Courier New', Courier, monospace", "yahei": "'Microsoft YaHei', 微软雅黑, sans-serif",
+    "pingfang": "'PingFang SC', 苹方, sans-serif", "simsun": "SimSun, 宋体, serif"}
+BODY_FONT_RE = re.compile(r'^\s*<div data-rd-body="1" style="(font-family:[^";<>]{1,300});(font-size:\d{1,2}px)"')
 FONT_SIZES = (12, 13, 14, 16, 18)
 TEXT_SIZES = (12, 13, 14, 15, 16, 18, 20)
 
@@ -113,6 +121,8 @@ def explain(e):
     """(a sentence a person can act on, the kind of problem, the raw text) for an exception from
     IMAP, SMTP or ragdoll. The sentence never carries the server's raw words (#58); the kind is
     "auth", "offline", "server" or "config" (#54)."""
+    if isinstance(e, R.SendLater) and e.cause is not None:     # a send that stopped before anything left: say why
+        return explain(e.cause)
     s = str(e.code if isinstance(e, SystemExit) else e) or e.__class__.__name__
     low = s.lower()
     if isinstance(e, ApiError):
@@ -236,6 +246,8 @@ def snippet(body):
 
 
 def open_path(path, reveal=False):
+    if not reveal and R.is_program(path):
+        fail("%s is a program, so it was not opened." % os.path.basename(path))
     if sys.platform == "darwin":
         # waits only until macOS has handed the file to an app, so a file no app opens says so
         try:
@@ -363,14 +375,12 @@ def has_remote(html):
                           r"\sbackground\s*=\s*[\"']?\s*https?:", html))
 
 
-def file_parts(msg):
-    """The mail's files (not the images shown in the body), in a fixed order."""
-    out = []
-    for p in R.attachments(msg, inline=True):
-        if R.is_inline(p):
-            continue
-        out.append(p)
-    return out
+def file_parts(msg, light=False):
+    """The mail's files, in a fixed order: not the pictures its text shows (R.is_inline with the body's
+    cid: links), whatever their disposition. In a light mail, a picture too big to come with it
+    (R.SHOWN_MAX) cannot show, so it is a file to open."""
+    refs = R.body_refs(msg)
+    return [p for p in R.attachments(msg, inline=True) if not R.is_inline(p, refs) or left_out(p, light)]
 
 
 def left_out(p, light):
@@ -388,7 +398,23 @@ def part_info(k, p, light=False):
         size = int(p["X-Ragdoll-Size"]) if left_out(p, light) and p["X-Ragdoll-Size"] else len(R.part_bytes(p))
     except Exception:
         size = 0
-    return {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    out = {"i": k, "name": name, "size": size, "type": mimetypes.guess_type(name)[0] or p.get_content_type()}
+    if R.is_program(disk_name(p)):
+        out["program"] = True       # opening it would run it: the page offers only save and show
+    return out
+
+
+def mail_name(name):
+    """A file's own name as a mail gives it: whole, only without control characters or line breaks."""
+    return R.nfc(re.sub(r"[\x00-\x1f\x7f]+", " ", name or "")).strip()[:1000] or "attachment"
+
+
+def disk_name(p):
+    """The name a mail's file gets on disk."""
+    name = R.safe_name(R.fname(p) or "attachment")
+    if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
+        name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the system knows which app
+    return name
 
 
 
@@ -1651,9 +1677,13 @@ class Backend:
         self.focus_at = 0                       # when the page last said its window is in front
         self.web_notice_at = 0                  # when a page that shows the browser's own notices last asked
         self.made = set()                       # files the app wrote (only these may be revealed)
+        self.url = None                         # the page's address, token and all (main sets it)
+        self.orig_mids = {}                     # id -> Message-ID of each mail a reply or forward was opened on
         self.demo_raw = {}
         self.thread = None
         self.schedlock = threading.RLock()      # the scheduled-send list (scheduled.json)
+        self.inflight = set()                   # drafts going out right now (by the schedule or Send)
+        self.editing = {}                       # draft id -> when a compose last opened or saved it
         self.data_v = None                      # the index as last seen: changes when the sync or the CLI writes
         self.counts = None                      # (what they were counted from, the folder counts)
         self.pre = collections.deque()          # mail to bring in before it is opened: (folder, uidv, uid, size)
@@ -1678,10 +1708,10 @@ class Backend:
             with contextlib.suppress(Exception):
                 r = self.q("select v from meta where k='folders'")
                 self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
-            self.prune_cache()
             with contextlib.suppress(Exception):     # the last good sync, by the app or the ragdoll command
                 r = self.q("select v from meta where k='last_sync'")
                 self.sync["last"] = int(r[0]["v"]) if r else None
+            threading.Thread(target=self.tidy_loop, daemon=True).start()
             threading.Thread(target=self.check_update, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -1957,20 +1987,125 @@ class Backend:
         m, self.pre_m = self.pre_m, None
         R.quit_imap(m, quick=True)
 
-    def prune_cache(self, days=90):
-        root = os.path.join(R.CFG.home, "cache")
-        cut = time.time() - days * 86400
+    # ---- files the app keeps on disk: the mail cache, opened files, files kept for a compose.
+    # One job tidies them when the app starts and once a day after (an app left open for weeks too).
+
+    CACHE_DAYS, CACHE_MAX = 90, 2 * 1024 ** 3       # mail not opened for 90 days goes; 2 GB at most
+    OPEN_DAYS, OPEN_MAX = 30, 1024 ** 3             # opened attachments: 30 days, 1 GB
+    UPLOAD_DAYS = 2                                 # a compose's files nothing points at any more
+    STATE_DAYS = 1                                  # a compose state whose draft is gone
+
+    def tidy_loop(self):
+        while not self.stopping.is_set():
+            try:
+                self.tidy()
+            except Exception:       # noqa: BLE001 - tidying must never take the app down
+                traceback.print_exc(file=sys.stderr)
+            self.stopping.wait(86400)
+
+    def tidy(self, now=None):
+        now = time.time() if now is None else now
+        self.prune_cache(self.CACHE_DAYS, now=now, max_bytes=self.CACHE_MAX)
+        self.prune_open(now)
+        self.prune_uploads(now)
+
+    @staticmethod
+    def used_at(path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            return 0
+        return max(st.st_atime, st.st_mtime)
+
+    @staticmethod
+    def files_in(root):
+        """[(path, last used, bytes)] of every file under root."""
+        out = []
         for d, _, files in os.walk(root):
-            gone = set()
             for n in files:
                 p = os.path.join(d, n)
                 with contextlib.suppress(OSError):
-                    if os.path.getatime(p) < cut:
-                        os.remove(p)
-                        gone.add(n)
-            for n in files:         # a file fetched by itself (R.part_path) goes when its light mail goes
-                if ".part" in n and n not in gone and not os.path.exists(
-                        os.path.join(d, n.split(".part")[0] + ".light.eml")):
+                    st = os.stat(p)
+                    out.append((p, max(st.st_atime, st.st_mtime), st.st_size))
+        return out
+
+    def prune_open(self, now, days=None, max_bytes=None, keep_new=86400):
+        """Opened attachments (open/<hash>/name) not used for a while go, the oldest first past the size
+        limit; one used in the last day stays (it may be open in Word right now)."""
+        root = os.path.join(R.CFG.home, "open")
+        days = self.OPEN_DAYS if days is None else days
+        max_bytes = self.OPEN_MAX if max_bytes is None else max_bytes
+        dirs = []
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            files = self.files_in(d)
+            dirs.append((max([t for _, t, _ in files] or [self.used_at(d)]), sum(s for _, _, s in files), d))
+        dirs.sort()
+        total = sum(s for _, s, _ in dirs)
+        for used, size, d in dirs:
+            if used < now - days * 86400 or (total > max_bytes and used < now - keep_new):
+                shutil.rmtree(d, ignore_errors=True)
+                if not os.path.exists(d):
+                    total -= size
+                    self.made = {p for p in self.made if not p.startswith(d + os.sep)}
+
+    def prune_uploads(self, now):
+        """Files kept for a compose (uploads/<token>/name): kept while a saved compose points at them;
+        the others go after UPLOAD_DAYS. A compose state goes when its draft is no longer in Drafts."""
+        states = os.path.join(R.CFG.home, "compose")
+        drafts = {hashlib.sha1((r["msgid"] or "").strip().encode()).hexdigest() for r in
+                  self.q("select msgid from msgs where folder=?", (R.CFG.folders["drafts"],))}
+        keep = set()
+        for n in os.listdir(states) if os.path.isdir(states) else []:
+            p = os.path.join(states, n)
+            if n.endswith(".json") and n[:-5] not in drafts and self.used_at(p) < now - self.STATE_DAYS * 86400:
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                continue
+            with contextlib.suppress(OSError, ValueError, TypeError, AttributeError):
+                with open(p, encoding="utf-8") as f:
+                    for x in json.load(f).get("atts") or []:
+                        keep.add(os.path.dirname(os.path.realpath(x["path"])))
+        root = os.path.join(R.CFG.home, "uploads")
+        for n in os.listdir(root) if os.path.isdir(root) else []:
+            d = os.path.join(root, n)
+            if os.path.realpath(d) in keep:
+                continue
+            if max([t for _, t, _ in self.files_in(d)] or [self.used_at(d)]) < now - self.UPLOAD_DAYS * 86400:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def downloaded_bytes(self):
+        return sum(s for k in ("cache", "open") for _, _, s in self.files_in(os.path.join(R.CFG.home, k)))
+
+    def api_storage(self, a):
+        """How much downloaded mail is kept on this computer (the mail cache and opened files)."""
+        return {"bytes": self.downloaded_bytes()}
+
+    def api_clear_storage(self, a):
+        """Remove the downloaded mail; it is fetched again when it is opened. An opened file changed or
+        used in the last day stays: it may still be open in another app."""
+        self.prune_cache(0, now=time.time() + 1, max_bytes=0)
+        self.prune_open(time.time(), days=1, max_bytes=0)
+        with self.schedlock:
+            self.built.clear()
+        return {"bytes": self.downloaded_bytes()}
+
+    def prune_cache(self, days=90, now=None, max_bytes=None):
+        """Mail not opened for `days` goes from the cache, and past max_bytes the least recently used
+        first. A file fetched by itself (R.part_path) goes when its light mail goes."""
+        root = os.path.join(R.CFG.home, "cache")
+        now = time.time() if now is None else now
+        cut = now - days * 86400
+        files = sorted(self.files_in(root), key=lambda x: x[1])
+        total = sum(s for _, _, s in files)
+        for p, used, size in files:
+            if used < cut or (max_bytes is not None and total > max_bytes):
+                with contextlib.suppress(OSError):
+                    os.remove(p)
+                    total -= size
+        for d, _, names in os.walk(root):
+            for n in names:
+                if ".part" in n and not os.path.exists(os.path.join(d, n.split(".part")[0] + ".light.eml")):
                     with contextlib.suppress(OSError):
                         os.remove(os.path.join(d, n))
 
@@ -2715,7 +2850,7 @@ class Backend:
         out = {"id": i, "from": person(n, ad), "to": people_json(R.hdr(msg, "To")),
                "cc": people_json(R.hdr(msg, "Cc")), "bcc": people_json(R.hdr(msg, "Bcc")),
                "subject": R.hdr(msg, "Subject"), "ts": ts, "html": body, "plain": not html.strip(),
-               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg))],
+               "remote": has_remote(body), "atts": [part_info(k, p, light) for k, p in enumerate(file_parts(msg, light))],
                "big": R.big_attachment_lines(R.html_to_text(html) or plain),
                "unsub": list_unsub(msg), "invite": invite_of(msg)}
         return out
@@ -3330,7 +3465,7 @@ class Backend:
     def files_of(self, i):
         """(the mail's files, whether the mail is the light one)."""
         raw, light = self.view(i)
-        return file_parts(R.to_msg(raw)), light
+        return file_parts(R.to_msg(raw), light), light
 
     def whole_part(self, i, p, light):
         """The file with its data. A big one the light mail left on the server is fetched by itself,
@@ -3351,10 +3486,8 @@ class Backend:
         its own to open it from. Returns its path. Opening the same file again opens the copy made the
         first time: a second copy of the same name would not open in Excel ("a workbook with the same
         name is already open"), and changes made in the first copy stay."""
-        name = R.safe_name(R.fname(p) or "attachment")
+        name = disk_name(p)
         data = R.part_bytes(p)
-        if not os.path.splitext(name)[1] and p.get_content_type() != "application/octet-stream":
-            name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the Mac knows which app
         if save:
             path = R.unique_path(downloads_dir(), name, set())
             n = 2
@@ -3367,12 +3500,14 @@ class Backend:
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, name)
             if os.path.exists(path):
+                R.mark_downloaded(path)
                 self.made.add(path)
                 return path
         tmp = path + ".part"
         with open(tmp, "wb") as f:      # the app that opens it never sees half a file
             f.write(data)
         os.replace(tmp, path)
+        R.mark_downloaded(path)
         self.made.add(path)
         return path
 
@@ -3385,12 +3520,18 @@ class Backend:
             k = next((j for j, p in enumerate(parts) if (R.fname(p) or "attachment") == name), -1)
         if not 0 <= k < len(parts):
             fail("That attachment is not in the mail any more.")
-        save = a.get("action") == "save"
+        action = a.get("action")
+        save = action == "save"
+        if action in (None, "open") and R.is_program(disk_name(parts[k])):
+            # a program runs when it is opened: say so, and let the page offer save and show in folder
+            return {"program": True, "name": disk_name(parts[k])}
         path = self.write_part(self.whole_part(a["id"], parts[k], light), save)
-        if a.get("action") == "drag":
+        if action == "drag":
             # the file under its own name in the app's open folder; Finder copies it where it is dropped
             return {"path": path, "name": os.path.basename(path), "dragging": drag_out(path)}
-        if not save:
+        if action == "show":
+            open_path(path, reveal=True)
+        elif not save:
             open_path(path)
         return {"path": path, "name": os.path.basename(path)}
 
@@ -3552,6 +3693,7 @@ class Backend:
             path += ".ics"
         with open(path, "wb") as f:
             f.write(data)
+        R.mark_downloaded(path)
         self.made.add(path)
         if not self.demo:
             open_path(path)
@@ -3624,10 +3766,13 @@ class Backend:
         return d
 
     def keep_file(self, name, data):
+        """The file kept for a compose. On disk it has a safe name; "name" is its own, whole name, the one
+        the mail gives it ("PO#123: 最终版?.pdf" stays so)."""
+        name = mail_name(name)
         path = os.path.join(self.upload_dir(), R.safe_name(name))
         with open(path, "wb") as f:
             f.write(data)
-        return {"path": path, "name": os.path.basename(path), "size": len(data)}
+        return {"path": path, "name": name, "size": len(data)}
 
     def api_compose(self, a):
         mode = a.get("mode") or "new"
@@ -3636,6 +3781,7 @@ class Backend:
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
+            self.orig_mids[a["id"]] = R.hdr(orig, "Message-ID").strip()
             q = R.quote_block(orig)
             out["quote"] = page_html(q, cid_map(orig))
             if mode == "forward":
@@ -3648,6 +3794,7 @@ class Backend:
                 out["subject"] = R.reply_subject(R.hdr(orig, "Subject"))
         elif mode == "draft":
             out["replace"] = a["id"]
+            self.editing[a["id"]] = time.time()     # a scheduled one waits while it is being changed
             msg = R.to_msg(self.raw(a["id"]))
             state = self.compose_state(R.hdr(msg, "Message-ID"))
             if state:
@@ -3656,8 +3803,12 @@ class Backend:
                 out["signature"] = self.signature()
                 if state.get("orig"):
                     with contextlib.suppress(ApiError, SystemExit, Exception):
-                        orig = R.to_msg(self.raw(state["orig"]))
-                        out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        orig, i = self.find_orig(dict(state, replace=a["id"]))
+                        if orig is not None:
+                            out["orig"] = i
+                            out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                        else:       # the original is gone: the quote the draft already has
+                            out["quote"] = page_html(R.quote_of(R.bodies(msg)[1]), cid_map(msg))
                 out["atts"] = [x for x in state.get("atts", []) if os.path.isfile(x["path"])]
                 return out
             plain, html = R.bodies(msg)
@@ -3686,11 +3837,58 @@ class Backend:
                 return json.load(f)
         return None
 
+    def body_font(self, body):
+        """The font the body is written in (the page wraps it in data-rd-body), else the one in Settings."""
+        mo = BODY_FONT_RE.match(body or "")
+        if mo:
+            return "%s;%s" % mo.groups()
+        p = self.prefs()
+        size = p.get("font_size") if p.get("font_size") in FONT_SIZES else 14
+        return "font-family:%s;font-size:%dpx" % (FONT_CSS.get(p.get("font"), FONT_CSS["system"]), size)
+
+    def find_orig(self, a):
+        """The mail a reply or forward (a["orig"]) answers: (its message, its id now), or (None, None).
+        Moved since (archived, filed): found again by its Message-ID, which the draft itself keeps."""
+        i = a.get("orig")
+        try:
+            return R.to_msg(self.raw(i)), i
+        except (ApiError, SystemExit):
+            pass
+        mid = a.get("orig_mid") or self.orig_mids.get(i)
+        old = self.old_draft(a)
+        if not mid and old is not None:
+            mid = R.hdr(old, R.FWD_HEADER if a.get("mode") == "forward" else "In-Reply-To").strip()
+        for r in self.q("select folder, uid from msgs where msgid=? order by ts desc", (mid,)) if mid else []:
+            j = R.make_id(r["folder"], r["uid"])
+            if j != i:
+                try:
+                    return R.to_msg(self.raw(j)), j
+                except (ApiError, SystemExit):
+                    continue
+        return None, None
+
+    def old_draft(self, a):
+        """The saved draft this compose replaces, as a message, or None."""
+        i = a.get("replace")
+        if not i:
+            return None
+        try:
+            if self.parse(i)[0] != R.CFG.folders["drafts"]:
+                return None
+            return R.to_msg(self.raw(i))
+        except (ApiError, SystemExit):
+            return None
+
     def build(self, a):
         mode = a.get("mode") or "new"
-        orig = None
+        orig = old = None
         if a.get("orig"):
-            orig = R.to_msg(self.raw(a["orig"]))
+            orig, i = self.find_orig(a)
+            if orig is not None:
+                a["orig"] = i                   # where it is now: the saved state keeps that
+                a["orig_mid"] = R.hdr(orig, "Message-ID").strip()
+            else:
+                old = self.old_draft(a)         # gone for good: the quote the last save made stays
         to, cc, bcc = people_in(a.get("to")), people_in(a.get("cc")), people_in(a.get("bcc"))
         to, cc = R.clean_recipients(to, cc, set())
         subject = (a.get("subject") or "").strip()
@@ -3700,11 +3898,21 @@ class Backend:
             p = os.path.realpath(x["path"])
             if not p.startswith(root + os.sep) or not os.path.isfile(p):
                 fail("An attachment is missing: %s" % x.get("name", ""))
-            atts.append(p)
+            atts.append((p, mail_name(x.get("name") if isinstance(x.get("name"), str) else "") or os.path.basename(p)))
         body, images = data_images(a.get("html") or "")
         sig = self.signature() if a.get("use_signature", True) else ""
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
-                              bcc, atts, sig)
+                              bcc, atts, sig, font=self.body_font(body),
+                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
+        if a.get("orig") and orig is None:
+            # the original is gone: the threading the last save had is kept, so the reply stays in its thread
+            mid = a.get("orig_mid") or self.orig_mids.get(a["orig"]) or ""
+            for h in ("In-Reply-To", "References", R.FWD_HEADER):
+                v = R.hdr(old, h).strip() if old is not None else ""
+                if not v and mid and (h == R.FWD_HEADER) == (mode == "forward"):
+                    v = mid
+                if v and not msg[h]:
+                    msg[h] = v
         if mode == "draft" and not orig and a.get("irt"):
             msg["In-Reply-To"] = a["irt"]
             msg["References"] = a.get("refs") or a["irt"]
@@ -3731,27 +3939,42 @@ class Backend:
                 old = None
             else:
                 with self.schedlock:
-                    self.sched_drop(old)
+                    if old in self.inflight:
+                        fail("This mail is going out right now, so the change was not saved.")
+                    self.editing[old] = time.time()     # not sent by the schedule while it changes
                 self.drop_state(old)
         if self.demo:
             uid = self.demo_insert(drafts, raw, int(time.time()), 1, 0)
             if old:
                 self.demo_delete(old)
         else:
+            mid, done = R.hdr(msg, "Message-ID").strip(), {}
+
             def go(m):
-                uid = R.append_draft(m, raw)
+                # self.imap runs this again on a new connection when the old one dropped: a draft the
+                # server already took is found by its Message-ID, not saved a second time
+                if "uid" not in done and done.get("sent"):
+                    found = R.uid_of_mid(m, drafts, mid)
+                    if found:
+                        done["uid"] = found
+                if "uid" not in done:
+                    done["sent"] = True
+                    done["uid"] = R.append_draft(m, raw)
                 uidv = R.select(m, drafts)
-                if old:
+                if old and not done.get("old_gone"):
                     with contextlib.suppress(Exception):
                         R.delete_uid(m, *self.parse(old))
-                return uid, uidv
+                    done["old_gone"] = True
+                return done["uid"], uidv
             uid, uidv = self.imap(go)
             with self.dblock:
                 if old:
                     self.db_delete(old)
                 if uid:
                     index_raw(self.c, drafts, uidv, uid, raw, int(time.time()), 1, 0)
-        state = {k: a.get(k) for k in ("mode", "orig", "to", "cc", "bcc", "subject", "html", "atts",
+        if old and uid:
+            self.sched_move(old, R.make_id(drafts, uid))   # still scheduled, now as the saved draft
+        state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
                                        "use_signature", "irt", "refs", "fwd")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
@@ -3776,23 +3999,36 @@ class Backend:
         return {"id": i, "problems": []}
 
     def api_send(self, a):
-        with self.schedlock:
-            self.sched_drop(a["id"])
+        """Send the saved draft now. The scheduled-send list is locked only to take the mail off it,
+        not while it goes out: a long upload does not hold up the other screens."""
+        i = a["id"]
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), {"id": i})
+            if self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != i]
+            self.inflight.add(i)
+        try:
             return self.send_now(a)
+        finally:
+            with self.schedlock:
+                self.inflight.discard(i)
 
     def send_now(self, a):
         folder, uid = self.parse(a["id"])
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be sent.")
-        self.drop_state(a["id"])
         if self.demo:
             raw = self.demo_raw.get((folder, uid))
             if raw is None:
                 fail("The draft is gone.")
             msg = R.to_msg(raw)
+            self.drop_state(a["id"])
             self.demo_delete(a["id"])
+            bcc = R.hdr(msg, "Bcc").strip()
             del msg["Bcc"]
-            self.demo_insert(R.CFG.folders["sent"], msg.as_bytes(policy=R.OUT_POLICY), int(time.time()), 1, 0)
+            sent = R.sent_copy(msg.as_bytes(policy=R.OUT_POLICY), bcc)     # Sent keeps who was Bcc'd
+            self.demo_insert(R.CFG.folders["sent"], sent, int(time.time()), 1, 0)
             fwd = R.forward_source(msg)
             irt = R.hdr(msg, "In-Reply-To").strip()
             if fwd:
@@ -3802,6 +4038,7 @@ class Backend:
             self.bump()
             return {"sent": True, "problems_after_sending": []}
         r = R.send_draft(folder, uid)
+        self.drop_state(a["id"])
         with self.dblock:
             self.db_delete(a["id"])
         self.bump()
@@ -3824,23 +4061,85 @@ class Backend:
             except (OSError, ValueError):
                 return []
 
+    RETRY_MAX = 3600        # a mail that could not go out is tried again after 1, 2, 4, ... minutes, then hourly
+    HOLD = 15 * 60          # a scheduled draft being changed in a compose waits this long after its last save
+
     def sched_save(self, items):
         with self.schedlock:
             os.makedirs(R.CFG.home, exist_ok=True)
-            tmp = self.sched_path() + ".tmp"
+            tmp = "%s.%d.tmp" % (self.sched_path(), os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False)
             os.replace(tmp, self.sched_path())
 
-    def sched_drop(self, i):
-        with self.schedlock:
+    @contextlib.contextmanager
+    def sched_edit(self):
+        """The list to change in place; saved when it changed. Locked for this app's threads and for
+        other processes (the ragdoll command, a second copy of the app) alike, and only for as long as
+        the list changes: never while a mail is going out."""
+        with self.schedlock, R.file_lock("sched", True):
             items = self.sched_list()
-            keep = [x for x in items if x["id"] != i]
-            if len(keep) != len(items):
-                self.sched_save(keep)
+            before = json.dumps(items, sort_keys=True)
+            yield items
+            if json.dumps(items, sort_keys=True) != before:
+                self.sched_save(items)
                 self.bump()
-                return True
+
+    def sched_drop(self, i):
+        with self.sched_edit() as items:
+            n = len(items)
+            items[:] = [x for x in items if x["id"] != i]
+            return len(items) != n
+
+    def sched_move(self, old, new):
+        """A scheduled draft saved again (as a new draft): it stays scheduled, at the same time."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] == old:
+                    x["id"] = new
+                    for k in ("error", "tries", "retry_at", "note", "sending"):
+                        x.pop(k, None)
+            self.editing[new] = time.time()
+            self.editing.pop(old, None)
+
+    def going_out(self, x):
+        """True while the mail of this entry is being sent, here or by another copy of the app."""
+        if x["id"] in self.inflight:
+            return True
+        s = x.get("sending")
+        if not isinstance(s, dict):
             return False
+        # ours but no longer in flight: left by a send that ended without tidying up
+        return s.get("pid") != os.getpid() and R.pid_running(s.get("pid"))
+
+    def sched_claim(self, i, now):
+        """Mark a due mail as going out, so nothing else sends it meanwhile. False when it is not due,
+        is being sent already, or is being changed in a compose."""
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == i), None)
+            if (x is None or x["at"] > now or x.get("error") or (x.get("retry_at") or 0) > now
+                    or self.going_out(x) or self.editing.get(i, 0) > time.time() - self.HOLD):
+                return False
+            x["sending"] = {"pid": os.getpid(), "at": int(time.time())}
+            self.inflight.add(i)
+            return True
+
+    def sched_after(self, i, now, error=None, later=None):
+        """A scheduled send that failed: for good (error, shown), or before anything left (later: tried
+        again with a growing pause; the already-sent and Sent checks still guard against a double send)."""
+        with self.sched_edit() as items:
+            for x in items:
+                if x["id"] != i:
+                    continue
+                x.pop("sending", None)
+                if error:
+                    x["error"] = error
+                    for k in ("tries", "retry_at", "note"):
+                        x.pop(k, None)
+                else:
+                    x["tries"] = int(x.get("tries") or 0) + 1
+                    x["retry_at"] = int(now + min(60 * 2 ** (x["tries"] - 1), self.RETRY_MAX))
+                    x["note"] = later
 
     def api_schedule(self, a):
         """Send the saved draft a["id"] at a["at"] (Unix seconds)."""
@@ -3856,18 +4155,22 @@ class Backend:
             fail("That time has already passed.")
         if at > time.time() + 5 * 366 * 86400:
             fail("Pick a time within the next five years.")
-        with self.schedlock:
+        with self.sched_edit() as items:
             self.row(i)
-            items = [x for x in self.sched_list() if x["id"] != i]
-            items.append({"id": i, "at": at})
-            self.sched_save(items)
-        self.bump()
+            if i in self.inflight:
+                fail("This mail is going out right now.")
+            items[:] = [x for x in items if x["id"] != i] + [{"id": i, "at": at}]
+            self.editing.pop(i, None)
         self.sched_wake.set()
         return {"id": i, "at": at}
 
     def api_unschedule(self, a):
         """Keep the mail as a draft and do not send it."""
-        self.sched_drop(a["id"])
+        with self.sched_edit() as items:
+            x = next((y for y in items if y["id"] == a["id"]), None)
+            if x is not None and self.going_out(x):
+                fail("This mail is going out right now.")
+            items[:] = [y for y in items if y["id"] != a["id"]]
         return {}
 
     def scheduled_rows(self):
@@ -3879,6 +4182,8 @@ class Backend:
                 continue
             r["sched"] = x["at"]
             r["sched_error"] = x.get("error")
+            r["sched_retry"] = x.get("retry_at")
+            r["sched_note"] = x.get("note")
             out.append(r)
         return out
 
@@ -3888,30 +4193,32 @@ class Backend:
             self.sched_wake.clear()
             if self.stopping.is_set():
                 break
-            with contextlib.suppress(Exception):
+            try:
                 self.send_due()
+            except (Exception, SystemExit):     # noqa: BLE001 - the loop must outlive any one mail
+                traceback.print_exc(file=sys.stderr)
 
     def send_due(self, now=None):
-        """Send every scheduled mail that is due. A failure stays in the list with its reason and is not
-        tried again by itself: a send that failed half way could otherwise go out twice."""
+        """Send every scheduled mail that is due, one at a time. A failure before anything left this
+        computer (no network after sleep, the server did not answer) is tried again later; any other
+        failure stays in the list with its reason: a send that broke half way could go out twice."""
         now = time.time() if now is None else now
         sent = 0
-        with self.schedlock:
-            for x in self.sched_list():
-                if x["at"] > now or x.get("error"):
-                    continue
-                try:
-                    self.send_now({"id": x["id"]})
-                    self.sched_drop(x["id"])
-                    sent += 1
-                except Exception as e:       # noqa: BLE001 - every reason is shown to the person
-                    msg = str(e) if isinstance(e, ApiError) else friendly(e)
-                    items = self.sched_list()
-                    for y in items:
-                        if y["id"] == x["id"]:
-                            y["error"] = msg
-                    self.sched_save(items)
-                    self.bump()
+        for x in sorted(self.sched_list(), key=lambda x: x["at"]):
+            if not self.sched_claim(x["id"], now):
+                continue
+            try:
+                self.send_now({"id": x["id"]})
+            except R.SendLater as e:
+                self.sched_after(x["id"], now, later=friendly(e))
+            except (Exception, SystemExit) as e:    # noqa: BLE001 - every reason is shown to the person
+                self.sched_after(x["id"], now, error=str(e) if isinstance(e, ApiError) else friendly(e))
+            else:
+                self.sched_drop(x["id"])
+                sent += 1
+            finally:
+                with self.schedlock:
+                    self.inflight.discard(x["id"])
         return sent
 
     def api_delete_draft(self, a):
@@ -3919,6 +4226,8 @@ class Backend:
         if folder != R.CFG.folders["drafts"]:
             fail("Only drafts can be deleted this way.")
         with self.schedlock:
+            if a["id"] in self.inflight:
+                fail("This mail is going out right now.")
             self.sched_drop(a["id"])
         self.drop_state(a["id"])
         if self.demo:
@@ -3946,7 +4255,23 @@ class Backend:
         while not self.stopping.is_set():
             with contextlib.suppress(Exception):
                 self.take_asks()
+            with contextlib.suppress(Exception):
+                self.take_show()
             self.stopping.wait(1)
+
+    def take_show(self):
+        """The app was opened again (a second copy found this one running): show this one's window,
+        or in the browser this one's page."""
+        path = show_flag()
+        if not os.path.exists(path):
+            return False
+        with contextlib.suppress(OSError):
+            os.remove(path)
+        if WINDOW.w is not None:
+            bring_front()
+        elif self.url:
+            webbrowser.open(self.url)
+        return True
 
     def take_asks(self):
         got = R.take_asks()
@@ -4951,6 +5276,28 @@ def window_theme(dark, bg=None, text=None, system=False):
                 put(attr, ref)
 
 
+def one_instance():
+    """The open lock file when this is the only copy of the app on this mailbox, else None. The lock
+    goes with the process, also when it crashes."""
+    os.makedirs(R.CFG.home, exist_ok=True)
+    f = open(os.path.join(R.CFG.home, "app-instance.lock"), "a+")
+    if R.try_lock(f):
+        return f
+    f.close()
+    return None
+
+
+def show_flag():
+    return os.path.join(R.CFG.home, "asks", "show-window")
+
+
+def ask_show():
+    """Ask the copy of the app that runs to show itself (Backend.take_show)."""
+    os.makedirs(os.path.dirname(show_flag()), exist_ok=True)
+    with open(show_flag(), "w") as f:
+        f.write(str(os.getpid()))
+
+
 WINDOW_SIZE = (1280, 820)
 WINDOW_MIN = (880, 560)
 
@@ -5119,6 +5466,15 @@ def main(argv=None):
     # a plain kill still closes the mailbox and removes the demo's temp folder
     with contextlib.suppress(ValueError, OSError):
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # one copy of the app per mailbox: a second one (a double-click on a slow start, a second app
+    # bundle) would sync and send scheduled mail beside the first. It brings the first one forward.
+    instance = None
+    if not a.demo:
+        instance = one_instance()
+        if instance is None:
+            ask_show()
+            print("Ragdoll Mail is already open; it was brought to the front.", file=sys.stderr)
+            return 0
     try:
         backend = Backend(demo=a.demo, demo_lang=demo_lang(a.demo_lang) if a.demo else "en")
     except R.IndexTooNew as e:
@@ -5128,6 +5484,7 @@ def main(argv=None):
     srv = Server(("127.0.0.1", a.port), make_handler(backend, token))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/#t=%s" % (srv.server_address[1], token)
+    backend.url = url
     use_window = not a.browser
     if use_window:
         try:

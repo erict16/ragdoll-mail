@@ -61,6 +61,10 @@ const MSGS = [
   [/^the subject is empty/, "p_no_subject"], [/^garbled characters \(.\) in: (.*)$/, "p_garbled"],
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
+  [/^(.*) is a program, so it was not opened\./, "att_program"],
+  [/^The connection broke while the mail was going out/, "err_maybe_sent"],
+  [/^This mail is going out right now, so the change was not saved\./, "err_going_out_unsaved"],
+  [/^This mail is going out right now\./, "err_going_out"],
 ];
 // 0.11 group D_SYNC: sync, connection, sign-in and settings messages
 MSGS.push(
@@ -1859,7 +1863,8 @@ async function openScheduled(r) {
     el("span", { class: "sched-ic", html: icon(r.sched_error ? "triangle-alert" : "calendar-clock") }),
     el("div", { class: "sched-text" },
       el("div", { class: "sched-when" }, t("sends_at", longTime(r.sched))),
-      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
+      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error))
+        : r.sched_retry ? t("sched_retry", tr(r.sched_note || ""), shortTime(r.sched_retry)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
     el("div", { class: "sched-acts" },
       el("button", { class: "btn", onclick: () => editScheduled(r), html: icon("square-pen", "small") + esc(t("edit")) }),
       el("button", { class: "btn primary", onclick: () => sendNow(r), html: icon("send", "small") + esc(t("send_now")) })));
@@ -1890,10 +1895,10 @@ async function dontSend(r) {
   afterSchedule();
 }
 
-async function editScheduled(r) {
-  try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
-  afterSchedule();
+// the mail stays scheduled while it is changed: what is saved goes out at the time set
+function editScheduled(r) {
   openCompose({ mode: "draft", id: r.id });
+  toast(t("still_sched", longTime(r.sched)), { ms: 5000 });
 }
 
 async function sendNow(r) {
@@ -2297,7 +2302,11 @@ function attNode(a, id) {
   const open = async () => {
     if (node.classList.contains("busy")) return;
     node.classList.add("busy");
-    try { await api("attachment", { id, i: a.i, name: a.name, action: "open" }); } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
+    try {
+      const r = await api("attachment", { id, i: a.i, name: a.name, action: "open" });
+      // a program would run if opened: it is never opened, its folder is offered instead
+      if (r.program) toast(t("att_program", r.name), { error: true, ms: 10000, action: { label: t("show_in_folder"), run: () => api("attachment", { id, i: a.i, name: a.name, action: "show" }).catch(fail) } });
+    } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
   };
   const save = async (e) => {
     e.stopPropagation();
@@ -2309,10 +2318,12 @@ function attNode(a, id) {
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
   let dragged = false;
-  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
+  const node = el("div", { class: "att" + (a.program ? " att-program" : ""), role: "button", tabindex: "0", title: a.name,
     onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
     el("div", fileTile(a.name)),
-    el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }), el("div", { class: "att-size" }, size(a.size))),
+    el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }),
+      a.program ? el("div", { class: "att-size att-warn", html: icon("triangle-alert", "small") + esc(t("program_file") + " · " + size(a.size)) })
+        : el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
   if (MAC && S.boot.window) {
@@ -3348,6 +3359,7 @@ async function openSettings(opts) {
         finally { testBtn.disabled = false; }
       } }, t("test"));
       f.append(el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, testBtn, res));
+      f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
       sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
@@ -3464,6 +3476,18 @@ async function openSettings(opts) {
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
   if (opts.focus) $(`input[data-k="${opts.focus}"]`, body)?.focus();
+}
+
+// how much downloaded mail this computer keeps, and a button that clears it (it is fetched again when opened)
+function storageLine() {
+  const gb = (n) => (n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(1) + " GB" : size(n));
+  const val = el("span", { class: "storage-size" });
+  const btn = el("button", { class: "btn", onclick: async () => {
+    btn.disabled = true;
+    try { val.textContent = gb((await api("clear_storage")).bytes); toast(t("storage_cleared")); } catch (e) { fail(e); } finally { btn.disabled = false; }
+  } }, t("clear"));
+  api("storage").then((r) => { val.textContent = gb(r.bytes); }).catch(() => {});
+  return el("div", { class: "stack" }, el("span", { class: "lab" }, t("downloaded_mail")), el("div", { class: "storage-line" }, val, btn));
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];
