@@ -322,6 +322,64 @@ class HeldSend(OwnBackend):
         self.assertIn("window.ragdollClosing = () =>", src)
 
 
+class UndoMove(OwnBackend):
+    """Cmd+Z after a move reached the server (#25)."""
+    def inbox_id(self):
+        r = self.b.q("select uid, msgid, subject from msgs where folder='INBOX' and msgid != '' limit 1")[0]
+        return A.R.make_id("INBOX", r["uid"]), r["subject"]
+
+    def test_moved_back_in_the_demo(self):
+        i, subject = self.inbox_id()
+        out = self.b.api_move({"ids": [i], "to": "trash"})
+        trash = A.R.CFG.folders["trash"]
+        self.assertTrue(self.b.q("select 1 from msgs where folder=? and subject=?", (trash, subject)))
+        self.assertEqual(self.b.api_unmove({"token": out["undo"]})["moved"], 1)
+        self.assertTrue(self.b.q("select 1 from msgs where folder='INBOX' and subject=?", (subject,)))
+        self.assertFalse(self.b.q("select 1 from msgs where folder=? and subject=?", (trash, subject)))
+        with self.assertRaises(A.ApiError):
+            self.b.api_unmove({"token": out["undo"]})      # once only
+
+    def test_only_the_last_ten_are_kept(self):
+        tokens = []
+        for _ in range(12):
+            i, _s = self.inbox_id()
+            tokens.append(self.b.api_move({"ids": [i], "to": "archive"})["undo"])
+        self.assertEqual(len(self.b.undo_moves), 10)
+        with self.assertRaises(A.ApiError):
+            self.b.api_unmove({"token": tokens[0]})
+
+    def test_on_the_server_it_is_found_by_message_id(self):
+        i, _ = self.inbox_id()
+        mid = self.b.q("select msgid from msgs where folder='INBOX' and uid=?", (int(i.split(":")[1]),))[0]["msgid"]
+        self.online()
+        found = []
+
+        class Srv(type(self.server)):
+            def uid(s, *args):
+                s.calls.append(("uid",) + args)
+                if args[0] == "SEARCH":
+                    found.append(args)
+                    return "OK", [b"77"]
+                return "OK", [b""]
+        self.server = Srv()
+        self.b.imap = lambda fn: fn(self.server)
+        self.b.folders = lambda m: [A.R.CFG.folders["trash"], "INBOX"]
+        self.patch(A.R, "has_cap", lambda m, c: True)
+        self.patch(A.R, "use", lambda m, f, write=False: None)
+        out = self.b.api_move({"ids": [i], "to": "trash"})
+        self.assertEqual(self.b.api_unmove({"token": out["undo"]})["moved"], 1)
+        self.assertEqual(found[0][1:3], ("HEADER", "Message-ID"))
+        self.assertIn(mid.strip('"'), found[0][3])
+        moves = [c for c in self.server.calls if c[:2] == ("uid", "MOVE")]
+        self.assertEqual(moves[-1][2:], ("77", A.R.q("INBOX")))
+
+    def test_page_takes_cmd_z_outside_text(self):
+        src = app_src()
+        self.assertIn('e.key.toLowerCase() === "z" && !typing(e)) { e.preventDefault(); undoMove(); return; }', src)
+        k = src.index("function onKey(e)")
+        self.assertLess(src.index("if (S.compose) {", k), src.index('=== "z" && !typing(e)', k))
+
+
 class ForwardMarker(OwnBackend):
     def test_a_forward_draft_keeps_its_marker(self):
         orig = self.b.q("select msgid from msgs where msgid != '' limit 1")[0]["msgid"]

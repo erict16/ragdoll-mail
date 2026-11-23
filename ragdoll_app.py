@@ -1862,6 +1862,7 @@ class Backend:
                 if dest_key == "inbox":         # mail the owner put back is not new mail
                     for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
                         self.moved_in[r["msgid"]] = time.time()
+        undo = self.note_move(by, dest)
         if self.demo:
             for f, uids in by.items():
                 for u in uids:
@@ -1897,7 +1898,65 @@ class Backend:
             if (set(by) | {dest}) - set(self.sync_folders()):
                 self.extra_now = True
             self.wake.set()
-        return {"moved": sum(len(x) for x in by.values())}
+        self.undo_moves.append(undo)
+        return {"moved": sum(len(x) for x in by.values()), "undo": undo["token"]}
+
+    # ---- undo a move that reached the server (Cmd+Z): each mail is found again in the folder it went to by
+    # its Message-ID (a new UID there is not known) and moved back to the folder it came from
+
+    def note_move(self, by, dest):
+        items = []
+        for f, uids in by.items():
+            for u in uids:
+                for r in self.q("select msgid from msgs where folder=? and uid=?", (f, u)):
+                    if (r["msgid"] or "").strip():
+                        items.append((f, r["msgid"].strip()))
+        return {"token": secrets.token_hex(6), "dest": dest, "items": items}
+
+    def api_unmove(self, a):
+        job = next((x for x in self.undo_moves if x["token"] == a.get("token")), None)
+        if job is None:
+            fail("That move can't be undone any more.")
+        self.undo_moves.remove(job)
+        dest, back = job["dest"], {}
+        for f, mid in job["items"]:
+            back.setdefault(f, []).append(mid)
+        moved = 0
+        if self.demo:
+            for f, mids in back.items():
+                for mid in mids:
+                    for r in self.q("select * from msgs where folder=? and msgid=?", (dest, mid)):
+                        raw = self.demo_raw.pop((dest, r["uid"]), None)
+                        if raw:
+                            self.demo_insert(f, raw, r["ts"], r["seen"], r["answered"], r["flagged"])
+                            self.demo_delete(R.make_id(dest, r["uid"]))
+                            moved += 1
+        else:
+            def go(m):
+                n = 0
+                for f, mids in back.items():
+                    R.use(m, dest, write=True)
+                    uids = []
+                    for mid in mids:
+                        typ, data = m.uid("SEARCH", "HEADER", "Message-ID", '"%s"' % mid.replace('"', ""))
+                        if typ == "OK" and data and data[0]:
+                            uids += [int(x) for x in data[0].split()]
+                    if uids:
+                        R.move_uids(m, dest, sorted(set(uids)), f)
+                        n += len(set(uids))
+                return n
+            moved = self.imap(go)
+            with self.dblock:
+                for mids in back.values():
+                    for mid in mids:
+                        for r in self.c.execute("select id from msgs where folder=? and msgid=?", (dest, mid)).fetchall():
+                            self.c.execute("delete from msgs where id=?", (r["id"],))
+                            self.c.execute("delete from fts where rowid=?", (r["id"],))
+                self.c.commit()
+            self.extra_now = True
+            self.wake.set()
+        self.bump()
+        return {"moved": moved}
 
     def folders(self, m):
         if self.server_folders is None:

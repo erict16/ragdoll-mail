@@ -1023,20 +1023,38 @@ function moveMail(ids, to) {
   job.commit = async () => {
     if (job.done) return;
     job.done = true; clearTimeout(job.timer);
-    try { await api("move", { ids, to }); refreshCounts(); } catch (e) { fail(e); }
+    // the server's answer names the move, so Cmd+Z can still bring it back later (undoMove)
+    job.sent = api("move", { ids, to }).then((r) => { job.token = r?.undo; refreshCounts(); }, fail);
+    await job.sent;
     unhide(); loadList({ quiet: true });
   };
   job.timer = setTimeout(job.commit, 5000);
   pendingMoves.add(job);
-  toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
+  job.undo = async () => {
+    if (job.done) return;
+    job.done = true; clearTimeout(job.timer); unhide();
+    await loadList({ quiet: true });
+    if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
+  };
+  UNDO.push(job);
+  if (UNDO.length > 10) UNDO.shift();
+  job.toast = toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
     ms: 5000,
-    action: { label: t("undo"), run: async () => {
-      if (job.done) return;
-      job.done = true; clearTimeout(job.timer); unhide();
-      await loadList({ quiet: true });
-      if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
-    } },
+    action: { label: t("undo"), run: () => { UNDO.splice(UNDO.indexOf(job) >>> 0, 1); job.undo(); } },
   });
+}
+// Cmd+Z (Ctrl+Z): the last move. While it waits it is called off; once on the server it is moved back.
+const UNDO = [];                // the last 10 moves, newest last
+async function undoMove() {
+  const job = UNDO.pop();
+  if (!job) return toast(t("nothing_undo"), { id: "undo" });
+  if (!job.done) { job.toast?.close(); return job.undo(); }
+  await job.sent;
+  if (!job.token) return toast(t("nothing_undo"), { id: "undo" });
+  try { await api("unmove", { token: job.token }); } catch (e) { return fail(e); }
+  toast(t("moved_back"), { id: "undo" });
+  refreshCounts();
+  loadList({ quiet: true });
 }
 // The window is closing: send the waiting moves now.
 window.addEventListener("pagehide", () => {
@@ -2640,7 +2658,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "Z", "undo"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -2681,6 +2699,8 @@ function onKey(e) {
     // focus fell to the page after a click on a button
     return;
   }
+  // in a text box Cmd+Z stays the text's own undo; a compose never gets here
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && !typing(e)) { e.preventDefault(); undoMove(); return; }
   if (mod && e.key.toLowerCase() === "a" && !typing(e) && !S.compose) { e.preventDefault(); selectAll(); return; }
   if (typing(e) || mod || e.altKey) return;
   const id = S.focus || S.sel;
