@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）</title>
-<meta name="description" content="免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，每一封都要你确认才会发出。本地 SQLite 搜索，支持任何 IMAP 邮箱。">
+<meta name="description" content="免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。">
 <link rel="canonical" href="https://erict16.github.io/ragdoll-mail/zh/">
 <link rel="alternate" hreflang="zh-Hans" href="https://erict16.github.io/ragdoll-mail/zh/">
 <link rel="alternate" hreflang="en" href="https://erict16.github.io/ragdoll-mail/">
@@ -15,7 +15,7 @@
 <meta name="theme-color" content="#111312" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）">
-<meta property="og:description" content="免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，每一封都要你确认才会发出。本地 SQLite 搜索，支持任何 IMAP 邮箱。">
+<meta property="og:description" content="免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。">
 <meta property="og:url" content="https://erict16.github.io/ragdoll-mail/zh/">
 <meta property="og:image" content="https://erict16.github.io/ragdoll-mail/img/og-zh.png">
 <meta property="og:image:width" content="1200">
@@ -25,7 +25,7 @@
 <script>document.documentElement.classList.add("js")</script>
 <link rel="stylesheet" href="../style.css">
 <link rel="preload" as="image" href="../media/demo-zh.webp" fetchpriority="high">
-<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Ragdoll Mail", "operatingSystem": "macOS, Windows", "applicationCategory": "CommunicationApplication", "description": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，每一封都要你确认才会发出。本地 SQLite 搜索，支持任何 IMAP 邮箱。", "url": "https://erict16.github.io/ragdoll-mail/zh/", "downloadUrl": "https://github.com/erict16/ragdoll-mail/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "image": "https://erict16.github.io/ragdoll-mail/img/og.png", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@context": "https://schema.org", "@type": "VideoObject", "name": "30 秒看懂 Ragdoll Mail", "description": "Ragdoll Mail 使用演示：AI 助手在终端里用 ragdoll 命令写好回复，草稿在软件里打开；撤销发送后改成明天上午发；最后边打字边搜到邮件", "inLanguage": "zh-Hans", "thumbnailUrl": "https://erict16.github.io/ragdoll-mail/media/demo-zh.webp", "contentUrl": "https://erict16.github.io/ragdoll-mail/media/demo-zh.mp4", "uploadDate": "2026-11-21", "duration": "PT33S"}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "哪些 AI 助手能用？", "acceptedAnswer": {"@type": "Answer", "text": "能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，跟你自己在终端里敲是一样的。"}}, {"@type": "Question", "name": "AI 会不会不问我就把邮件发出去？", "acceptedAnswer": {"@type": "Answer", "text": "不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。大多数人的用法是：AI 写草稿，自己检查后点发送。"}}, {"@type": "Question", "name": "我的邮件安全吗？", "acceptedAnswer": {"@type": "Answer", "text": "邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。"}}, {"@type": "Question", "name": "真的免费吗？", "acceptedAnswer": {"@type": "Answer", "text": "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"}}]}]</script>
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Ragdoll Mail", "operatingSystem": "macOS, Windows", "applicationCategory": "CommunicationApplication", "description": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。", "url": "https://erict16.github.io/ragdoll-mail/zh/", "downloadUrl": "https://github.com/erict16/ragdoll-mail/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "image": "https://erict16.github.io/ragdoll-mail/img/og.png", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@context": "https://schema.org", "@type": "VideoObject", "name": "30 秒看懂 Ragdoll Mail", "description": "Ragdoll Mail 使用演示：AI 助手在终端里用 ragdoll 命令写好回复，草稿在软件里打开；撤销发送后改成明天上午发；最后边打字边搜到邮件", "inLanguage": "zh-Hans", "thumbnailUrl": "https://erict16.github.io/ragdoll-mail/media/demo-zh.webp", "contentUrl": "https://erict16.github.io/ragdoll-mail/media/demo-zh.mp4", "uploadDate": "2026-11-21", "duration": "PT33S"}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "哪些 AI 助手能用？", "acceptedAnswer": {"@type": "Answer", "text": "能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，跟你自己在终端里敲是一样的。"}}, {"@type": "Question", "name": "AI 会不会不问我就把邮件发出去？", "acceptedAnswer": {"@type": "Answer", "text": "不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。你说可以，AI 就用 ragdoll send 帮你发；你也可以在软件里打开草稿，自己点发送。"}}, {"@type": "Question", "name": "我的邮件安全吗？", "acceptedAnswer": {"@type": "Answer", "text": "邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。"}}, {"@type": "Question", "name": "真的免费吗？", "acceptedAnswer": {"@type": "Answer", "text": "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"}}]}]</script>
 </head>
 <body class="home">
 <header class="top"><div class="wrap">
@@ -45,7 +45,7 @@
   <div class="wrap">
     <div class="pill">免费<b></b>开源<b></b>Mac 和 Windows</div>
     <h1>让 AI 助手<em>真正用得上</em>的邮件软件。</h1>
-    <p class="lead">一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复。你不点发送，什么都不会发出去。</p>
+    <p class="lead">一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复，你点头后还能直接帮你发。</p>
     <div class="cta"><a class="btn primary" data-os="mac" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-mac.dmg"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Mac 版 <small>M 系列芯片</small></a><a class="btn " data-os="win" href="https://github.com/erict16/ragdoll-mail/releases/latest/download/ragdoll-mail-windows.zip"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>下载 Windows 版 <small>Windows 10 / 11</small></a></div>
     <p class="first-open">还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。</p>
   </div>
@@ -58,10 +58,10 @@
 
 <div class="stage">
   <section id="agent"><div class="wrap">
-    <h2 class="big reveal">AI 来写，<br><em>你来点发送。</em></h2>
+    <h2 class="big reveal">AI 来写，<br><em>你来点头。</em></h2>
     <p class="sub reveal"><code>ragdoll</code> 命令在软件里一键安装（设置 → 命令行）。每条命令都能输出 <code>--json</code>，AI 看一遍 <code>ragdoll --help</code> 就会用。 <a class="more" href="https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md">看命令行说明（英文） →</a></p>
     <div class="duo reveal">
-      <div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term"><span class="ln say"><span class="y">you  </span> <span class="c">›</span> <span class="tx" data-t="回复 Jane，附上签好的报价单。">回复 Jane，附上签好的报价单。</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll search jane quote --json">ragdoll search jane quote --json</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf">ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll check drafts:14 --reply">ragdoll check drafts:14 --reply</span></span><span class="ln">  <span class="ok">CHECK OK</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll open drafts:14">ragdoll open drafts:14</span></span><span class="ln say"><span class="y">agent</span> <span class="c">›</span> 草稿已经在 Ragdoll Mail 里打开了，你看好了就发。</span></div></div>
+      <div class="term-win"><div class="term-bar"><b></b><b></b><b></b></div><div class="term"><span class="ln say"><span class="y">you  </span> <span class="c">›</span> <span class="tx" data-t="回复 Jane，附上签好的报价单。">回复 Jane，附上签好的报价单。</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll search jane quote --json">ragdoll search jane quote --json</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf">ragdoll draft --reply inbox:312 --body reply.html --attach Quote.pdf</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll check drafts:14 --reply">ragdoll check drafts:14 --reply</span></span><span class="ln">  <span class="ok">CHECK OK</span></span><span class="ln land"><span class="p">$</span> <span class="tx" data-t="ragdoll open drafts:14">ragdoll open drafts:14</span></span><span class="ln say"><span class="y">agent</span> <span class="c">›</span> 草稿已经在 Ragdoll Mail 里打开了，要发吗？</span><span class="ln say"><span class="y">you  </span> <span class="c">›</span> <span class="tx" data-t="发吧。">发吧。</span></span><span class="ln"><span class="p">$</span> <span class="tx" data-t="ragdoll send drafts:14 --yes">ragdoll send drafts:14 --yes</span></span></div></div>
       <div class="link" aria-hidden="true"><i></i></div>
       <div class="draft"><div class="draft-top"><span><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>草稿箱</span><span><img src="../img/icon.webp" alt="" width="18" height="18" loading="lazy">Ragdoll Mail</span></div><div class="draft-to"><span>收件人</span><b>Jane Doe</b></div><div class="draft-subj">Re: Quote for PO-1234</div><p>Jane 你好，PO-1234 签好的报价单见附件。麻烦周五前确认一下收货地址。</p><div class="draft-foot"><span class="att"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>Quote.pdf</span><span class="btn primary"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>发送</span></div></div>
     </div>
@@ -82,14 +82,14 @@
 
 <section class="quote"><div class="wrap reveal">
   <img src="../img/icon.webp" alt="" width="56" height="56" loading="lazy">
-  <blockquote>好用的 AI 邮件软件一个月要 25 到 30 美元，还只支持 Gmail 和 Outlook。我的工作邮箱是腾讯企业邮箱。所以我自己做了一个。</blockquote>
+  <blockquote>Spark 开始收费了，我想要一个免费的 Spark 平替。Himalaya 搜邮件又太慢。所以我自己做了 Ragdoll Mail。</blockquote>
   <p class="sign">Eric Tan，Ragdoll Mail 作者</p>
 </div></section>
 
 <section id="questions"><div class="wrap">
   <h2 class="center reveal">常见问题</h2>
   <div class="faq">
-    <details><summary>哪些 AI 助手能用？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，跟你自己在终端里敲是一样的。</p></details><details><summary>AI 会不会不问我就把邮件发出去？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。大多数人的用法是：AI 写草稿，自己检查后点发送。</p></details><details><summary>我的邮件安全吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。</p></details><details><summary>真的免费吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。</p></details>
+    <details><summary>哪些 AI 助手能用？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>能执行终端命令的都可以，比如 Claude Code、Codex、Cursor、Gemini CLI。AI 调用 ragdoll 命令的方式，跟你自己在终端里敲是一样的。</p></details><details><summary>AI 会不会不问我就把邮件发出去？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。你说可以，AI 就用 ragdoll send 帮你发；你也可以在软件里打开草稿，自己点发送。</p></details><details><summary>我的邮件安全吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。</p></details><details><summary>真的免费吗？<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><p>真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。</p></details>
   </div>
 </div></section>
 

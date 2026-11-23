@@ -3,6 +3,7 @@ import { ICONS } from "./icons.js";
 import { REMIX } from "./icons-remix.js";
 import { FILE_ICONS, FILE_EXT } from "./fileicons.js";
 import { LANGS, LANG_NAMES } from "./i18n.js";
+import * as K from "./compose-kit.js";
 
 // ---------------------------------------------------------------- basics
 
@@ -18,6 +19,8 @@ if (location.hash) history.replaceState(null, "", location.pathname);
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const WIN = /Win/.test(navigator.platform || navigator.userAgent);
 const MOD = MAC ? "⌘" : "Ctrl+";
+// the app's own shortcuts: Cmd on a Mac (its Ctrl keys stay the system's text keys), Ctrl elsewhere
+const isMod = K.modOf(MAC);
 
 // language: a saved choice, or the system's when it is one of ours
 let LANG = "en", LOCALE = undefined, TZ = undefined, STR = LANGS.en;
@@ -61,10 +64,27 @@ const MSGS = [
   [/^the subject is empty/, "p_no_subject"], [/^garbled characters \(.\) in: (.*)$/, "p_garbled"],
   [/^placeholder\(s\) left in the text: ([^;]*)/, "p_holes"], [/^the text mentions an attachment/, "p_att"],
   [/^(\d+) image\(s\) in the mail have no image part/, "p_img"],
+  [/^(.*) is a program, so it was not opened\./, "att_program"],
+  [/^The connection broke while the mail was going out/, "err_maybe_sent"],
+  [/^This mail is going out right now, so the change was not saved\./, "err_going_out_unsaved"],
+  [/^This mail is going out right now\./, "err_going_out"],
 ];
+// 0.11 group D_SYNC: sync, connection, sign-in and settings messages
+MSGS.push(
+  [/^Waiting for another sync to finish\./, "err_busy"], [/^The settings file can't be read\. Sign in/, "err_cfg"],
+  [/^The settings file (.*) can't be read, and no copy/s, "err_cfg_nocopy"],
+  [/^Secure connection failed\. Check/, "err_ssl2"], [/^Can't reach the mail server\. Check/, "err_reach2"],
+  [/^The connection to the mail server dropped\./, "err_dropped"], [/^The mail server refused the request\./, "err_refused_req"],
+  [/^Can't open the folder (.*) on the server\.$/s, "err_folder_open"],
+  [/^The server refused to move the mail \((\d+) moved/, "err_move_refused"],
+  [/^Enter a full email address\./, "err_need_addr"], [/^Enter the password\./, "err_need_pw"],
+  [/^Incoming server: sign-in failed\./, "err_in_signin"], [/^Outgoing server: sign-in failed\./, "err_out_signin"],
+  [/^Incoming server: (.*)$/s, "err_in"], [/^Outgoing server: (.*)$/s, "err_out"],
+);
 function tr(msg) {
   msg = String(msg ?? "");
-  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1)); }
+  // a part it holds ("Incoming server: <a known sentence>") is put in the chosen language too
+  for (const [re, k] of MSGS) { const m = msg.match(re); if (m) return t(k, ...m.slice(1).map((x) => (x && x.length < msg.length ? tr(x) : x ?? ""))); }
   return msg;
 }
 
@@ -76,7 +96,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 // is drawn outside the frame (WebKit cuts off what is); reply and forward share one size.
 // reply all is wider than tall: its frame keeps reply's height, and its box is wider (style.css .i-wide), so its
 // arrows are drawn at the very size of reply's
-const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 0.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
+const ARROW_BOX = { "reply": "0.1 1.1 21.8 21.8", "forward": "2.1 1.1 21.8 21.8", "reply-all": "-1.9 1.1 25.3 21.8" };
 const svg = (n) => REMIX[n] ? `<svg xmlns="http://www.w3.org/2000/svg" class="arrowshape" viewBox="${ARROW_BOX[n]}" fill="none" stroke="currentColor" stroke-linejoin="round" aria-hidden="true">${REMIX[n]}</svg>`
   : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ""}</svg>`;
 const icon = (n, cls = "") => `<span class="i ${cls}${n === "reply-all" ? " i-wide" : ""}">${svg(n)}</span>`;
@@ -162,15 +182,22 @@ const isDark = () => document.documentElement.dataset.theme === "dark";
 function applyTheme(theme) {
   S.theme = theme || "system";
   const dark = S.theme === "dark" || (S.theme === "system" && darkMQ.matches);
-  const root = document.documentElement, was = root.dataset.theme;
-  if (was && was !== (dark ? "dark" : "light") && !REDUCED.matches) {
-    root.classList.add("theming");
-    clearTimeout(applyTheme.timer);
-    applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  const root = document.documentElement, was = root.dataset.theme, now = dark ? "dark" : "light";
+  const swap = () => {
+    root.dataset.theme = now;
+    if (was && was !== now) restyleFrames();
+    syncWindowTheme();
+  };
+  if (!was || was === now || REDUCED.matches || document.hidden) return swap();
+  // the whole window, open mails included, cross-fades from one picture to the other (WebKit on macOS 15+,
+  // WebView2); elsewhere the colours ease over (.theming)
+  if (document.startViewTransition) {
+    try { document.startViewTransition(swap); return; } catch { /* the fade below */ }
   }
-  root.dataset.theme = dark ? "dark" : "light";
-  if (was && was !== document.documentElement.dataset.theme) refreshFrames();
-  syncWindowTheme();
+  root.classList.add("theming");
+  clearTimeout(applyTheme.timer);
+  applyTheme.timer = setTimeout(() => root.classList.remove("theming"), 320);
+  swap();
 }
 // the native title bar (Windows caption, macOS traffic lights) follows the app theme, not only the system's
 function syncWindowTheme() {
@@ -178,6 +205,8 @@ function syncWindowTheme() {
   const css = getComputedStyle(document.documentElement);
   api("window_theme", {
     dark: document.documentElement.dataset.theme === "dark",
+    // System: the window follows macOS again, so the page hears it switch (darkMQ below)
+    system: S.theme === "system",
     bg: css.getPropertyValue("--bg").trim(),
     text: css.getPropertyValue("--text").trim(),
   }).catch(() => {});
@@ -281,13 +310,15 @@ function toast(text, opts = {}) {
   let done = false;
   const close = () => { if (done) return; done = true; leave(node, 180); };
   if (opts.action) node.append(el("button", { class: "toast-act", onclick: () => { close(); opts.action.run(); } }, opts.action.label));
-  if (opts.bar) {
+  // the bar drains for as long as the toast stays: a toast that closes by itself always has one
+  const ms = opts.ms ?? (opts.error ? 7000 : 3200);
+  const barMs = opts.bar || ms;
+  if (barMs) {
     const bar = el("span", { class: "toast-bar" });
     node.append(bar);
-    if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: opts.bar, easing: "linear", fill: "forwards" });
+    if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: barMs, easing: "linear", fill: "forwards" });
   }
   box.append(node);
-  const ms = opts.ms ?? (opts.error ? 7000 : 3200);
   if (ms) setTimeout(close, ms);
   return { close, node, set: (s) => { node.querySelector(".toast-text").textContent = s; } };
 }
@@ -313,7 +344,7 @@ document.addEventListener("mouseover", (e) => {
   if (side) return;
   tipTimer = setTimeout(() => {
     const r = b.getBoundingClientRect();
-    tipEl = el("div", { class: "tip", html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
+    tipEl = el("div", { class: "tip" + (b.dataset.tip ? "" : " key-only"), html: esc(b.dataset.tip) + (b.dataset.key ? `<kbd>${esc(b.dataset.key)}</kbd>` : "") });
     document.body.append(tipEl);
     const w = tipEl.offsetWidth;
     tipEl.style.left = Math.max(6, Math.min(innerWidth - w - 6, r.left + r.width / 2 - w / 2)) + "px";
@@ -376,7 +407,8 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 let navSig = "", navKeys = null;
 function renderNav() {
   const nav = $("#nav");
-  const folders = [...S.boot.folders];
+  const own = ownFolders();
+  const folders = [...S.boot.folders.filter((f) => !f.other), ...own];
   for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
@@ -392,6 +424,7 @@ function renderNav() {
   $("#here-btn").className = "here-btn" + (unread && S.folder !== "inbox" ? " dot" : "");
   $("#here-btn").innerHTML = icon(here?.other ? "folder-open" : FOLDER_ICON[S.folder] || "folder-open") + `<span class="label" dir="auto">${esc(folderName(S.folder))}</span>`;
   $("#head-title").textContent = folderName(S.folder);
+  emptyBtn(here);
   let seenOther = false;
   for (const [i, f] of folders.entries()) {
     if (f.other && !seenOther) nav.append(navSection());
@@ -409,6 +442,7 @@ function renderNav() {
       seenOther = true;
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
       $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); folderMenu(b, f); });
+      folderDrag(b, f, own);
     } else if (READ_ALL_IN.includes(f.key)) {
       b.addEventListener("contextmenu", (e) => { e.preventDefault(); folderMenu(b, f); });
     }
@@ -429,17 +463,33 @@ function renderNav() {
 
 // the owner's own folders sit under a heading that folds them away; a folder with folders inside has
 // its own arrow. A folded folder adds the unread mail inside it to its own count. The open folder stays.
+// A folder dropped on the heading goes to the top level, first in it.
 function navSection() {
-  return el("div", { class: "nav-sec" },
+  const sec = el("div", { class: "nav-sec" },
     el("button", { class: "nav-sec-btn", "aria-label": t("fold"), onclick: () => toggleFold("@mine"),
       html: `<span class="label">${esc(t("my_folders"))}</span>` + icon("chevron-right", "small") + `<span class="count"></span>` }),
     el("button", { class: "icon-btn tiny nav-sec-add", "data-tip": t("new_folder"), "aria-label": t("new_folder"), onclick: () => newFolder(), html: icon("plus", "small") }));
+  sec.addEventListener("dragover", (e) => { if (!dragF) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; clearDrop(); sec.classList.add("drop"); });
+  sec.addEventListener("dragleave", (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove("drop"); });
+  sec.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const g = dragF.f;
+    dragF = null; clearDrop();
+    const first = ownFolders().find((x) => !x.up && x.key !== g.key);
+    if (g.up) moveFolder(g, null, { at: (key) => first && placeFolder(key, first.key, "before") });
+    else if (first) { const snap = navRects(); placeFolder(g.key, first.key, "before"); renderNav(); flipNav(snap); }
+  });
+  return sec;
 }
 function toggleFold(key) {
   const s = new Set(PREFS.folded || []);
   if (s.has(key)) s.delete(key); else s.add(key);
   savePref({ folded: [...s] });
   applyFold();
+}
+function unfold(key) {
+  if (PREFS.folded?.includes(key)) savePref({ folded: PREFS.folded.filter((k) => k !== key) });
 }
 function applyFold() {
   const folded = new Set(PREFS.folded || []), all = folded.has("@mine");
@@ -461,7 +511,252 @@ function applyFold() {
   if (sec) { sec.classList.toggle("folded", all); $(".count", sec).textContent = all && secSum ? secSum : ""; }
 }
 
-// the owner's own folders: make one, rename one, delete an empty one
+// The owner's own folders in the sidebar's order: each folder's own folders right under it. At each level the
+// order the owner dragged them into comes first (PREFS.folder_order), the rest A-Z as the chosen language sorts
+// (Chinese by pinyin, 2 before 10). Each comes with `up`, the folder it is in (null at the top level).
+let collator = null;
+function ownFolders() {
+  if (collator?.lang !== LOCALE) collator = { lang: LOCALE, c: new Intl.Collator(LOCALE, { numeric: true, sensitivity: "base" }) };
+  const order = new Map((PREFS.folder_order || []).map((k, i) => [k, i]));
+  const cmp = (a, b) => order.has(a.key) && order.has(b.key) ? order.get(a.key) - order.get(b.key)
+    : order.has(a.key) ? -1 : order.has(b.key) ? 1 : collator.c.compare(a.label, b.label) || (a.key < b.key ? -1 : 1);
+  const root = [], stack = [];
+  for (const f of S.boot.folders) {
+    if (!f.other) continue;
+    const d = f.depth || 0;
+    while (stack.length && (stack.at(-1).depth || 0) >= d) stack.pop();
+    const n = { ...f, up: stack.at(-1)?.key ?? null, kids: [] };
+    (stack.at(-1)?.kids || root).push(n);
+    stack.push(n);
+  }
+  const out = [];
+  const walk = (list) => { for (const { kids, ...f } of list.sort(cmp)) { out.push(f); walk(kids); } };
+  walk(root);
+  return out;
+}
+// a folder and the folders inside it, from ownFolders()
+function subtreeOf(list, key) {
+  const i = list.findIndex((f) => f.key === key);
+  if (i < 0) return [];
+  let j = i + 1;
+  while (j < list.length && (list[j].depth || 0) > (list[i].depth || 0)) j++;
+  return list.slice(i, j);
+}
+// "Projects / Acme": the folders a folder is in, for the search in the move menus
+function whereOf(f, list) {
+  const by = new Map(list.map((x) => [x.key, x])), out = [];
+  for (let up = by.get(f.up); up; up = by.get(up.up)) out.unshift(up.label);
+  return out.join(" / ");
+}
+
+// A renamed or moved folder: the open folder, the selection, the fold state, the order and the recent
+// folders follow it to its new name, and so do the folders inside it (old + sep + ...).
+function followFolder(old, nu, sep) {
+  if (old === nu) return false;
+  const map = (k) => (k === old ? nu : typeof k === "string" && k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
+  const mapId = (i) => { const c = i.lastIndexOf(":"); return c < 0 ? i : map(i.slice(0, c)) + i.slice(c); };
+  const was = S.folder;
+  S.folder = map(S.folder);
+  if (S.sel) S.sel = mapId(S.sel);
+  if (S.anchor) S.anchor = mapId(S.anchor);
+  if (S.focus) S.focus = mapId(S.focus);
+  S.multi = new Set([...S.multi].map(mapId));
+  const patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => map(x) !== x)) patch[k] = [...new Set(PREFS[k].map(map))];
+  if (Object.keys(patch).length) savePref(patch);
+  return S.folder !== was || !!S.thread?.rows.some((r) => mapId(r.id) !== r.id);
+}
+// deleted folders leave nothing behind in the prefs
+function forgetFolders(keys) {
+  const gone = new Set(keys), patch = {};
+  for (const k of ["folded", "folder_order", "folder_recent"]) if (PREFS[k]?.some((x) => gone.has(x))) patch[k] = PREFS[k].filter((x) => !gone.has(x));
+  if (Object.keys(patch).length) savePref(patch);
+}
+// after a rename or move that reached the open folder or the open mail: the list and the mail are shown
+// again under their new names, the selection kept
+async function showMoved() {
+  await loadList({ quiet: true });
+  if (S.thread && !S.compose && S.focus) openThread(S.focus);
+}
+
+// the sidebar's rows glide from where they were to where they are now (a folder moved, renamed or reordered)
+function navRects() {
+  return new Map($$("#nav .nav-item.other").map((b) => [b.dataset.folder, b.getBoundingClientRect().top]));
+}
+function flipNav(snap, rename = (k) => k) {
+  if (REDUCED.matches) return;
+  const was = new Map([...snap].map(([k, y]) => [rename(k), y]));
+  for (const b of $$("#nav .nav-item.other")) {
+    const y = was.get(b.dataset.folder);
+    if (y == null || b.classList.contains("gone")) continue;
+    const dy = y - b.getBoundingClientRect().top;
+    if (Math.abs(dy) < 1) continue;
+    b.classList.remove("new");
+    b.animate([{ transform: `translateY(${dy}px)` }, { transform: "none" }], { duration: 280, easing: EASE });
+  }
+}
+const renamer = (old, nu, sep) => (k) => (k === old ? nu : k.startsWith(old + sep) ? nu + k.slice(old.length) : k);
+
+// The owner's own order: `key` goes right before or after `target` among the folders beside it.
+function placeFolder(key, target, where) {
+  const keys = ownFolders().map((f) => f.key).filter((k) => k !== key);
+  const at = keys.indexOf(target);
+  if (at < 0) return;
+  keys.splice(where === "after" ? at + 1 : at, 0, key);
+  savePref({ folder_order: keys });
+}
+// Put a folder in another one (parent null: the top level). It is a rename on the server: the mail and the
+// folders inside go along; the open folder, the selection and the fold state follow. at(newKey) places it
+// among its new neighbours. Undo puts it back.
+async function moveFolder(f, parent, { at } = {}) {
+  const snap = navRects();
+  let r;
+  try { r = await api("folder_move", parent == null ? { key: f.key, top: true } : { key: f.key, parent }); } catch (e) { fail(e); return; }
+  const shown = followFolder(f.key, r.key, r.sep);
+  if (parent != null) unfold(parent);
+  at?.(r.key);
+  await refreshCounts();
+  renderNav();
+  flipNav(snap, renamer(f.key, r.key, r.sep));
+  if (shown) showMoved();
+  if (r.key === f.key) return;
+  toast(parent == null ? t("moved_top") : t("moved_to", folderName(parent)), { ms: 6000, action: { label: t("undo"), run: async () => {
+    const back = navRects();
+    try { await api("folder_move", { key: r.key, parent: r.was }); } catch (e) { return fail(e); }
+    const again = followFolder(r.key, f.key, r.sep);
+    await refreshCounts();
+    renderNav();
+    flipNav(back, renamer(r.key, f.key, r.sep));
+    if (again) showMoved();
+  } } });
+}
+
+// Dragging an own folder: onto another one puts it inside (the folder lights up as for mail); near the top
+// or bottom edge of one puts it before or after it (a line shows where). Not into itself or a folder inside
+// it, and not onto the built-in folders (they take mail only). The heading takes it to the top level.
+let dragF = null;
+function clearDrop() {
+  for (const n of $$("#nav .drop, #nav .drop-before, #nav .drop-after")) n.classList.remove("drop", "drop-before", "drop-after");
+}
+function folderZone(b, f, e, list) {
+  if (!dragF || dragF.inside.has(f.key)) return null;
+  const r = b.getBoundingClientRect(), y = (e.clientY - r.top) / r.height;
+  const open = list[list.findIndex((x) => x.key === f.key) + 1]?.up === f.key && !PREFS.folded?.includes(f.key);
+  const z = y < 0.3 ? "before" : y > 0.7 && !open ? "after" : "inside";
+  return z === "inside" && dragF.f.up === f.key ? null : z;
+}
+function folderDrag(b, f, list) {
+  b.draggable = true;
+  b.addEventListener("dragstart", (e) => {
+    dragF = { f, inside: new Set(subtreeOf(list, f.key).map((x) => x.key)) };
+    e.dataTransfer.setData("x-ragdoll/folder", f.key);
+    e.dataTransfer.effectAllowed = "move";
+    requestAnimationFrame(() => { for (const x of $$("#nav .nav-item.other")) x.classList.toggle("dragging", !!dragF?.inside.has(x.dataset.folder)); });
+  });
+  b.addEventListener("dragend", () => { dragF = null; clearDrop(); for (const x of $$("#nav .dragging")) x.classList.remove("dragging"); });
+  b.addEventListener("dragover", (e) => {
+    if (!dragF) return;
+    const z = folderZone(b, f, e, list);
+    if (!z) return clearDrop();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const cls = z === "inside" ? "drop" : "drop-" + z;
+    if (!b.classList.contains(cls)) { clearDrop(); b.classList.add(cls); }
+  });
+  b.addEventListener("dragleave", (e) => { if (!b.contains(e.relatedTarget)) b.classList.remove("drop-before", "drop-after"); });
+  b.addEventListener("drop", (e) => {
+    if (!dragF) return;
+    e.preventDefault();
+    const z = folderZone(b, f, e, list), g = dragF.f;
+    dragF = null; clearDrop();
+    if (!z) return;
+    const parent = z === "inside" ? f.key : f.up;
+    const at = z === "inside" ? null : (key) => placeFolder(key, f.key, z);
+    if (parent !== g.up) return moveFolder(g, parent, { at });
+    const snap = navRects();
+    at(g.key);
+    renderNav();
+    flipNav(snap);
+  });
+}
+
+// A menu of folders with a box on top to find one: typing narrows it (Chinese too, once the input method is
+// done), arrows walk it, Enter takes the first one found. entries: "-" or {key, label, depth, icon, run, on (a
+// tick), off (shown, can't be picked), where (the folders it is in), find: false (left out of a search)}.
+// make(name): the "New folder" that ends a search, with the words typed.
+function pickMenu(anchor, entries, { make } = {}) {
+  closeLayer();
+  const input = el("input", { type: "text", spellcheck: "false", autocomplete: "off", dir: "auto", placeholder: t("search"), "aria-label": t("search") });
+  const list = el("div", { class: "pick-list" });
+  const m = el("div", { class: "menu pick", role: "menu" }, el("label", { class: "pick-find", html: icon("search", "small") }, input), list);
+  const item = (x, hint) => el("button", { role: "menuitem", disabled: !!x.off, style: x.depth ? `--depth:${x.depth}` : null,
+    onclick: () => { closeLayer(); x.run(); },
+    html: icon(x.icon || "folder-open") + `<span class="label" dir="auto">${esc(x.label)}</span>` +
+      (x.on ? icon("check", "small on-mark") : hint ? `<span class="grow"></span><span class="hint" dir="auto">${esc(hint)}</span>` : "") });
+  const draw = () => {
+    const q = input.value.trim().toLocaleLowerCase();
+    list.replaceChildren();
+    if (!q) { for (const x of entries) list.append(x === "-" ? el("hr") : item(x)); return; }
+    const seen = new Set();
+    const hits = entries.filter((x) => x !== "-" && x.find !== false && !x.off && !seen.has(x.key) && seen.add(x.key) &&
+      x.label.toLocaleLowerCase().includes(q));
+    for (const x of hits) list.append(item({ ...x, depth: 0 }, x.where));
+    if (!hits.length) list.append(el("div", { class: "menu-note" }, t("no_results")));
+    if (make) list.append(el("hr"), item({ icon: "folder-plus", label: t("new_folder"), run: () => make(input.value.trim()) }));
+  };
+  input.addEventListener("input", draw);
+  // the keys stay in the menu: the page's own shortcuts don't see them (Escape still closes it)
+  m.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return e.stopPropagation();
+    if (e.key === "Escape") return;
+    e.stopPropagation();
+    const items = $$("button:not(:disabled)", list), k = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const d = e.key === "ArrowDown" ? 1 : -1;
+      if (k < 0) items[d > 0 ? 0 : items.length - 1]?.focus();
+      else if (k + d < 0) input.focus();
+      else items[(k + d) % items.length]?.focus();
+    } else if (e.target === input && e.key === "Enter") {
+      e.preventDefault();
+      items[0]?.click();
+    } else if (e.target !== input && (e.key === "Home" || e.key === "End")) {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1]?.focus();
+    } else if (e.target !== input && (e.key === "Backspace" || (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey))) {
+      input.focus();      // typing on an item goes on in the box
+    }
+  });
+  draw();
+  const catcher = el("div", { style: "position:fixed;inset:0", onmousedown: closeLayer });
+  $("#layer").append(catcher, m);
+  m.style.width = Math.min(360, Math.max(240, m.offsetWidth)) + "px";      // the menu keeps its width while it narrows
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + "px";
+  const top = Math.max(8, Math.min(r.bottom + 6, innerHeight - m.offsetHeight - 8));
+  m.style.top = top + "px";
+  m.style.maxHeight = innerHeight - top - 8 + "px";
+  input.focus();
+}
+
+// the folders mail was moved to last come first in the move menu
+function noteRecent(key) {
+  savePref({ folder_recent: [key, ...(PREFS.folder_recent || []).filter((k) => k !== key)].slice(0, 5) });
+}
+
+// a question before something that can't be taken back, or that moves a lot of mail
+function confirmSheet({ title, text, ok, run, safe = false }) {
+  const go = el("button", { class: "btn primary danger", onclick: async () => {
+    go.disabled = true;
+    go.innerHTML = icon("loader-circle", "small spin") + esc(ok);
+    try { await run(); closeLayer(); } catch (e) { go.disabled = false; go.textContent = ok; fail(e); }
+  } }, ok);
+  const no = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
+  sheet(el("div", {}, el("h2", {}, title), el("p", { class: "sheet-sub" }, text), el("div", { class: "sheet-acts" }, no, go)));
+  (safe ? no : go).focus();
+}
+
+// the owner's own folders: make one (inside another too), rename, move, delete one with its mail going to Trash
 function nameSheet(title, value, run) {
   const input = el("input", { type: "text", value, maxlength: "60", dir: "auto", spellcheck: "false", autocomplete: "off", "aria-label": title });
   let busy = false;
@@ -472,34 +767,78 @@ function nameSheet(title, value, run) {
     try { await run(name); closeLayer(); } catch (e) { fail(e); input.focus(); }
     busy = false;
   };
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, title), el("div", { class: "form" }, input),
     el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("ok")))));
   requestAnimationFrame(() => { input.focus(); input.select(); });
 }
-// then: what to do with the new folder (the move menu puts the mail in it)
-function newFolder(then) {
-  nameSheet(t("new_folder"), "", async (name) => {
-    const r = await api("folder_new", { name });
+// then: what to do with the new folder (the move menu puts the mail in it); parent: the folder to make it in
+function newFolder(then, parent = null, value = "") {
+  nameSheet(t(parent ? "new_subfolder" : "new_folder"), value, async (name) => {
+    const r = await api("folder_new", parent ? { name, parent } : { name });
+    if (parent) unfold(parent);
     await refreshCounts();
     then?.(r.key);
   });
 }
 function renameFolder(f) {
   nameSheet(t("rename_folder"), f.label, async (name) => {
+    const snap = navRects();
     const r = await api("folder_rename", { key: f.key, name });
-    if (S.folder === f.key) S.folder = r.key;
+    const shown = followFolder(f.key, r.key, r.sep);
     await refreshCounts();
-    loadList({ quiet: true });
+    flipNav(snap, renamer(f.key, r.key, r.sep));
+    if (shown) showMoved(); else loadList({ quiet: true });
   });
 }
+// an empty folder goes at once; one with mail or folders inside asks first, then its mail (and the mail of
+// the folders inside) goes to Trash, never deleted for good, and the folders go
 async function deleteFolder(f) {
-  try {
-    await api("folder_delete", { key: f.key });
-    if (S.folder === f.key) await openFolder("inbox");
+  let use;
+  try { use = await api("folder_delete", { key: f.key, check: true }); } catch (e) { return fail(e); }
+  const go = async (trash) => {
+    const r = await api("folder_delete", trash ? { key: f.key, trash } : { key: f.key });
+    const gone = r.deleted || [f.key];
+    forgetFolders(gone);
+    if (gone.includes(S.folder)) await openFolder("inbox");
     await refreshCounts();
-  } catch (e) { fail(e); }
+    if (trash) toast(t("folder_gone_trash", f.label));
+  };
+  if (!use.mails && !use.folders) return go(false).catch(fail);
+  const text = [use.mails ? t(use.mails === 1 ? "del_mails_1" : "del_mails_n", use.mails) : "",
+    use.folders ? t(use.folders === 1 ? "del_kids_1" : "del_kids_n", use.folders) : ""].filter(Boolean).join(" ");
+  confirmSheet({ title: t("del_folder_q", f.label), text, ok: t("delete_folder"), run: () => go(true) });
+}
+// every mail in Trash or Junk deleted for good, after a question that says how many
+async function emptyFolder(key) {
+  for (const job of [...pendingMoves]) if (job.to === key) await job.commit();
+  let n;
+  try { n = (await api("folder_empty", { key, check: true })).count; } catch (e) { return fail(e); }
+  if (!n) return toast(t("empty_none"));
+  confirmSheet({ title: t("empty_q_" + key), text: t(n === 1 ? "empty_text_1" : "empty_text_n", n), ok: t("empty_" + key), safe: true, run: async () => {
+    await api("folder_empty", { key });
+    if (S.sel?.startsWith(key + ":") || S.thread?.rows.some((r) => r.folder === key)) { S.sel = null; S.thread = null; showEmpty(); }
+    if (S.folder === key && !S.query) await loadList({ quiet: true });
+    await refreshCounts();
+    toast(t("emptied_" + key));
+  } });
+}
+// the list header of Trash and Junk has a button for it
+function emptyBtn(here) {
+  const on = (S.folder === "trash" || S.folder === "junk") && !S.query;
+  let b = $("#empty-btn");
+  if (!b) {
+    if (!on) return;
+    b = el("button", { class: "icon-btn", id: "empty-btn", onclick: () => emptyFolder(S.folder) });
+    $("#filter-btn").before(b);
+  }
+  b.hidden = !on;
+  if (!on) return;
+  b.innerHTML = icon("trash-2");
+  b.dataset.tip = t("empty_" + S.folder);
+  b.setAttribute("aria-label", b.dataset.tip);
+  b.disabled = !here?.total;
 }
 // every unread mail of a folder becomes read; the list on screen follows at once
 async function readAll(key) {
@@ -512,22 +851,42 @@ async function readAll(key) {
 const READ_ALL_IN = ["inbox", "flagged", "archive", "junk", "trash"];
 function folderMenu(anchor, f) {
   const all = { icon: "mail-open", label: t("read_all"), run: () => readAll(f.key) };
+  if (f.key === "trash" || f.key === "junk") {
+    return menu(anchor, f.total ? [all, "-", { icon: "trash-2", label: t("empty_" + f.key), run: () => emptyFolder(f.key) }] : [all]);
+  }
   if (!f.other) return menu(anchor, [all]);
+  const me = ownFolders().find((x) => x.key === f.key) || f;
   menu(anchor, [
     all,
     "-",
+    { icon: "folder-plus", label: t("new_subfolder"), run: () => newFolder(null, f.key) },
     { icon: "pencil", label: t("rename_folder"), run: () => renameFolder(f) },
+    { icon: "folder-input", label: t("move_to"), run: () => moveFolderMenu(anchor, me) },
     { icon: "trash-2", label: t("delete_folder"), run: () => deleteFolder(f) },
     "-",
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
   ]);
 }
+// where a folder can go: the top level or any own folder but itself and the folders inside it
+function moveFolderMenu(anchor, f) {
+  const own = ownFolders(), inside = new Set(subtreeOf(own, f.key).map((x) => x.key));
+  const entries = [{ key: "@top", label: t("top_level"), icon: "layers", on: !f.up, run: () => f.up && moveFolder(f, null) }, "-"];
+  for (const x of own) {
+    entries.push({ key: x.key, label: x.label, depth: x.depth, where: whereOf(x, own), off: inside.has(x.key), on: x.key === f.up,
+      run: () => x.key !== f.up && moveFolder(f, x.key) });
+  }
+  pickMenu(anchor, entries);
+}
+// a sentence from the server about folders, in the chosen language
+MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
+MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
+const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
 function accountMenu() {
   menu($("#account"), [
     { note: S.boot.demo ? t("demo") : S.boot.user },
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
-    { icon: "refresh-cw", label: t("sync_now"), run: () => api("sync").then(() => toast(t("syncing"))).catch(fail) },
+    { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
     "-",
@@ -535,7 +894,90 @@ function accountMenu() {
   ], { above: true });
 }
 
+// ---- C1 pure: start (no page, no app state: tests/test_group_c1.py runs this part in node)
+// the words of a search, as the server reads them (ragdoll_app.api_search), without its operators (from:, in:,
+// is:unread...): these are what the list and the open mail mark; longest first, so "price list" wins over "price"
+function searchTerms(q) {
+  const strip = (s) => s.replace(/^"+|"+$/g, "");
+  const out = [], seen = new Set();
+  for (const w of String(q || "").match(/[\p{L}\p{N}_]+:"[^"]*"|"[^"]*"|\S+/gu) || []) {
+    const i = w.indexOf(":"), k = i < 0 ? w : w.slice(0, i), v = i < 0 ? "" : strip(w.slice(i + 1));
+    if (v && ["from", "to", "in", "folder"].includes(k.toLowerCase())) continue;
+    if (["is:unread", "has:attachment", "has:file"].includes(w.toLowerCase())) continue;
+    const term = strip(w).trim();
+    if (term && !seen.has(term.toLowerCase())) { seen.add(term.toLowerCase()); out.push(term); }
+  }
+  return out.sort((a, b) => b.length - a.length).slice(0, 30);
+}
+// one pattern for all the words: any case, Chinese and Japanese inside a longer run of text (no word edges),
+// the space in a quoted phrase matches a line break too
+function termsRe(terms) {
+  if (!terms?.length) return null;
+  return new RegExp(terms.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")).join("|"), "giu");
+}
+// [text before, the match] pairs; the last pair holds the rest and an empty match
+function splitHits(text, re) {
+  const out = [];
+  let at = 0;
+  if (re) for (const m of String(text).matchAll(re)) {
+    if (!m[0]) continue;
+    out.push([text.slice(at, m.index), m[0]]);
+    at = m.index + m[0].length;
+  }
+  out.push([String(text).slice(at), ""]);
+  return out;
+}
+const escHit = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// text as HTML with the words marked
+function hlText(text, re) {
+  return splitHits(String(text ?? ""), re).map(([a, m]) => escHit(a) + (m ? `<mark>${escHit(m)}</mark>` : "")).join("");
+}
+// a key pressed inside an open mail: "keep" lets the mail have it (select its text, scroll a wide table sideways),
+// a direction scrolls the reading pane, null hands it on to the app's own keys (J, K, E, R...)
+function frameKey(e) {
+  const mod = e.metaKey || e.ctrlKey, k = e.key;
+  if (mod && ["a", "c"].includes(k.toLowerCase())) return "keep";
+  if (k === "ArrowLeft" || k === "ArrowRight") return "keep";
+  if (k === "ArrowDown") return mod ? "end" : e.altKey ? "page" : "down";
+  if (k === "ArrowUp") return mod ? "home" : e.altKey ? "pageup" : "up";
+  if (k === " " && !mod) return e.shiftKey ? "pageup" : "page";
+  return { PageDown: "page", PageUp: "pageup", Home: "home", End: "end" }[k] || null;
+}
+// the mail to open after moving ids: the one beside the open mail (sel), or beside the moved block when several
+// selected ones moved (sel null); null when the open mail did not move or nothing is left
+function nextAfter(rows, ids, sel) {
+  const gone = new Set(ids), at = (id) => rows.findIndex((x) => x.id === id);
+  let lo, hi;
+  if (sel != null) {
+    if (!gone.has(sel) || (lo = hi = at(sel)) < 0) return null;
+  } else {
+    const ks = ids.map(at).filter((k) => k >= 0);
+    if (!ks.length) return null;
+    lo = Math.min(...ks); hi = Math.max(...ks);
+  }
+  const r = rows.slice(hi + 1).find((x) => !gone.has(x.id)) || rows.slice(0, lo).reverse().find((x) => !gone.has(x.id));
+  return r ? r.id : null;
+}
+// how far to scroll after the list was drawn again so the row under the eye stays where it was: a = {id, off,
+// after} (off: its distance from the top of the view before; after: the rows below it, in case it went), offs: the
+// distances now
+function anchorShift(a, ids, offs) {
+  if (!a) return null;
+  const have = new Set(ids);
+  const id = have.has(a.id) ? a.id : (a.after || []).find((x) => have.has(x));
+  return id == null ? null : offs[id] - a.off;
+}
+// ---- C1 pure: end
+
 // ---------------------------------------------------------------- list
+
+// the searched words, ready to mark (one pattern per search)
+let hitCache = { q: null, re: null };
+function hitRe() {
+  if (hitCache.q !== S.query) hitCache = { q: S.query, re: S.query ? termsRe(searchTerms(S.query)) : null };
+  return hitCache.re;
+}
+const hl = (s) => hlText(s, hitRe());
 
 function rowTemplate(r) {
   const outgoing = r.folder === "sent" || r.folder === "drafts";
@@ -556,11 +998,12 @@ function rowTemplate(r) {
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
       `<button class="icon-btn tiny" tabindex="-1" data-act="trash" data-tip="${esc(t("trash_it"))}" data-key="#">${icon("trash-2")}</button>`;
-  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}${isSel(r.id) ? " on" : ""}" data-id="${esc(r.id)}" draggable="true">` +
-    `<span class="dot"></span>${done}<span class="who" dir="auto">${esc(name)}</span>` +
+  // the selection is not part of the row's text (syncSel marks it), so a row is drawn again only when it changed
+  return `<div class="row${r.unread ? " unread" : ""}${r.answered ? " has-a" : ""}" data-id="${esc(r.id)}" draggable="true">` +
+    `<span class="dot"></span>${done}<span class="who" dir="auto">${hl(name)}</span>` +
     `<span class="meta">${tag}${flag}${clip}${when}</span>` +
-    `<span class="subj" dir="auto">${esc(r.subject || t("no_subject"))}</span>` +
-    `<span class="snip" dir="auto">${esc(r.snippet) || "&nbsp;"}</span>` +
+    `<span class="subj" dir="auto">${hl(r.subject || t("no_subject"))}</span>` +
+    `<span class="snip" dir="auto">${hl(r.snippet) || "&nbsp;"}</span>` +
     `<span class="hover-acts">${acts}</span></div>`;
 }
 
@@ -581,20 +1024,97 @@ function renderRows() {
     box.innerHTML = `<div class="rows-empty">${S.syncing && !S.query && !filtered ? icon("loader-circle", "big spin") : icon(S.query ? "search" : filtered ? "list-filter" : FOLDER_ICON[S.folder] || "folder-open", "big")}<span>${esc(msg)}</span></div>`;
     return;
   }
-  const before = same ? new Set($$(".row", box).map((n) => n.dataset.id)) : null;
-  box.innerHTML = S.rows.map(rowTemplate).join("") + (S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "");
-  if (S.multi.size > 1) syncSel();
-  if (REDUCED.matches) return;
-  if (!before) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
-  else {
-    growRows($$(".row", box).filter((n) => !before.has(n.dataset.id)));
-    for (const n of $$(".row", box)) {
-      const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
-      if (!was || !now) continue;
-      if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
-      if (now.s && !was.s) popStar($(".flag-ic", n));
-    }
+  const html = S.rows.map(rowTemplate);
+  const more = S.more ? `<div class="rows-more">${icon("loader-circle", "spin")}</div>` : "";
+  if (!same || !$(".row", box)) {
+    box.innerHTML = html.join("") + more;
+    $$(".row", box).forEach((n, k) => { n._h = html[k]; });
+    syncSel();
+    measureRow(box);
+    if (!REDUCED.matches) box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+    return;
   }
+  // the same list again: only the rows that came, went or changed are touched, the others stay as they are
+  // (drawing every row again counted the rows out of sight at a guessed height, and the view jumped)
+  const anchor = takeAnchor(box);
+  const old = new Map($$(".row", box).map((n) => [n.dataset.id, n]));
+  const want = [], added = [], changed = [];
+  S.rows.forEach((r, k) => {
+    const n = old.get(r.id);
+    if (n && n._h === html[k]) { want.push(n); old.delete(r.id); return; }
+    const m = rowNode(html[k]);
+    if (n) { if (n.classList.contains("ctx")) m.classList.add("ctx"); changed.push(m); } else added.push(m);
+    want.push(m);
+  });
+  const drop = [...old.values(), ...$$(":scope > :not(.row)", box)];
+  for (const n of drop) n.remove();
+  let cur = box.firstElementChild;
+  for (const n of want) {
+    if (n === cur) { cur = cur.nextElementSibling; continue; }
+    box.insertBefore(n, cur);
+  }
+  if (more) box.insertAdjacentHTML("beforeend", more);
+  syncSel();
+  keepAnchor(box, anchor);
+  if (REDUCED.matches) return;
+  // a row that came in above the one held would push it while it opens: that one is simply there
+  const at = anchor ? want.findIndex((n) => n.dataset.id === anchor.id) : -1;
+  growRows(added.filter((n) => want.indexOf(n) > at));
+  for (const n of changed) {
+    const was = oldMarks.get(n.dataset.id), now = shownMarks.get(n.dataset.id);
+    if (!was || !now) continue;
+    if ((now.a && !was.a) || (now.f && !was.f)) showDone(n, now.a && !was.a, now.f && !was.f);
+    if (now.s && !was.s) popStar($(".flag-ic", n));
+  }
+}
+const rowTpl = document.createElement("template");
+function rowNode(html) {
+  rowTpl.innerHTML = html;
+  const n = rowTpl.content.firstElementChild;
+  n._h = html;
+  return n;
+}
+// the row the eye is on: the one under the pointer, else the open one when it is in view, else the first in view.
+// At the very top, with the pointer elsewhere, nothing is held: new mail shows at the top.
+function takeAnchor(box) {
+  const nodes = $$(".row", box);
+  if (!nodes.length) return null;
+  const hover = box.matches(":hover") ? nodes.find((n) => n.matches(":hover")) : null;
+  if (!hover && box.scrollTop <= 0) return null;
+  const view = box.getBoundingClientRect();
+  const inView = (n) => { const r = n.getBoundingClientRect(); return r.bottom > view.top && r.top < view.bottom; };
+  const n = hover || nodes.find((x) => x.classList.contains("on") && inView(x)) || nodes[firstInView(box, nodes)];
+  const k = nodes.indexOf(n);
+  return { id: n.dataset.id, off: n.getBoundingClientRect().top - view.top, after: nodes.slice(k + 1, k + 30).map((x) => x.dataset.id) };
+}
+function keepAnchor(box, a) {
+  if (!a) return;
+  const top = box.getBoundingClientRect().top, offs = {};
+  for (const id of [a.id, ...a.after]) {
+    const n = box.querySelector(`:scope > .row[data-id="${CSS.escape(id)}"]`);
+    if (n) offs[id] = n.getBoundingClientRect().top - top;
+  }
+  const d = anchorShift(a, Object.keys(offs), offs);
+  if (d) box.scrollTop += d;
+}
+// a row's real height, so the rows not drawn yet (content-visibility) are counted at their true size
+// the first row in view, by halving: rows are in order
+function firstInView(box, nodes) {
+  const top = box.getBoundingClientRect().top;
+  let lo = 0, hi = nodes.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (nodes[mid].getBoundingClientRect().bottom > top) hi = mid; else lo = mid + 1; }
+  return lo;
+}
+// (the size given is the row's content box: padding and border come on top)
+function measureRow(box) {
+  if (box.style.getPropertyValue("--row-h")) return;
+  const n = $(":scope > .row:not(.leaving)", box);
+  if (!n) return;
+  n.style.contentVisibility = "visible";        // laid out for real, whether in view or not
+  const cs = getComputedStyle(n);
+  const h = n.getBoundingClientRect().height - ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((s, k) => s + parseFloat(cs[k]), 0);
+  n.style.contentVisibility = "";
+  if (h > 20) box.style.setProperty("--row-h", h.toFixed(2) + "px");
 }
 
 // the next page goes after the rows already shown, without drawing those again
@@ -602,9 +1122,9 @@ function appendRows(add) {
   const box = $("#rows"), more = $(".rows-more", box);
   if (!$(".row", box)) return renderRows();
   for (const x of add) { shownIds.add(x.id); shownMarks.set(x.id, marksOf(x)); }
-  (more || box.appendChild(document.createElement("i"))).insertAdjacentHTML("beforebegin", add.map(rowTemplate).join(""));
-  if (!more) box.lastChild.remove();
-  else if (!S.more) more.remove();
+  const nodes = add.map((x) => rowNode(rowTemplate(x)));
+  if (more) more.before(...nodes); else box.append(...nodes);
+  if (more && !S.more) more.remove();
   syncSel();
 }
 
@@ -728,17 +1248,33 @@ $("#filter-btn").innerHTML = icon("list-filter");
 $("#filter-btn").addEventListener("click", filterMenu);
 
 let listSeq = 0;
+// one page of the list on screen: a folder (with its filter) or a search; the server gives at most 500 at once
+const PAGE = 100, MAX_PAGE = 500;
+const fetchRows = (offset, limit) => (S.query
+  ? api("search", { q: S.query, limit, offset })
+  : api("list", { folder: S.folder, limit, offset, ...filterArgs() }));
+let moreJob = null;
 async function loadList({ quiet = false } = {}) {
   const seq = ++listSeq;
   syncFilterUI();
-  if (!quiet) S.loading = true;
+  if (!quiet) { S.loading = true; moreLater = false; }
+  refreshAt = quiet ? seq : 0;
   try {
-    let rows, more = false;
-    if (S.query) rows = (await api("search", { q: S.query })).rows;
-    else {
-      const limit = quiet ? Math.max(100, S.rows.length) : 100;
-      const r = await api("list", { folder: S.folder, limit, offset: 0, ...filterArgs() });
-      rows = r.rows; more = r.more;
+    // a page being added is part of what a refresh keeps
+    if (quiet && moreJob) { await moreJob; if (seq !== listSeq) return; }
+    // a refresh asks again for every row already loaded, in pages, and for the open mail's row if it slid further
+    // down (new mail on top): the list never shrinks under the reader and the open mail stays in it
+    const want = quiet ? Math.max(PAGE, S.rows.length + hidden.size) : PAGE;
+    // and the last row loaded, so new mail on top does not push rows off the end
+    const keep = quiet && !S.filter.unread ? [S.sel && S.rows.some((x) => x.id === S.sel) ? S.sel : null, S.rows.at(-1)?.id].filter(Boolean) : [];
+    let rows = [], more = true, offset = 0;
+    const have = new Set();
+    while (more && (rows.length < want || (keep.some((id) => !have.has(id)) && rows.length < want + MAX_PAGE))) {
+      const r = await fetchRows(offset, Math.min(MAX_PAGE, Math.max(PAGE, want - rows.length)));
+      if (seq !== listSeq) return;
+      offset += r.rows.length;
+      for (const x of r.rows) if (!have.has(x.id)) { have.add(x.id); rows.push(x); }
+      more = !!r.more && r.rows.length > 0;
     }
     if (seq !== listSeq) return;
     S.loading = false;
@@ -752,25 +1288,42 @@ async function loadList({ quiet = false } = {}) {
       }
     }
     if (quiet && JSON.stringify(rows) === JSON.stringify(S.rows) && more === S.more) return;
-    const box = $("#rows"), top = box.scrollTop;
     S.rows = rows; S.more = more;
-    renderRows();
-    if (quiet) box.scrollTop = top; else box.scrollTop = 0;
+    renderRows();                       // a refresh keeps the row under the eye in place (renderRows)
+    if (!quiet) $("#rows").scrollTop = 0;
   } catch (e) { if (seq === listSeq && S.loading) { S.loading = false; renderRows(); } if (!quiet) fail(e); }
+  finally {
+    if (refreshAt === seq) refreshAt = 0;
+    // the end of the list was reached while the refresh was on its way: the next page comes now
+    if (seq === listSeq && moreLater) { moreLater = false; loadMore(); }
+  }
 }
 
+// the next page, when the list is scrolled near its end; a page for an older list (another folder, another
+// search) is dropped, and during a refresh it waits for it
+let moreLater = false;
 async function loadMore() {
-  if (!S.more || S.loadingMore || S.query) return;
+  if (!S.more || S.loadingMore || S.loading) return;
+  if (refreshing()) { moreLater = true; return; }
+  const seq = listSeq;
   S.loadingMore = true;
-  try {
-    const r = await api("list", { folder: S.folder, limit: 100, offset: S.rows.length, ...filterArgs() });
-    const have = new Set(S.rows.map((x) => x.id));
-    const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
-    S.rows.push(...add);
-    S.more = r.more;
-    appendRows(add);
-  } catch (e) { fail(e); } finally { S.loadingMore = false; }
+  const job = (async () => {
+    try {
+      const r = await fetchRows(S.rows.length, PAGE);
+      if (seq !== listSeq) return;
+      const have = new Set(S.rows.map((x) => x.id));
+      const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
+      S.rows.push(...add);
+      S.more = !!r.more && r.rows.length > 0;
+      appendRows(add);
+    } catch (e) { if (seq === listSeq) fail(e); }
+  })();
+  moreJob = job;
+  try { await job; } finally { S.loadingMore = false; if (moreJob === job) moreJob = null; }
 }
+// the newest loadList is a quiet refresh still on its way
+let refreshAt = 0;
+const refreshing = () => refreshAt !== 0 && refreshAt === listSeq;
 
 function markRow(id, patch) {
   const r = S.rows.find((x) => x.id === id);
@@ -788,14 +1341,31 @@ function markRow(id, patch) {
 const isSel = (id) => (S.multi.size > 1 ? S.multi.has(id) : id === S.sel);
 function syncSel() {
   let prev = null;
+  const joined = [];
   for (const n of $$("#rows .row")) {
     const on = isSel(n.dataset.id);
+    if (on && S.multi.size > 1 && !n.classList.contains("on") && n._h) joined.push(n);
     n.classList.toggle("on", on);
     prev?.classList.toggle("on-next", on);
     prev = n;
   }
   prev?.classList.remove("on-next");
+  joinRows(joined);
 }
+// a row that joins a selection of several: its grey grows out from inside the row to the block's edges, with the
+// corners it shares with a selected neighbour already square, so the rows read as merging into one block
+function joinRows(nodes) {
+  if (REDUCED.matches || nodes.length > 40) return;
+  for (const n of nodes) {
+    const up = n.previousElementSibling?.classList.contains("on"), down = n.classList.contains("on-next");
+    const r = (a, b) => `${a ? 0 : 9}px ${a ? 0 : 9}px ${b ? 0 : 9}px ${b ? 0 : 9}px`;
+    n.animate([{ clipPath: `inset(${up ? 0 : 5}px 5px ${down ? 0 : 5}px 5px round ${r(up, down)})` },
+      { clipPath: `inset(0px 0px 0px 0px round ${r(up, down)})` }], { duration: 180, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  }
+}
+// the mail E, # and V (and their toolbar buttons) move: the row selected in the list, not an older message of
+// its conversation that was opened in the pane
+const moveId = () => (S.sel && S.thread?.rows.some((x) => x.id === S.sel) ? S.sel : S.focus || S.sel);
 // the mails the next action works on: the selection, or the open mail
 function targets() {
   if (S.multi.size > 1) return [...S.multi];
@@ -804,14 +1374,14 @@ function targets() {
 }
 const rowOf = (id) => S.rows.find((x) => x.id === id) || S.thread?.rows.find((x) => x.id === id);
 async function pickRow(id, e) {
-  if (!(e.metaKey || e.ctrlKey || e.shiftKey)) return selectRow(id);
+  if (!(isMod(e) || e.shiftKey)) return selectRow(id);
   if (S.compose && !(await leaveCompose())) return;
   if (e.shiftKey && (S.anchor || S.sel)) {
     const ids = S.rows.map((x) => x.id);
     let a = ids.indexOf(S.anchor || S.sel), b = ids.indexOf(id);
     if (a < 0) a = b;
     const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
-    S.multi = new Set(e.metaKey || e.ctrlKey ? [...S.multi, ...range] : range);
+    S.multi = new Set(isMod(e) ? [...S.multi, ...range] : range);
   } else {
     if (!S.multi.size && S.sel) S.multi.add(S.sel);
     if (S.multi.has(id)) S.multi.delete(id); else S.multi.add(id);
@@ -842,18 +1412,67 @@ function showMulti() {
   const anyUnread = rows.some((r) => r.unread), allFlagged = rows.length && rows.every((r) => r.flagged);
   const inTrash = rows.length && rows.every((r) => r.folder === "trash");
   const inJunk = rows.length && rows.every((r) => r.folder === "junk");
-  const b = (ic, label, run) => el("button", { class: "btn", onclick: run, html: icon(ic, "small") + esc(label) });
-  const stack = el("div", { class: "multi-stack" });
-  for (let k = Math.min(3, ids.length) - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
-  $("#pane").replaceChildren(el("div", { class: "multi" }, stack,
-    el("h2", {}, t("n_selected", ids.length)),
-    el("div", { class: "multi-acts" },
-      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive")),
-      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash")),
-      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids)),
-      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread)),
-      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged)))));
+  // moves first, as equal buttons on one line; the marks below them, quieter; the key shows on hover
+  const b = (ic, label, run, key, cls = "btn") => el("button", { class: cls, onclick: run, "data-tip": key ? "" : null, "data-key": key,
+    html: icon(ic, "small") + `<span>${esc(label)}</span>` });
+  const acts = el("div", { class: "multi-acts" },
+    el("div", { class: "multi-moves" },
+      inTrash || inJunk ? b("inbox", backLabel(inJunk ? "junk" : "trash"), () => moveMail(ids, "inbox")) : b("archive", t("archive_it"), () => moveMail(ids, "archive"), "E"),
+      inTrash ? null : b("trash-2", t("trash_it"), () => moveMail(ids, "trash"), "#"),
+      b("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, ids), "V")),
+    el("div", { class: "multi-marks" },
+      b(anyUnread ? "mail-open" : "mail", anyUnread ? t("read") : t("unread"), () => markMail(ids, "seen", anyUnread), "U", "btn quiet"),
+      b(allFlagged ? "star-off" : "star", allFlagged ? t("unflag") : t("flag"), () => markMail(ids, "flagged", !allFlagged), "S", "btn quiet")));
+  const title = t("n_selected", ids.length), cards = Math.min(3, ids.length);
+  const was = $("#pane > .multi:not(.pane-ghost)");
+  if (was) {
+    // more or fewer selected: the count ticks and a card joins or leaves the stack; the rest stays
+    const h2 = $("h2", was), stack = $(".multi-stack", was);
+    if (h2.textContent !== title) {
+      const up = ids.length > (parseInt(h2.dataset.n, 10) || 0);
+      h2.textContent = title; h2.dataset.n = ids.length;
+      if (!REDUCED.matches) h2.animate([{ opacity: 0.2, transform: `translateY(${up ? 5 : -5}px)` }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
+    }
+    for (let k = stack.children.length; k < cards; k++) stack.prepend(el("span", { class: "multi-card", style: `--k:${k}` }));
+    while (stack.children.length > cards) stack.firstElementChild.remove();
+    $(".multi-acts", was).replaceWith(acts);
+  } else {
+    const stack = el("div", { class: "multi-stack" });
+    for (let k = cards - 1; k >= 0; k--) stack.append(el("span", { class: "multi-card", style: `--k:${k}` }));
+    swapPane(el("div", { class: "multi" }, stack, el("h2", { "data-n": ids.length }, title), acts));
+  }
+  fitMoves();
   renderToolbar();
+}
+// the three move buttons stand side by side, all as wide as the widest; when the pane is too narrow for that line
+// in this language they stand one above the other, full width
+function fitMoves() {
+  const box = $("#pane > .multi:not(.pane-ghost)"), moves = box && $(".multi-moves", box);
+  if (!moves) return;
+  moves.classList.remove("stack");
+  moves.style.width = "max-content";
+  const w = moves.offsetWidth;
+  moves.style.width = "";
+  moves.classList.toggle("stack", w > box.clientWidth - 48);
+}
+new ResizeObserver(() => fitMoves()).observe($("#pane"));
+// the reading pane changes between one mail and several selected: the old view fades and draws back a little
+// while the new one comes in (only the fade with reduced motion). The old view keeps its place in the page (an
+// open mail's frames would load again if they were moved) and goes once it has faded.
+function swapPane(node) {
+  const pane = $("#pane"), old = [...pane.children].find((n) => !n.classList.contains("pane-ghost"));
+  const kind = (n) => (n?.classList.contains("multi") ? "multi" : n?.classList.contains("doc") ? "doc" : null);
+  const a = kind(old), b = kind(node);
+  if (!a || !b || a === b) { pane.replaceChildren(node); return; }
+  const top = pane.scrollTop;
+  for (const g of $$(":scope > .pane-ghost", pane)) g.remove();
+  old.classList.add("pane-ghost");
+  old.style.top = -top + "px";
+  old.style.transformOrigin = `50% ${top + pane.clientHeight / 2}px`;
+  pane.insertBefore(node, old);
+  pane.scrollTop = 0;
+  old.animate(REDUCED.matches ? [{ opacity: 1 }, { opacity: 0 }] : [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.97)" }],
+    { duration: 180, easing: "cubic-bezier(.4, 0, .2, 1)", fill: "forwards" }).finished.then(() => old.remove(), () => old.remove());
 }
 
 // read / unread and flags, for one mail or many
@@ -979,22 +1598,26 @@ function step(d) {
 }
 
 // "Move to…": the inbox, the server's other folders, and junk
+// where mail can go: Inbox, the owner's folders nested as in the sidebar (the ones used last on top when
+// there are many), Junk, a new folder; a box on top finds one by name
 function moveMenu(anchor, ids) {
   if (!anchor || !ids.length) return;
   const from = new Set(ids.map((i) => rowOf(i)?.folder));
   const here = (key) => from.size === 1 && from.has(key);
-  const items = [];
-  for (const f of S.boot.folders) {
-    if (!(f.key === "inbox" || f.other) || here(f.key)) continue;
-    items.push({ icon: f.other ? "folder-open" : "inbox", label: f.other ? f.key : t("inbox"), run: () => moveMail(ids, f.key) });
-  }
-  if (S.boot.folders.some((f) => f.key === "junk") && !here("junk")) {
-    if (items.length) items.push("-");
-    items.push({ icon: "archive-x", label: t("junk"), run: () => moveMail(ids, "junk") });
-  }
+  const go = (key) => { noteRecent(key); moveMail(ids, key); };
+  const own = ownFolders(), hasJunk = S.boot.folders.some((f) => f.key === "junk");
+  const entry = (key) => key === "inbox" ? { key, label: t("inbox"), icon: "inbox", run: () => go(key) }
+    : { key, label: t("junk"), icon: "archive-x", run: () => go(key) };
+  const tree = [];
+  if (!here("inbox")) tree.push(entry("inbox"));
+  for (const f of own) tree.push({ key: f.key, label: f.label, depth: f.depth, where: whereOf(f, own), off: here(f.key), run: () => go(f.key) });
+  const recent = own.length > 5 ? (PREFS.folder_recent || []).filter((k) => !here(k) && (k === "inbox" || (k === "junk" && hasJunk) || own.some((f) => f.key === k)))
+    .slice(0, 3).map((k) => { const f = own.find((x) => x.key === k); return f ? { key: k, label: f.label, where: whereOf(f, own), run: () => go(k) } : entry(k); }) : [];
+  const items = [...recent, ...(recent.length ? ["-"] : []), ...tree];
+  if (hasJunk && !here("junk")) items.push(...(items.length ? ["-"] : []), entry("junk"));
   if (items.length) items.push("-");
-  items.push({ icon: "folder-plus", label: t("new_folder"), run: () => newFolder((key) => moveMail(ids, key)) });
-  menu(anchor, items);
+  items.push({ key: "@new", icon: "folder-plus", label: t("new_folder"), find: false, run: () => newFolder(go) });
+  pickMenu(anchor, items, { make: (name) => newFolder(go, null, name) });
 }
 const moveKey = (ids) => moveMenu($('#tools .icon-btn[data-key="V"]:not(:disabled)'), ids);
 
@@ -1003,36 +1626,73 @@ const hidden = new Set();
 const pendingMoves = new Set();
 function moveMail(ids, to) {
   if (!ids.length) return;
+  // the pane changes only when what it shows moved: the open mail's own row, or the several selected ones. The
+  // next mail is the one beside the open row (or beside the moved block). Another mail of the open conversation
+  // that moved only leaves the conversation; mails moved outside a selection of several leave the selection.
+  const sel = S.sel, many = S.multi.size > 1;
+  const allSel = many && ids.every((i) => S.multi.has(i));
+  const rest = many && !allSel ? [...S.multi].filter((i) => !ids.includes(i)) : null;
+  const wasSel = allSel || (!many && ids.includes(sel));
+  const next = wasSel ? nextAfter(S.rows, ids, allSel ? null : sel) : null;
   S.multi.clear();
-  const k = Math.max(...ids.map((i) => S.rows.findIndex((x) => x.id === i)));
-  const next = S.rows.slice(k + 1).find((x) => !ids.includes(x.id)) || S.rows.slice(0, k).reverse().find((x) => !ids.includes(x.id));
-  const wasSel = ids.includes(S.sel) || (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i)));
-  const sel = S.sel;
   ids.forEach((i) => hidden.add(i));
   S.rows = S.rows.filter((x) => !ids.includes(x.id));
   shownIds = new Set(S.rows.map((x) => x.id));
   const gone = ids.map((i) => $(`.row[data-id="${CSS.escape(i)}"]`));
   foldRows(gone).then(() => { gone.forEach((n) => n?.remove()); if (!S.rows.length) renderRows(); });
-  if (wasSel) { if (next) selectRow(next.id); else { S.sel = null; showEmpty(); } }
+  let leftThread = false;
+  if (wasSel) { if (next) selectRow(next); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (rest) { S.multi = new Set(rest); if (rest.length > 1) showMulti(); else if (rest.length) selectRow(rest[0]); else { S.sel = null; syncSel(); showEmpty(); } }
+  else if (S.thread && ids.some((i) => S.thread.rows.some((r) => r.id === i))) {
+    leftThread = true;
+    S.thread.rows = S.thread.rows.filter((r) => !ids.includes(r.id));
+    if (ids.includes(S.focus)) S.focus = sel;
+    for (const n of $$("#pane > .doc:not(.pane-ghost) > .msg").filter((x) => ids.includes(x.dataset.id))) {
+      if (REDUCED.matches) { n.remove(); continue; }
+      n.style.overflow = "hidden";
+      n.animate([{ height: n.offsetHeight + "px", opacity: 1 }, { height: "0px", opacity: 0, marginTop: "0px", marginBottom: "0px", paddingTop: "0px", paddingBottom: "0px" }],
+        { duration: 260, easing: SMOOTH, fill: "forwards" }).finished.then(() => n.remove(), () => n.remove());
+    }
+    renderToolbar();
+  }
   const job = { ids, to, done: false };
   const unhide = () => { ids.forEach((i) => hidden.delete(i)); pendingMoves.delete(job); };
   job.commit = async () => {
     if (job.done) return;
     job.done = true; clearTimeout(job.timer);
-    try { await api("move", { ids, to }); refreshCounts(); } catch (e) { fail(e); }
+    // the server's answer names the move, so Cmd+Z can still bring it back later (undoMove)
+    job.sent = api("move", { ids, to }).then((r) => { job.token = r?.undo; refreshCounts(); }, fail);
+    await job.sent;
     unhide(); loadList({ quiet: true });
   };
   job.timer = setTimeout(job.commit, 5000);
   pendingMoves.add(job);
-  toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
+  job.undo = async () => {
+    if (job.done) return;
+    job.done = true; clearTimeout(job.timer); unhide();
+    await loadList({ quiet: true });
+    if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
+    else if (leftThread && S.sel === sel && S.thread) openThread(sel);
+  };
+  UNDO.push(job);
+  if (UNDO.length > 10) UNDO.shift();
+  job.toast = toast(to === "archive" ? t("archived") : to === "trash" ? t("trashed") : to === "inbox" ? t("restored") : t("moved_to", folderName(to)), {
     ms: 5000,
-    action: { label: t("undo"), run: async () => {
-      if (job.done) return;
-      job.done = true; clearTimeout(job.timer); unhide();
-      await loadList({ quiet: true });
-      if (wasSel && sel && S.rows.some((x) => x.id === sel)) selectRow(sel);
-    } },
+    action: { label: t("undo"), run: () => { UNDO.splice(UNDO.indexOf(job) >>> 0, 1); job.undo(); } },
   });
+}
+// Cmd+Z (Ctrl+Z): the last move. While it waits it is called off; once on the server it is moved back.
+const UNDO = [];                // the last 10 moves, newest last
+async function undoMove() {
+  const job = UNDO.pop();
+  if (!job) return toast(t("nothing_undo"), { id: "undo" });
+  if (!job.done) { job.toast?.close(); return job.undo(); }
+  await job.sent;
+  if (!job.token) return toast(t("nothing_undo"), { id: "undo" });
+  try { await api("unmove", { token: job.token }); } catch (e) { return fail(e); }
+  toast(t("moved_back"), { id: "undo" });
+  refreshCounts();
+  loadList({ quiet: true });
 }
 // The window is closing: send the waiting moves now.
 window.addEventListener("pagehide", () => {
@@ -1079,21 +1739,39 @@ $("#search-btn").addEventListener("click", openSearch);
 $("#search").placeholder = t("search");
 $("#search-clear").innerHTML = icon("x");
 $("#search-clear").addEventListener("click", () => { $("#search").value = ""; onSearch(true); $("#search").focus(); });
-$("#search").addEventListener("input", () => onSearch());
-$("#search").addEventListener("keydown", (e) => {
+// while an input method still has letters open ("bao jia" before it becomes 报价) nothing is searched;
+// the search runs when the words are picked
+$("#search").addEventListener("input", (e) => { if (e.isComposing) syncSearchUI(); else onSearch(); });
+$("#search").addEventListener("compositionend", () => onSearch());
+$("#search").addEventListener("keydown", async (e) => {
+  if (K.isIME(e)) return;
   if (e.key === "Escape") { e.preventDefault(); $("#search").value = ""; onSearch(true); $("#search").blur(); $("#rows").focus(); }
-  if (e.key === "ArrowDown" || e.key === "Enter") { e.preventDefault(); $("#rows").focus(); if (S.rows.length) selectRow(S.rows[0].id); }
+  if (e.key === "ArrowDown" || e.key === "Enter") {
+    e.preventDefault();
+    // the words typed may not have been searched yet: wait for their results, never open the list before
+    const q = $("#search").value.trim();
+    await runSearch();
+    if (S.query !== q || $("#search").value.trim() !== q) return;
+    $("#rows").focus();
+    if (S.rows.length) selectRow(S.rows[0].id);
+  }
 });
+let searchRun = null;         // the search on its way: [query, promise]
+function runSearch() {
+  clearTimeout(searchTimer);
+  const q = $("#search").value.trim();
+  if (q === S.query) return searchRun && searchRun[0] === q ? searchRun[1] : Promise.resolve();
+  S.query = q;
+  renderNav();
+  const job = [q, loadList().finally(() => { if (searchRun === job) searchRun = null; })];
+  searchRun = job;
+  markOpen();
+  return job[1];
+}
 function onSearch(now = false) {
   syncSearchUI();
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q = $("#search").value.trim();
-    if (q === S.query) return;
-    S.query = q;
-    renderNav();
-    loadList();
-  }, now ? 0 : 220);
+  searchTimer = setTimeout(runSearch, now ? 0 : 220);
 }
 
 // ---------------------------------------------------------------- reader
@@ -1105,13 +1783,16 @@ function goBack() {
 
 function showEmpty() {
   S.thread = null; S.focus = null; S.sched = null; S.multi.clear();
+  threadSeq++; schedSeq++;            // a mail or a scheduled one still on its way stays out of the empty pane
   $("#pane").innerHTML = `<div class="pane-empty"><img src="logo.png" alt=""></div>`;
   renderToolbar();
 }
 
 function renderToolbar() {
   const tools = $("#tools"), end = $("#tools-end");
+  const wasU = unreadState();
   tools.replaceChildren(); end.replaceChildren();
+  queueMicrotask(() => easeUnread(wasU));
   $("#toolbar").classList.toggle("lined", $("#pane").scrollTop > 0);
   $("#app").classList.toggle("reading", !!(S.compose || S.sched || S.thread || S.multi.size > 1));
   tools.append(iconBtn("arrow-left", t("back"), goBack, { key: "Esc", cls: "back-btn" }));
@@ -1124,7 +1805,7 @@ function renderToolbar() {
       iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
-      iconBtn("trash-2", t("discard"), () => discardCompose()));
+      iconBtn("trash-2", t("discard"), () => discardCompose(), { disabled: !!S.compose.busy }));
     return;
   }
   if (S.sched) {
@@ -1153,16 +1834,36 @@ function renderToolbar() {
   const has = !!S.thread;
   const id = S.focus || S.sel;
   const r = S.thread?.rows.find((x) => x.id === id);
-  const inTrash = r?.folder === "trash", inJunk = r?.folder === "junk";
+  // moves act on the mail selected in the list (read and star on the message opened last)
+  const mv = moveId(), rm = S.thread?.rows.find((x) => x.id === mv);
+  const inTrash = rm?.folder === "trash", inJunk = rm?.folder === "junk";
   tools.append(
     inTrash || inJunk
-      ? iconBtn("inbox", backLabel(r.folder), () => moveMail([id], "inbox"), { disabled: !has })
-      : iconBtn("archive", t("archive_it"), () => moveMail([id], "archive"), { key: "E", disabled: !has || r?.folder === "archive" }),
-    iconBtn("trash-2", t("trash_it"), () => moveMail([id], "trash"), { key: "#", disabled: !has || inTrash }),
-    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [id]), { key: "V", disabled: !has || !r }),
+      ? iconBtn("inbox", backLabel(rm.folder), () => moveMail([mv], "inbox"), { disabled: !has })
+      : iconBtn("archive", t("archive_it"), () => moveMail([mv], "archive"), { key: "E", disabled: !has || rm?.folder === "archive" }),
+    iconBtn("trash-2", t("trash_it"), () => moveMail([mv], "trash"), { key: "#", disabled: !has || inTrash }),
+    iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [mv]), { key: "V", disabled: !has || !rm }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
   );
+}
+
+// "Mark as unread" carries a dot on the envelope's corner; "Mark as read" has none. When the button turns from one
+// into the other, the new button starts as the old one looked and the dot (and the cut round it) grows or shrinks
+// away, with the envelope settling, instead of the toolbar swapping it in one frame (style.css, group C1).
+function unreadState() {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  return b ? { dot: b.classList.contains("unread-mark"), multi: S.multi.size > 1, id: S.focus || S.sel } : null;
+}
+function easeUnread(was) {
+  const b = $('#tools .icon-btn[data-key="U"]');
+  const now = b && b.classList.contains("unread-mark");
+  // only the same mail (or the same selection) changing its mark: a new mail opening just shows its button
+  if (!b || !was || was.dot === now || was.multi !== S.multi.size > 1 || (!was.multi && was.id !== (S.focus || S.sel))) return;
+  b.classList.toggle("unread-mark", was.dot);
+  void b.offsetWidth;
+  b.classList.toggle("unread-mark", now);
+  if (!REDUCED.matches) $(".i", b)?.animate([{ opacity: 0.4, transform: "scale(.86)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: "cubic-bezier(.2, .8, .2, 1)" });
 }
 
 let threadSeq = 0;
@@ -1173,7 +1874,8 @@ async function openThread(id) {
   try { th = await api("thread", { id }); } catch (e) { if (seq === threadSeq) { fail(e); showEmpty(); } return; }
   if (seq !== threadSeq) return;
   S.thread = th;
-  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto" }, th.subject || t("no_subject")));
+  hitScroll = S.query ? seq : 0;
+  const doc = el("div", { class: "doc" }, el("h1", { class: "doc-subject", dir: "auto", html: hl(th.subject || t("no_subject")) }));
   // newest on top; the reply buttons sit right under the open message, older mail below
   const rows = [...th.rows].reverse();
   const openId = rows.some((r) => r.id === id) ? id : rows[0]?.id;
@@ -1182,10 +1884,10 @@ async function openThread(id) {
     doc.append(msgNode(r, r.id === openId));
     if (r.id === openId) doc.append(el("div", { class: "doc-acts" }, act("reply", t("reply"), "reply"), act("reply-all", t("replyall"), "replyall"), act("forward", t("forward"), "forward")));
   }
-  $("#pane").replaceChildren(doc);
+  swapPane(doc);
   $("#pane").scrollTop = 0;
   renderToolbar();
-  const open = $(`.msg[data-id="${CSS.escape(id)}"]`);
+  const open = $(`.msg[data-id="${CSS.escape(id)}"]`, doc);
   if (open && openId !== rows[0].id) requestAnimationFrame(() => { $("#pane").scrollTop = Math.max(0, open.offsetTop - 70); });
 }
 
@@ -1193,13 +1895,15 @@ async function openThread(id) {
 let schedSeq = 0;
 async function openScheduled(r) {
   const seq = ++schedSeq;
+  threadSeq++;
   S.thread = null; S.focus = r.id; S.sched = r;
   const zone = TZ || SYS_TZ;
   const card = el("div", { class: "sched-card" + (r.sched_error ? " err" : "") },
     el("span", { class: "sched-ic", html: icon(r.sched_error ? "triangle-alert" : "calendar-clock") }),
     el("div", { class: "sched-text" },
       el("div", { class: "sched-when" }, t("sends_at", longTime(r.sched))),
-      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
+      el("div", { class: "sched-sub" }, r.sched_error ? t("not_sent", tr(r.sched_error))
+        : r.sched_retry ? t("sched_retry", tr(r.sched_note || ""), shortTime(r.sched_retry)) : zone.replace(/_/g, " ") + " · " + t("keep_open"))),
     el("div", { class: "sched-acts" },
       el("button", { class: "btn", onclick: () => editScheduled(r), html: icon("square-pen", "small") + esc(t("edit")) }),
       el("button", { class: "btn primary", onclick: () => sendNow(r), html: icon("send", "small") + esc(t("send_now")) })));
@@ -1230,10 +1934,10 @@ async function dontSend(r) {
   afterSchedule();
 }
 
-async function editScheduled(r) {
-  try { await api("unschedule", { id: r.id }); } catch (e) { return fail(e); }
-  afterSchedule();
+// the mail stays scheduled while it is changed: what is saved goes out at the time set
+function editScheduled(r) {
   openCompose({ mode: "draft", id: r.id });
+  toast(t("still_sched", longTime(r.sched)), { ms: 5000 });
 }
 
 async function sendNow(r) {
@@ -1325,13 +2029,26 @@ function renderBody(body, m) {
       body.append(all);
     }
   }
-  const remote = m.remote && S.showImages.has(m.id);
+  // images from the web load unless Settings > Privacy says no (then a sender can be trusted for good);
+  // mail in Junk never loads them by itself
+  const junk = m.id.slice(0, m.id.lastIndexOf(":")) === "junk", addr = (m.from?.addr || "").toLowerCase();
+  const remote = m.remote && (S.showImages.has(m.id) || (!junk && (PREFS.remote_images !== false || imgSenders().includes(addr))));
   if (m.remote && !remote) {
     body.append(el("div", { class: "imgs-bar" }, el("span", { html: icon("image", "small") }), el("span", {}, t("images_hidden")), el("span", { class: "grow" }),
-      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images"))));
+      el("button", { class: "link-btn", onclick: () => { S.showImages.add(m.id); renderBody(body, m); } }, t("show_images")),
+      junk || !addr ? null : el("button", { class: "link-btn", onclick: () => {
+        savePref({ img_senders: [...imgSenders(), addr].slice(-2000) });
+        rerenderBodies();
+      } }, t("img_always"))));
   }
   const frame = mailFrame(m.html, { plain: m.plain, remote, quote: true });
   body.append(frame.node);
+}
+
+const imgSenders = () => (Array.isArray(PREFS.img_senders) ? PREFS.img_senders : []);
+// the open mails again, after the images setting changed
+function rerenderBodies() {
+  for (const n of $$(".msg")) { const b = n.querySelector(".msg-body"); if (n._msg && b) renderBody(b, n._msg); }
 }
 
 // a mailing list's way out, beside the sender's address, as in Gmail and Apple Mail
@@ -1359,26 +2076,264 @@ function unsubLink(node, m) {
   } }, t("unsub")));
 }
 
-// a meeting invitation: when and where, and a way into the system's calendar
+// a meeting invitation: when and where, and a way into the system's calendar. A reply to one says who
+// answered and how; a new time proposed says the time. Only an invitation still to come can be added.
+// an all-day event's days are the invitation's own dates, the same wherever the reader is
+const dayTs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8)) / 1000;
+function fmtUTC(ts, opts) {
+  const key = "utc" + JSON.stringify(opts);
+  let f = FMT.get(key);
+  if (!f) {
+    try { f = new Intl.DateTimeFormat(LOCALE, { ...opts, timeZone: "UTC" }); } catch { f = new Intl.DateTimeFormat(undefined, { ...opts, timeZone: "UTC" }); }
+    FMT.set(key, f);
+  }
+  return f.format(new Date(ts * 1000));
+}
+// seconds the reader's clock is ahead of UTC at ts
+function myOffset(ts) {
+  const p = zparts(ts * 1000);
+  return (Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi) - Math.floor(ts / 60) * 60000) / 1000;
+}
+const INV_DAY = { weekday: "short", month: "short", day: "numeric" };
+// "Wed 25 Nov · 17:00–18:00 · 10:00–11:00 Amsterdam": the reader's time first, the event's own when it differs
+function inviteWhen(v) {
+  if (v.all_day) {
+    const a = fmtUTC(dayTs(v.day0), INV_DAY);
+    return (v.day1 && v.day1 !== v.day0 ? a + "–" + fmtUTC(dayTs(v.day1), INV_DAY) : a) + " · " + t("all_day");
+  }
+  const same = v.end && dayKey(v.end * 1000) === dayKey(v.start * 1000);
+  let s = fmt(v.start, INV_DAY) + " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, INV_DAY) + " " + fmt(v.end, HM)) : "");
+  const z = v.zone;
+  if (z?.unknown) s += " · " + t("inv_tz_unknown");
+  else if (z && z.offset != null && z.offset !== myOffset(v.start))
+    s += " · " + fmtUTC(v.start + z.offset, HM) + (v.end && same ? "–" + fmtUTC(v.end + z.offset, HM) : "") + " " + z.label;
+  return s;
+}
+// "Every Monday · until 30 Dec", from the invitation's RRULE
+const WD = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+function weekdayName(code) {
+  const f = new Intl.DateTimeFormat(LOCALE, { weekday: LANG.startsWith("zh") ? "short" : "long", timeZone: "UTC" });
+  return f.format(new Date(Date.UTC(2024, 0, 1 + WD.indexOf(code))));       // 1 Jan 2024 was a Monday
+}
+function listOf(xs) {
+  try { return new Intl.ListFormat(LOCALE, { type: "conjunction" }).format(xs); } catch { return xs.join(", "); }
+}
+function repeatText(v) {
+  const r = v.repeat;
+  if (!r) return "";
+  const n = r.interval || 1;
+  const local = v.all_day ? dayTs(v.day0) : v.start + (v.zone?.offset ?? myOffset(v.start));   // the event's own day
+  const startWd = WD[(new Date(local * 1000).getUTCDay() + 6) % 7];
+  let s;
+  if (r.freq === "DAILY") s = n > 1 ? t("rr_days", n) : t("rr_daily");
+  else if (r.freq === "WEEKLY") {
+    const days = (r.byday.length ? r.byday.map((d) => d.slice(-2)) : [startWd]);
+    const sorted = WD.filter((d) => days.includes(d));
+    if (n === 1 && sorted.join() === "MO,TU,WE,TH,FR") s = t("rr_weekdays");
+    else s = n > 1 ? t("rr_weeks", n, listOf(sorted.map(weekdayName))) : t("rr_weekly", listOf(sorted.map(weekdayName)));
+  } else if (r.freq === "MONTHLY") {
+    const nth = r.byday.map((d) => d.match(/^([+-]?\d)(MO|TU|WE|TH|FR|SA|SU)$/)).find(Boolean);
+    if (n > 1) s = t("rr_months", n);
+    else if (nth) s = t("rr_monthly_nth", +nth[1] < 0 ? t("rr_last") : (t("rr_ord").split(",")[+nth[1] - 1] || nth[1]), weekdayName(nth[2]));
+    else s = t("rr_monthly_day", r.bymonthday[0] || new Date(local * 1000).getUTCDate());
+  } else s = n > 1 ? t("rr_years", n) : t("rr_yearly");
+  if (r.until_day) s += " · " + t("rr_until", fmtUTC(dayTs(r.until_day), { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.until) s += " · " + t("rr_until", fmt(r.until, { month: "short", day: "numeric", year: "numeric" }));
+  else if (r.count) s += " · " + t("rr_count", r.count);
+  return s;
+}
+const REPLY_SAID = { ACCEPTED: "inv_r_accepted", DECLINED: "inv_r_declined", TENTATIVE: "inv_r_tentative", DELEGATED: "inv_r_delegated" };
+const invWho = (x) => (x && (x.addr === S.boot?.user ? t("me") : x.name || x.addr)) || "";
 function inviteCard(m) {
   const v = m.invite;
-  const day = { weekday: "short", month: "short", day: "numeric" };
-  const same = v.end && fmt(v.end, { year: "numeric", month: "numeric", day: "numeric" }) === fmt(v.start, { year: "numeric", month: "numeric", day: "numeric" });
-  let when = fmt(v.start, day);
-  if (v.all_day) when += " · " + t("all_day");
-  else when += " · " + fmt(v.start, HM) + (v.end ? "–" + (same ? fmt(v.end, HM) : fmt(v.end, day) + " " + fmt(v.end, HM)) : "");
+  const leafTs = v.all_day ? dayTs(v.day0) : v.start;
+  const leafFmt = v.all_day ? fmtUTC : fmt;
   const past = (v.end || v.start) * 1000 < Date.now();
-  return el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") },
-    el("div", { class: "inv-day" }, el("span", {}, fmt(v.start, { month: "short" })), el("b", {}, fmt(v.start, { day: "numeric" }).replace(/\D+$/, ""))),
-    el("div", { class: "inv-text" },
-      el("b", {}, v.title || t("invite")),
-      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + when),
-      v.where ? el("span", {}, v.where) : null,
-      v.organizer ? el("span", { class: "inv-org" }, t("inv_from", v.organizer)) : null),
-    v.cancelled ? null : el("button", { class: "btn", onclick: async (e) => {
+  const kind = v.method === "REPLY" ? "reply" : v.method === "COUNTER" ? "counter" : ["REFRESH", "DECLINECOUNTER"].includes(v.method) ? "note" : "invite";
+  const lines = [];
+  if (kind === "reply") {
+    lines.push(el("b", {}, t(REPLY_SAID[v.reply?.status] || "inv_r_replied", invWho(v.reply))),
+      el("span", {}, v.title || t("invite")), el("span", {}, inviteWhen(v)));
+    if (v.reply?.comment) lines.push(el("span", { class: "inv-note" }, "“" + v.reply.comment + "”"));
+  } else if (kind === "counter") {
+    lines.push(el("b", {}, t("inv_counter", invWho(v.reply))), el("span", {}, v.title || t("invite")),
+      el("span", {}, t("inv_new_time", inviteWhen(v))));
+  } else {
+    const tag = v.updated ? t("inv_updated") : v.occurrence && !v.cancelled ? t("inv_one") : "";
+    lines.push(el("b", {}, v.title || t("invite"), tag ? el("span", { class: "inv-tag" }, tag) : null),
+      el("span", {}, (v.cancelled ? t("inv_cancelled") + " · " : "") + inviteWhen(v)));
+    const rep = repeatText(v);
+    if (rep) lines.push(el("span", {}, rep));
+    if (v.was && v.was.start) lines.push(el("span", { class: "inv-was" }, t("inv_was", wasWhen(v.was))));
+    if (v.where) lines.push(el("span", {}, v.where));
+    if (v.was && "where" in v.was && v.was.where !== v.where) lines.push(el("span", { class: "inv-was" }, t("inv_was", v.was.where || "—")));
+    if (v.organizer) lines.push(el("span", { class: "inv-org" }, t("inv_from", v.organizer)));
+    const people = invitePeople(v);
+    if (people) lines.push(people);
+    if (v.about) lines.push(inviteAbout(v.about));
+  }
+  // Add for an invitation still to come; a cancelled one leaves the calendar the same way
+  const canAdd = kind === "invite" && !past && ["REQUEST", "PUBLISH", "ADD", "CANCEL"].includes(v.method);
+  const soon = v.start * 1000 - Date.now() < 15 * 60e3;
+  const side = el("div", { class: "inv-side" },
+    v.join && kind === "invite" && !past && !v.cancelled ? el("button", { class: "btn" + (soon ? " primary" : ""), html: icon("video", "small") + `<span>${esc(t("inv_join"))}</span>`, onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      const b = e.currentTarget;
+      try { await api("join", { id: m.id }); } catch (err) { fail(err); } finally { b.disabled = false; }
+    } }) : null,
+    canAdd ? el("button", { class: "btn", onclick: async (e) => {
       e.target.disabled = true;
       try { await api("open_invite", { id: m.id }); } catch (err) { fail(err); } finally { e.target.disabled = false; }
-    } }, t("add_cal")));
+    } }, t(v.cancelled ? "inv_remove_cal" : "add_cal")) : null);
+  const card = el("div", { class: "invite" + (v.cancelled ? " cancelled" : "") + (past ? " past" : "") + (kind !== "invite" ? " inv-" + kind : "") },
+    el("div", { class: "inv-day" }, el("span", {}, leafFmt(leafTs, { month: "short" })), el("b", {}, leafFmt(leafTs, { day: "numeric" }).replace(/\D+$/, ""))),
+    el("div", { class: "inv-text" }, lines),
+    side.childElementCount ? side : el("span"));
+  if (kind === "invite" && v.can_answer && !past) card.append(rsvpRow(m, card));
+  return card;
+}
+function wasWhen(w) {
+  if (w.all_day) return fmt(w.start, INV_DAY);
+  const same = w.end && dayKey(w.end * 1000) === dayKey(w.start * 1000);
+  return fmt(w.start, INV_DAY) + " · " + fmt(w.start, HM) + (w.end && same ? "–" + fmt(w.end, HM) : "");
+}
+// "You, Li Ming, Gerrick Ong +3": opens into everyone with their answer
+const PART = { ACCEPTED: ["check", "att_yes"], DECLINED: ["x", "att_no"], TENTATIVE: ["circle-help", "att_maybe"] };
+function invitePeople(v) {
+  const me = (S.boot?.user || "").toLowerCase();
+  const all = (v.attendees || []).filter((a) => a.addr !== v.organizer_addr);
+  if (!all.length || (all.length === 1 && all[0].addr === me)) return null;
+  const sorted = [...all.filter((a) => a.addr === me), ...all.filter((a) => a.addr !== me)];
+  const name = (a) => (a.addr === me ? t("inv_you") : a.name || a.addr);
+  const shown = sorted.slice(0, 3).map(name).join(", ") + (sorted.length > 3 ? " " + t("inv_more_n", sorted.length - 3) : "");
+  const list = el("div", { class: "inv-list" });
+  // drawn when it opens: the reader's own answer from here counts too
+  const fill = () => list.replaceChildren(...sorted.map((a) => {
+    const st = a.addr === me && v.answer ? v.answer : a.status;
+    const [ic, word] = PART[st] || [null, "att_none"];
+    return el("div", { class: "inv-person" + (st === "ACCEPTED" ? " yes" : "") },
+      el("span", { class: "inv-pmark", html: ic ? icon(ic, "small") : "" }), el("span", { class: "inv-pname" }, name(a)),
+      el("span", { class: "inv-pst" }, t(word)));
+  }));
+  const wrap = el("div", { class: "inv-people" });
+  const btn = el("button", { class: "inv-ptoggle", "aria-expanded": "false", html: `<span>${esc(shown)}</span>` + icon("chevron-down", "small"), onclick: () => {
+    const open = !wrap.classList.contains("open");
+    if (open) fill();
+    wrap.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", String(open));
+  } });
+  wrap.append(btn, list);
+  return wrap;
+}
+// the first lines of the description; the rest on a click
+function inviteAbout(text) {
+  const box = el("div", { class: "inv-about" }, el("div", { class: "inv-about-t" }, text));
+  if (text.length > 140 || text.split("\n").length > 2) {
+    const more = el("button", { class: "link-btn inv-more", onclick: () => {
+      const open = box.classList.toggle("open");
+      more.textContent = t(open ? "inv_less" : "inv_more");
+    } }, t("inv_more"));
+    box.append(more);
+  }
+  return box;
+}
+// Accept / Maybe / Decline. The chosen button fills in and spins while the reply waits out the undo pause and
+// goes; then the buttons fold into one line ("You accepted · Change") in the same place, so nothing below moves.
+// Nothing says "You accepted" before the server took the reply; a reply that fails brings the buttons back.
+const RSVP = [["ACCEPTED", "check", "rsvp_accept", "accept"], ["TENTATIVE", "circle-help", "rsvp_maybe", "maybe"], ["DECLINED", "x", "rsvp_decline", "decline"]];
+function rsvpRow(m, card) {
+  const v = m.invite;
+  const row = el("div", { class: "inv-rsvp" });
+  const note = el("input", { class: "inv-note-in", type: "text", maxlength: "300", placeholder: t("rsvp_note"), "aria-label": t("rsvp_note") });
+  const btns = el("div", { class: "inv-btns" });
+  const done = el("div", { class: "inv-done", "aria-live": "polite" });
+  let busy = false;
+  const mark = (ans) => {
+    card.classList.remove("ans-accepted", "ans-tentative", "ans-declined");
+    if (ans) card.classList.add("ans-" + ans.toLowerCase());
+  };
+  const show = (ans, still) => {
+    const [, ic] = RSVP.find((x) => x[0] === ans);
+    done.replaceChildren(el("span", { class: "inv-mark " + ans.toLowerCase() + (ans !== "TENTATIVE" ? " draw" : ""), html: icon(ic) }),
+      el("span", { class: "inv-said" }, t("rsvp_did_" + ans.toLowerCase())),
+      el("button", { class: "link-btn inv-change", onclick: change }, t("rsvp_change")));
+    if (still) row.classList.add("still");
+    row.classList.add("done");
+    btns.inert = true;
+    done.inert = false;
+    mark(ans);
+    if (still) requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove("still")));
+  };
+  const change = () => {
+    row.classList.remove("done");
+    btns.inert = false;
+    done.inert = true;
+    mark(null);
+    btns.querySelector(".rsvp-btn")?.focus({ preventScroll: true });
+  };
+  const settle = (b, html, shake) => {
+    busy = false;
+    btns.classList.remove("busy");
+    b.classList.remove("chosen", "press");
+    b.innerHTML = html;
+    if (shake && !REDUCED.matches) {
+      btns.classList.remove("shake");
+      void btns.offsetWidth;
+      btns.classList.add("shake");
+    }
+  };
+  const answer = async (ans, b) => {
+    if (busy) return;
+    busy = true;
+    const html = b.innerHTML;
+    btns.classList.remove("shake");
+    btns.classList.add("busy");
+    b.classList.add("chosen", "press");
+    b.querySelector(".i").outerHTML = icon("loader-circle", "small spin");
+    let r;
+    try { r = await api("rsvp", { id: m.id, answer: ans, note: note.value.trim(), subject: t("rsvp_subj_" + ans.toLowerCase()) }); }
+    catch (e) { settle(b, html, true); return fail(e); }
+    const wait = undoSeconds() * 1000;
+    let undone = false;
+    const tt = toast(t("rsvp_sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
+    for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
+    if (undone) {
+      tt.close();
+      settle(b, html, false);
+      api("delete_draft", { id: r.draft }).catch(fail);
+      return;
+    }
+    tt.node.querySelector(".toast-act")?.remove();
+    tt.node.querySelector(".toast-bar")?.remove();
+    try {
+      const res = await api("rsvp_send", { id: m.id, draft: r.draft, answer: ans });
+      tt.close();
+      const after = res.problems_after_sending || [];
+      if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
+      else toast(t("rsvp_sent"));
+      settle(b, html, false);
+      v.answer = ans;
+      note.value = "";
+      show(ans, false);
+      if (ans !== "DECLINED") api("open_invite", { id: m.id }).catch(fail);     // into the calendar with the same click
+      refreshCounts();
+      if (["sent", "drafts"].includes(S.folder)) loadList({ quiet: true });
+    } catch (e) {
+      tt.close();
+      settle(b, html, true);
+      fail(e);
+    }
+  };
+  for (const [ans, ic, label, cls] of RSVP) {
+    const b = el("button", { class: "btn rsvp-btn " + cls, html: icon(ic, "small") + `<span>${esc(t(label))}</span>` });
+    b.addEventListener("click", () => answer(ans, b));
+    btns.append(b);
+  }
+  btns.append(note);
+  done.inert = true;
+  row.append(btns, done);
+  if (v.answer) show(v.answer, true);
+  return row;
 }
 
 function attNode(a, id) {
@@ -1386,7 +2341,11 @@ function attNode(a, id) {
   const open = async () => {
     if (node.classList.contains("busy")) return;
     node.classList.add("busy");
-    try { await api("attachment", { id, i: a.i, name: a.name, action: "open" }); } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
+    try {
+      const r = await api("attachment", { id, i: a.i, name: a.name, action: "open" });
+      // a program would run if opened: it is never opened, its folder is offered instead
+      if (r.program) toast(t("att_program", r.name), { error: true, ms: 10000, action: { label: t("show_in_folder"), run: () => api("attachment", { id, i: a.i, name: a.name, action: "show" }).catch(fail) } });
+    } catch (e) { fail(e); } finally { node.classList.remove("busy"); }
   };
   const save = async (e) => {
     e.stopPropagation();
@@ -1398,10 +2357,12 @@ function attNode(a, id) {
     } catch (err) { fail(err); } finally { node.classList.remove("busy"); }
   };
   let dragged = false;
-  const node = el("div", { class: "att", role: "button", tabindex: "0", title: a.name,
-    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter") open(); } },
+  const node = el("div", { class: "att" + (a.program ? " att-program" : ""), role: "button", tabindex: "0", title: a.name,
+    onclick: () => { if (dragged) { dragged = false; return; } open(); }, onkeydown: (e) => { if (e.key === "Enter" && !K.isIME(e)) open(); } },
     el("div", fileTile(a.name)),
-    el("div", { class: "att-text" }, el("div", { class: "att-name" }, a.name), el("div", { class: "att-size" }, size(a.size))),
+    el("div", { class: "att-text" }, el("div", { class: "att-name", html: hl(a.name) }),
+      a.program ? el("div", { class: "att-size att-warn", html: icon("triangle-alert", "small") + esc(t("program_file") + " · " + size(a.size)) })
+        : el("div", { class: "att-size" }, size(a.size))),
     el("div", { class: "att-acts" }, iconBtn("download", t("download"), save)));
   // drag the card out of the window (Mac app): past a few pixels the app hands Finder the file itself
   if (MAC && S.boot.window) {
@@ -1430,7 +2391,61 @@ function attNode(a, id) {
 const FRAME_FONT = getComputedStyle(document.documentElement).getPropertyValue("--font");
 const QUOTE_SEL = ".gmail_quote, .gmail_extra, #divRplyFwdMsg, blockquote[type=cite], .rd-quote, #appendonsend, .yahoo_quoted, " +
   "#mail-editor-reference-message-container, .moz-cite-prefix, #isForwardContent, #origbody, .protonmail_quote, div[id^=reply-intro]";
-const QUOTE_TEXT = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件)|发件人[:：]|寄件者[:：]|From:\s|Von:\s|De\s?:\s|Từ:\s|在\s?.{3,80}写道[:：]|On .{5,160} wrote:)/i;
+// Quoted history in a mail without known quote markup, line by line (ragdoll.py quote_line has the same rules).
+// A separator line or "On ... wrote:" always starts it. A "From:" line starts it only as the head of a real header
+// block: a separator line just above it, or the next lines carry Sent:, or Subject: with Date:/To:/Cc:, or Date: and
+// To: under a From: with an address. A mail's own "From: Shanghai / To: Singapore" is text, not history.
+const QUOTE_SEP = /^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件|轉寄郵件|Ursprüngliche Nachricht|Message d'origine|Mensaje original)|On .{5,160} wrote:|在\s?.{3,80}写道[:：])/i;
+const QUOTE_FROM = /^\s*\*?(From|发件人|寄件者|寄件人|Von|De|Từ|差出人|보낸 사람)\*?\s*[:：]/i;
+const QUOTE_HEAD = /^\s*\*?(?:(?<sent>Sent|发送时间|發送時間|寄件日期|Gesendet|Envoyé|Enviado|送信日時|보낸 날짜|Gửi lúc)|(?<date>Date|日期|时间|時間|Datum|Fecha|Ngày|日付|날짜)|(?<to>To|收件人|收件者|An|À|Para|Đến|宛先|받는 사람)|(?<cc>Cc|抄送|副本|Kopie|Copie)|(?<subject>Subject|主题|主題|主旨|Betreff|Objet|Asunto|Chủ đề|件名|제목))\*?\s*[:：]/i;
+const QUOTE_LINE = /^\s*([-_=*]\s*){5,}$/;
+function quoteLine(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (QUOTE_SEP.test(line)) return i;
+    if (!QUOTE_FROM.test(line)) continue;
+    let above = -1;
+    for (let k = i - 1; k >= 0 && k >= i - 2; k--) if (lines[k].trim()) { above = k; break; }
+    if (above >= 0 && QUOTE_LINE.test(lines[above])) return above;
+    const keys = new Set();
+    for (const l of lines.slice(i + 1, i + 8)) {
+      if (!l.trim() || QUOTE_FROM.test(l)) break;     // the block ends at an empty line or the next block
+      const m = l.match(QUOTE_HEAD);
+      if (m) keys.add(Object.keys(m.groups).find((g) => m.groups[g] !== undefined));
+    }
+    if (keys.has("sent") || (keys.has("subject") && (keys.has("date") || keys.has("to") || keys.has("cc"))) ||
+        (keys.has("date") && keys.has("to") && line.includes("@"))) return i;
+  }
+  return -1;
+}
+// a mail's text as the lines a reader sees, each with the first node on it: a block or a <br> ends a line,
+// an <hr> is a separator line; source line breaks count only where the text keeps them (plain text, <pre>)
+const LINE_BLOCK = /^(P|DIV|TR|LI|UL|OL|DL|DT|DD|TABLE|TBODY|THEAD|H[1-6]|BLOCKQUOTE|SECTION|ARTICLE|HEADER|FOOTER|PRE|CENTER)$/;
+function textLines(root) {
+  const lines = [{ text: "", node: null }];
+  const cut = () => { const l = lines[lines.length - 1]; if (l.text || l.node) lines.push({ text: "", node: null }); };
+  const add = (text, node) => { const l = lines[lines.length - 1]; if (!l.node && text.trim()) l.node = node; l.text += text; };
+  const walk = (n, pre) => {
+    for (let c = n.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) {
+        if (!pre) { add(c.nodeValue.replace(/\s+/g, " "), c); continue; }
+        c.nodeValue.split("\n").forEach((part, k) => { if (k) cut(); add(part, c); });
+      } else if (c.nodeType === 1) {
+        const tag = c.tagName;
+        if (tag === "BR") { cut(); continue; }
+        if (tag === "HR") { cut(); add("-----", c); cut(); continue; }
+        if (/^(STYLE|SCRIPT|TITLE|HEAD|TEMPLATE)$/.test(tag)) continue;
+        const block = LINE_BLOCK.test(tag);
+        if (block) cut();
+        walk(c, pre || tag === "PRE" || c.classList.contains("rd-plain"));
+        if (block) cut();
+        else if (tag === "TD" || tag === "TH") add(" ", null);
+      }
+    }
+  };
+  walk(root, false);
+  return lines;
+}
 const frames = new Set();
 // WebKit (the Mac app) runs no listener inside a sandboxed frame that lacks allow-scripts, not even one this page
 // attaches: a click on a link or a picture did nothing there. The mail's own scripts stay off either way: the
@@ -1460,6 +2475,10 @@ function fitColumn(d) {
 
 function frameDoc(html, { plain, remote, dark }) {
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:${remote ? " https: http:" : ""}; media-src data:`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style id="rd-style">${frameCss({ plain, dark })}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+}
+// the frame's own look; a new theme changes it in place (restyleFrames), without loading the mail again
+function frameCss({ plain, dark }) {
   const fg = dark ? "#e6e6e6" : "#1d1d1f";
   let css = CJK_FACES + `:root{color-scheme:${dark ? "dark" : "light"}}html,body{background:transparent}body{margin:0;font:${textSize()}px/1.6 ${FRAME_FONT};color:${fg};overflow-wrap:anywhere;overflow-x:auto;overflow-y:hidden}
 .rd-root{max-width:44em}.rd-root.rd-wide{max-width:none}p,li{text-wrap:pretty}
@@ -1471,8 +2490,13 @@ blockquote{margin:0 0 0 4px;padding-left:10px;border-left:2px solid ${dark ? "#4
     css += `html{background:#191919!important}body{background:transparent!important}.rd-root{background:#e6e6e6;color:#1d1d1f;filter:invert(1) hue-rotate(180deg);padding:1px 0}
 .rd-root img,.rd-root video,.rd-root picture,.rd-root [background],.rd-root [style*="url("]{filter:invert(1) hue-rotate(180deg)}.rd-root a{color:#1a5fb4}`;
   }
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank"><style>${css}</style></head><body><div class="rd-root">${html}</div></body></html>`;
+  return css + hitCss(dark, plain);
 }
+
+// a searched word in a mail: a soft amber behind the text. A dark HTML mail is shown inverted (.rd-root's filter),
+// so there the light amber is given and the filter turns it into the dark one.
+const hitCss = (dark, plain) => `mark.rd-hit{color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px;-webkit-box-decoration-break:clone;box-decoration-break:clone;` +
+  `background:${dark && plain ? "rgba(240,190,70,.30)" : "rgba(250,204,80,.42)"}}`;
 
 // a picture worth enlarging: not an icon, a spacer or a tracking pixel
 const bigImg = (img) => img.naturalWidth >= 48 && img.naturalHeight >= 32;
@@ -1532,8 +2556,11 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d || !d.documentElement) return;
     if (!d.body) return;
     // the body's own height: the document's grows with the frame and would never shrink
-    const root = d.querySelector(".rd-root") || d.body;
-    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (d.defaultView?.scrollY || 0)));
+    const root = d.querySelector(".rd-root") || d.body, view = d.defaultView;
+    // a wide mail scrolls sideways: its scrollbar (shown always on Windows, and on a Mac with a mouse) takes room
+    // at the bottom, so the frame is that much taller and the last line is not under it
+    const bar = view ? Math.max(0, view.innerHeight - d.documentElement.clientHeight, d.body.offsetHeight - d.body.clientHeight) : 0;
+    const h = Math.ceil(Math.max(d.body.scrollHeight, root.getBoundingClientRect().bottom + (view?.scrollY || 0)) + bar);
     if (frame.style.height !== h + "px") frame.style.height = h + "px";
   };
   st.fit = fit;
@@ -1542,8 +2569,10 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     if (!d) return;
     minText(d);
     if (quote) collapseQuote(st);
+    if (quote) markFrame(st);
     fitColumn(d);
     fit();
+    if (quote) scrollToHit(st);
     // the frame's own observer: it goes away with the frame; one fit per frame at most
     try {
       let q = 0;
@@ -1565,7 +2594,13 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
         openCompose({ mode: "new", to: addr.split(",").filter(Boolean).map((x) => ({ name: "", addr: x.trim().toLowerCase() })) });
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
-    d.addEventListener("keydown", (e) => onKey(e));
+    // keys for reading stay in the mail (select its text, scroll it); the app's own keys still work from here
+    d.addEventListener("keydown", (e) => {
+      const k = frameKey(e);
+      if (k === "keep") return;
+      if (k) { e.preventDefault(); scrollReader(frame, k); return; }
+      onKey(e);
+    });
     const linkOf = (e) => {
       const a = e.target.closest?.("a[href]"), href = a?.getAttribute("href") || "";
       if (/^mailto:/i.test(href)) return { mail: decodeURIComponent(href.slice(7).split("?")[0]) };
@@ -1604,6 +2639,65 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
   return { node: wrap, frame, st };
 }
 
+// a key for reading pressed inside a mail: the reading pane scrolls (the frame itself is as tall as the mail)
+function scrollReader(frame, k) {
+  const pane = frame.closest(".pane") || $("#pane"), h = pane.clientHeight;
+  const by = { down: 48, up: -48, page: h * 0.85, pageup: -h * 0.85 }[k];
+  const how = REDUCED.matches || k === "down" || k === "up" ? "auto" : "smooth";
+  if (by != null) pane.scrollBy({ top: by, behavior: how });
+  else pane.scrollTo({ top: k === "home" ? 0 : pane.scrollHeight, behavior: how });
+}
+
+// the searched words in an open mail, marked for the eye only: replies and forwards are built from the server's
+// copy, never from what is on screen. Only text is touched (a mark around a run of text), never the mail's tags.
+function markFrame(st) {
+  const d = st.frame.contentDocument;
+  if (!d?.body) return;
+  for (const m of d.querySelectorAll("mark.rd-hit")) { const p = m.parentNode; m.replaceWith(...m.childNodes); p.normalize(); }
+  st.hits = [];
+  const re = hitRe();
+  if (!re) return;
+  const root = d.querySelector(".rd-root") || d.body;
+  const skip = "style,script,title,textarea,noscript,mark";
+  const tw = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let n = tw.nextNode(); n && nodes.length < 20000; n = tw.nextNode()) if (n.nodeValue.trim() && !n.parentElement?.closest(skip)) nodes.push(n);
+  for (const n of nodes) {
+    const parts = splitHits(n.nodeValue, re);
+    if (parts.length < 2) continue;
+    const frag = d.createDocumentFragment();
+    for (const [a, m] of parts) {
+      if (a) frag.append(a);
+      if (!m) continue;
+      const k = d.createElement("mark");
+      k.className = "rd-hit"; k.textContent = m;
+      frag.append(k); st.hits.push(k);
+    }
+    n.replaceWith(frag);
+    if (st.hits.length > 2000) break;
+  }
+  // the only match is in the quoted older mail: the quote opens
+  if (st.hits.length && st.toggle && !st.toggle.classList.contains("open") && st.hits.every((h) => st.hidden.some((x) => x.contains(h)))) st.toggle.click();
+}
+// the first match comes into view once, when a mail is opened from a search
+let hitScroll = 0;
+function scrollToHit(st) {
+  if (!hitScroll || hitScroll !== threadSeq || !st.hits?.length || !st.frame.isConnected) return;
+  hitScroll = 0;
+  requestAnimationFrame(() => {
+    const pane = st.frame.closest(".pane");
+    const h = st.hits.find((x) => x.getClientRects().length);
+    if (!pane || !h) return;
+    const p = pane.getBoundingClientRect(), y = st.frame.getBoundingClientRect().top + h.getBoundingClientRect().top;
+    if (y < p.top + 60 || y > p.bottom - 60) pane.scrollTo({ top: Math.max(0, pane.scrollTop + y - p.top - p.height / 3), behavior: REDUCED.matches ? "auto" : "smooth" });
+  });
+}
+// the search changed: the marks in what is open follow it, and go when the search is cleared
+function markOpen() {
+  for (const st of frames) if (st.quote && st.wrap.isConnected) { markFrame(st); st.fit?.(); }
+  for (const n of $$("#pane .doc-subject, #pane .att-name")) n.innerHTML = hl(n.textContent);
+}
+
 // where a link goes, shown at the foot of the reader while the pointer is on it
 let linkTipEl = null;
 function linkTip(frame, text) {
@@ -1631,18 +2725,27 @@ function refreshFrames() {
     st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() });
   }
 }
+// a new theme: every open mail takes the new colours where it is (no blank frame, the folded quote stays folded);
+// a frame not loaded yet is loaded again
+function restyleFrames() {
+  for (const st of frames) {
+    if (!st.wrap.isConnected) { frames.delete(st); continue; }
+    const s = st.frame.contentDocument?.getElementById("rd-style");
+    if (s) s.textContent = frameCss({ plain: st.plain, dark: isDark() });
+    else { st.toggle?.remove(); st.toggle = null; st.hidden = []; st.frame.srcdoc = frameDoc(st.html, { plain: st.plain, remote: st.remote, dark: isDark() }); }
+  }
+}
 
 function collapseQuote(st) {
   const d = st.frame.contentDocument, root = d.querySelector(".rd-root") || d.body;
   let q = root.querySelector(QUOTE_SEL);
   if (!q) {
-    const w = d.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let n = w.nextNode(); n; n = w.nextNode()) {
-      if (QUOTE_TEXT.test(n.nodeValue)) {
-        q = n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
-        break;
-      }
-    }
+    const lines = textLines(root), at = quoteLine(lines.map((l) => l.text));
+    const n = at >= 0 && lines.slice(at).find((l) => l.node)?.node;
+    if (n) q = n.nodeType === 1 && n.tagName === "HR" ? n : n.parentElement.closest("div,p,table,blockquote,tr,section,font,span") || n.parentElement;
+    // the box the header block opens (Outlook's line above it) goes with it
+    const first = (x) => { let p = x.previousSibling; while (p && !p.textContent.trim() && !p.querySelector?.("img")) p = p.previousSibling; return !p; };
+    while (q && q.parentElement && q.parentElement !== root && first(q)) q = q.parentElement;
   }
   if (!q || q === root) return;
   const r = d.createRange();
@@ -1670,30 +2773,24 @@ function collapseQuote(st) {
 
 // ---------------------------------------------------------------- compose
 
-const ADDR_RE = /^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$/;
-function parseAddrs(text) {
-  const out = [];
-  for (const part of text.split(/[,;\n]+/)) {
-    const s = part.trim();
-    if (!s) continue;
-    const m = s.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
-    if (m) out.push({ name: m[1].trim(), addr: m[2].trim().toLowerCase() });
-    else out.push({ name: "", addr: s.replace(/^mailto:/i, "").toLowerCase() });
-  }
-  return out;
-}
+// addresses: commas in quoted names and the full-width ，； of a Chinese input method (compose-kit.js)
+const { ADDR_RE, parseAddrs } = K;
 
 async function openCompose(opts) {
   if (S.compose && !(await leaveCompose())) return;
+  const seq = ++threadSeq;            // a mail still loading does not replace the compose view, nor this a later choice
   let c;
   try {
     c = await api("compose", { mode: opts.mode, id: opts.id });
   } catch (e) { return fail(e); }
+  if (seq !== threadSeq) return;
   if (opts.to) c.to = [...opts.to, ...c.to];
   if (opts.subject) c.subject = opts.subject;
   if (opts.files) c.pending = opts.files;
   c.showCc = c.cc.length > 0; c.showBcc = c.bcc.length > 0;
   c.dirty = false; c.status = ""; c.busy = false;
+  // a draft made elsewhere carries the mail's own HTML: only plain content goes into the editor
+  c.html = cleanHTML(c.html || "");
   // a draft we wrote before comes back inside our own font wrapper: take it off
   if (c.html) {
     const d = el("div", { html: c.html });
@@ -1713,25 +2810,32 @@ function renderCompose() {
   if (c.showBcc) box.append(addrField("bcc", t("bcc")));
   const subj = el("input", { class: "subject-input", type: "text", placeholder: t("subject"), value: c.subject, spellcheck: "true" });
   subj.addEventListener("input", () => { c.subject = subj.value; touched(); });
-  subj.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); ed.focus(); } });
+  subj.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); ed.focus(); } });
   const ed = el("div", { class: "editor", contenteditable: "true", "data-ph": t("write"), spellcheck: "true",
-    style: `font-family:${mailFont()};font-size:${mailSize()}px` });
-  ed.innerHTML = c.html || "";
+    style: `font-family:${mailFont()};font-size:${mailSize()}px;--p-gap:${K.paraGap(mailSize())}px` });
+  ed.innerHTML = cleanHTML(c.html || "");
   ed.addEventListener("input", () => { c.html = ed.innerHTML; touched(); fmtSync(); });
   ed.addEventListener("paste", onPaste);
+  // Return starts a paragraph (<p>, a small gap below the one before), Shift+Return a line inside it (<br>)
+  ed.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "p"));
   ed.addEventListener("keydown", (e) => {
-    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    if (K.isIME(e)) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      document.execCommand("defaultParagraphSeparator", false, "p");
+      // a first line typed straight into the box has no paragraph of its own yet: give it one, so it
+      // keeps the same gap below it (an editing command, so Undo still works)
+      if (blockOf(getSelection().anchorNode, ed) === ed) document.execCommand("formatBlock", false, "p");
+      return;
+    }
+    const mod = isMod(e), k = e.key.toLowerCase();
     if (!mod || e.altKey) return;
     if (k === "k") { e.preventDefault(); e.stopPropagation(); linkSheet(); }
     else if (k === "b" || k === "i" || k === "u") { e.preventDefault(); edCmd({ b: "bold", i: "italic", u: "underline" }[k]); }
-    else if (e.shiftKey && (k === "7" || k === "8")) { e.preventDefault(); edCmd(k === "7" ? "insertOrderedList" : "insertUnorderedList"); }
+    // with Shift held e.key is "&" or "*" on many layouts: the key's place says which it is
+    else if (e.shiftKey && (e.code === "Digit7" || e.code === "Digit8")) { e.preventDefault(); edCmd(e.code === "Digit7" ? "insertOrderedList" : "insertUnorderedList"); }
   });
   box.append(subj, fmtBar(), ed);
-  if (c.signature && c.use_signature) {
-    const sig = el("div", { class: "sig" });
-    sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), () => { c.use_signature = false; touched(); sig.remove(); }, { cls: "tiny" }));
-    box.append(sig);
-  }
+  if (c.signature && c.use_signature) box.append(sigBox(c));
   if (c.quote) {
     const qbox = el("div", { hidden: true });
     const tog = el("button", { class: "quote-toggle", "data-tip": t("show_quote"), "aria-label": t("show_quote") }, "•••");
@@ -1753,7 +2857,29 @@ function renderCompose() {
   });
 }
 
+// the signature under the text: a click on it picks another one (when there are more), × leaves it out
+const sigName = (x, k) => x.name || t("sig_n", k + 1);
+function sigBox(c) {
+  const many = (c.signatures || []).filter((x) => x.html.trim()).length > 1;
+  const sig = el("div", { class: "sig" + (many ? " pick" : ""), "data-tip": many ? t("sig_change") : null });
+  sig.append(mailFrame(c.signature, { sig: true }).node, iconBtn("x", t("remove_sig"), (e) => { e.stopPropagation(); c.use_signature = false; touched(c); sig.remove(); }, { cls: "tiny" }));
+  if (many) sig.addEventListener("click", () => menu(sig, c.signatures.map((x, k) => ({ icon: "square-pen", label: sigName(x, k), on: x.id === c.sig_id,
+    run: () => {
+      if (x.id === c.sig_id) return;
+      c.sig_id = x.id; c.signature = x.html; touched(c);
+      sig.replaceWith(sigBox(c));
+    } })).filter((it, k) => c.signatures[k].html.trim())));
+  return sig;
+}
+
 // ---------------------------------------------------------------- formatting
+
+// the paragraph-like box a node is in, or the editor itself when it sits straight in it
+const BLOCKS = /^(P|DIV|LI|BLOCKQUOTE|H[1-6]|PRE|TD|TH|UL|OL|TABLE)$/;
+function blockOf(node, ed) {
+  for (let n = node; n && n !== ed; n = n.parentNode) if (n.nodeType === 1 && BLOCKS.test(n.tagName)) return n;
+  return ed;
+}
 
 const fmtBarOn = () => PREFS.fmt_bar !== false;
 function toggleFmtBar() {
@@ -1795,12 +2921,10 @@ function edCmd(cmd, val = null) {
 }
 function fmtSize(px) {
   if (!edFocus()) return;
+  // the browser's own sizes 1-7, left as they are so Undo works and a bare caret gets the size it shows;
+  // style.css draws them at K.FONT_PX and outHTML sends those pixels
   document.execCommand("styleWithCSS", false, false);
-  document.execCommand("fontSize", false, "7");
-  for (const f of $$(".compose .editor font[size='7']")) {
-    const sp = el("span", { style: `font-size:${px}px` });
-    sp.append(...f.childNodes); f.replaceWith(sp);
-  }
+  document.execCommand("fontSize", false, K.sizeKey(px));
   edChanged();
 }
 const FMT_SIZES = [["12", "size_small"], ["14", "size_normal"], ["18", "size_large"], ["24", "size_huge"]];
@@ -1854,7 +2978,7 @@ function linkSheet() {
     else document.execCommand("insertHTML", false, `<a href="${esc(href)}">${esc(words)}</a>`);
     edChanged();
   };
-  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  for (const i of [url, label]) i.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   sheet(el("div", {}, el("h2", {}, t("link")), el("div", { class: "form" },
     el("label", {}, el("span", { class: "lab" }, t("link_url")), url),
     el("label", {}, el("span", { class: "lab" }, t("link")), label)),
@@ -1863,13 +2987,21 @@ function linkSheet() {
   requestAnimationFrame(() => url.focus());
 }
 
-function touched() {
-  const c = S.compose;
+// a change to the compose: it counts edits, so a save knows whether more came in while it ran
+function touched(c = S.compose) {
   if (!c) return;
   c.dirty = true;
-  setStatus("");
+  c.edits = (c.edits || 0) + 1;
+  if (S.compose === c) setStatus("");
   clearTimeout(c.autosave);
-  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty) saveDraft(c).catch(() => {}); }, 15000);
+  c.autosave = setTimeout(() => { if (S.compose === c && c.dirty && !c.busy) saveDraft(c, { auto: true }).catch(() => {}); }, 15000);
+}
+// while Send checks and saves the mail, the compose can't change under it
+function lockCompose(c, on) {
+  c.busy = on;
+  const box = $(".compose");
+  if (box && S.compose === c) box.inert = on;
+  renderToolbar();
 }
 function setStatus(s) {
   if (S.compose) S.compose.status = s;
@@ -1895,12 +3027,15 @@ function addrField(key, label, first = false) {
     if (sug) chips.append(sug);
   };
   const closeSug = () => { sug?.remove(); sug = null; sugItems = []; };
-  const add = (list) => {
+  const add = (list, focus = true) => {
     const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
     for (const p of list) if (p.addr && !have.has(p.addr)) { c[key].push(p); have.add(p.addr); }
-    input.value = ""; closeSug(); draw(); touched(); input.focus();
+    input.value = ""; closeSug(); draw(); touched(); if (focus) input.focus();
   };
-  const commit = () => { const v = input.value.trim(); if (v) add(parseAddrs(v)); };
+  const commit = (focus = true) => { const v = input.value.trim(); if (v) add(parseAddrs(v), focus); };
+  // Send turns what is still typed into chips, shown (composeState)
+  input.rdCommit = () => commit(false);
+  input.dataset.k = key;
   const showSug = async () => {
     const q = input.value.trim();
     if (!q) return closeSug();
@@ -1917,8 +3052,14 @@ function addrField(key, label, first = false) {
       el("span", { class: "n" }, p.name || p.addr), p.name ? el("span", { class: "a" }, p.addr) : null)));
     chips.append(sug);
   };
-  input.addEventListener("input", () => { clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); if (/[,;]\s*$/.test(input.value)) commit(); });
+  // typing counts as a change (Esc saves it); a separator after a whole address makes the chip
+  input.addEventListener("input", (e) => {
+    clearTimeout(sugTimer); sugTimer = setTimeout(showSug, 120); touched();
+    if (!e.isComposing && K.commitReady(input.value)) commit();
+  });
+  input.addEventListener("compositionend", () => { if (K.commitReady(input.value)) commit(); });
   input.addEventListener("keydown", (e) => {
+    if (K.isIME(e)) return;
     if (sug && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       sugOn = (sugOn + (e.key === "ArrowDown" ? 1 : -1) + sugItems.length) % sugItems.length;
@@ -1932,7 +3073,7 @@ function addrField(key, label, first = false) {
   });
   input.addEventListener("paste", (e) => {
     const txt = e.clipboardData.getData("text");
-    if (/[,;\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
+    if (/[,;，；\n]/.test(txt) || /@/.test(txt)) { e.preventDefault(); add(parseAddrs(input.value + txt)); }
   });
   input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) { commit(); closeSug(); } }, 150));
   chips.addEventListener("mousedown", (e) => { if (e.target === chips) { e.preventDefault(); input.focus(); } });
@@ -1986,7 +3127,7 @@ async function uploadFiles(files) {
       const j = await r.json();
       if (!j.ok) throw new Error(tr(j.error) || t("error"));
       Object.assign(a, j.data, { uploading: false });
-      touched();
+      if (S.compose === c) touched(c); else c.dirty = true;
     } catch (e) {
       c.atts = c.atts.filter((x) => x !== a);
       fail(e);
@@ -1995,73 +3136,101 @@ async function uploadFiles(files) {
   }
 }
 
-function onPaste(e) {
+const readURL = (f) => new Promise((ok) => { const rd = new FileReader(); rd.onload = () => ok(rd.result); rd.onerror = () => ok(null); rd.readAsDataURL(f); });
+const LOCAL_SRC = /^\s*(file|blob|webkit-fake-url):/i;
+async function onPaste(e) {
   const dt = e.clipboardData;
+  // what the clipboard holds is read now: it is gone once this event ends
   const imgs = [...dt.files].filter((f) => f.type.startsWith("image/"));
-  if (imgs.length) {
-    e.preventDefault();
-    for (const f of imgs) {
-      const rd = new FileReader();
-      rd.onload = () => { document.execCommand("insertHTML", false, `<img src="${rd.result}" alt="">`); };
-      rd.readAsDataURL(f);
-    }
-    return;
-  }
-  const html = dt.getData("text/html");
+  const html = dt.getData("text/html"), plain = dt.getData("text/plain");
+  if (!html && !imgs.length) return;
+  e.preventDefault();
+  // Excel and Word put a picture of the table on the clipboard as well: the table itself is what is meant
   if (html) {
-    e.preventDefault();
-    document.execCommand("insertHTML", false, cleanHTML(html));
-  }
-}
-
-function cleanHTML(html) {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("script,style,meta,link,title,iframe,object,embed,form,input,button,select,textarea,svg,video,audio").forEach((n) => n.remove());
-  const keep = { href: 1, src: 1, alt: 1, colspan: 1, rowspan: 1, width: 1, height: 1, style: 1, align: 1, valign: 1 };
-  for (const n of doc.body.querySelectorAll("*")) {
-    for (const a of [...n.attributes]) {
-      const k = a.name.toLowerCase();
-      if (!keep[k]) n.removeAttribute(a.name);
-      else if ((k === "href" || k === "src") && /^\s*(javascript|vbscript|data:text)/i.test(a.value)) n.removeAttribute(a.name);
-      else if (k === "style") n.setAttribute("style", a.value.replace(/(position|z-index|behavior|expression)\s*:[^;]*;?/gi, ""));
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    // a picture the HTML points to on this computer can't go out with the mail: the clipboard's own
+    // pictures take those places in turn; any left over are dropped
+    const local = [...doc.querySelectorAll("img")].filter((i) => LOCAL_SRC.test(i.getAttribute("src") || ""));
+    const data = await Promise.all(imgs.slice(0, local.length).map(readURL));
+    local.forEach((img, k) => { if (data[k]) img.setAttribute("src", data[k]); });
+    // white text from a dark page or app would not show on the white mail
+    const body = K.sanitizeBody(doc.body, { paste: true });
+    if (body.textContent.trim() || body.querySelector("img, table, hr")) {
+      document.execCommand("insertHTML", false, body.innerHTML);
+      return;
     }
+    if (!imgs.length) { if (plain) document.execCommand("insertText", false, plain); return; }
   }
-  return doc.body.innerHTML;
+  for (const src of await Promise.all(imgs.map(readURL))) {
+    if (src && K.safeURL(src, "src")) document.execCommand("insertHTML", false, `<img src="${esc(src)}" alt="">`);
+  }
 }
 
-function composeState() {
+// HTML for the editor, which sits in the app's own window: an allow-list of plain content (compose-kit.js).
+// DOMParser's document runs nothing and loads nothing while it is cleaned.
+function cleanHTML(html, opts = {}) {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return K.sanitizeBody(doc.body, opts).innerHTML;
+}
+
+function composeState(opts = {}) {
   const c = S.compose;
   const ed = $(".compose .editor");
   if (ed) c.html = ed.innerHTML;
-  const inputs = $$(".compose .chips input");
-  // an address still being typed counts
-  ["to", "cc", "bcc"].filter((k) => k === "to" || (k === "cc" ? c.showCc : c.showBcc)).forEach((k, idx) => {
-    const v = inputs[idx]?.value.trim();
-    if (v) { c[k].push(...parseAddrs(v)); inputs[idx].value = ""; }
-  });
+  // an address still being typed counts. Send turns it into a chip; a save only reads it and leaves the
+  // box as it is (an autosave in the middle of typing takes whole addresses only)
+  const typed = { to: [], cc: [], bcc: [] };
+  for (const inp of $$(".compose .chips input")) {
+    const k = inp.dataset.k;
+    if (!typed[k] || !inp.value.trim()) continue;
+    if (opts.commit) inp.rdCommit?.();
+    else typed[k] = parseAddrs(inp.value).filter((p) => !opts.auto || ADDR_RE.test(p.addr));
+  }
+  const have = new Set([...c.to, ...c.cc, ...c.bcc].map((x) => x.addr));
+  const list = (k) => [...c[k], ...typed[k].filter((p) => !have.has(p.addr))];
   return {
-    mode: c.mode, orig: c.orig, replace: c.replace, to: c.to, cc: c.cc, bcc: c.bcc, subject: c.subject,
+    mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
-    use_signature: c.use_signature, irt: c.irt, refs: c.refs,
+    use_signature: c.use_signature, sig_id: c.sig_id, irt: c.irt, refs: c.refs, fwd: c.fwd,
   };
 }
 
 // Outlook shows unstyled mail in Times: always say which font the body is in
 function wrapBody(html) {
-  if (!html || !html.replace(/<br\s*\/?>|<\/?div>|&nbsp;|\s/gi, "")) return html || "";
-  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${html}</div>`;
+  if (!html || !html.replace(/<br\s*\/?>|<\/?(div|p)>|&nbsp;|\s/gi, "")) return html || "";
+  return `<div data-rd-body="1" style="font-family:${mailFont().replace(/"/g, "'")};font-size:${mailSize()}px">${outHTML(html)}</div>`;
+}
+// the editor's HTML as it goes out: the gap under each paragraph is written on it (the editor shows it
+// with style.css), so Outlook, Gmail and phones show it too
+function outHTML(html) {
+  const box = document.createElement("template");
+  box.innerHTML = html;
+  const gap = `margin:0 0 ${K.paraGap(mailSize())}px`;
+  for (const p of box.content.querySelectorAll("p")) {
+    const st = p.getAttribute("style") || "";
+    if (!/(^|;)\s*margin(-bottom)?\s*:/i.test(st)) p.setAttribute("style", st ? `${gap};${st}` : gap);
+  }
+  for (const f of box.content.querySelectorAll("font[size]")) {
+    const px = K.FONT_PX[f.getAttribute("size").trim()];
+    if (px) { f.style.fontSize = px + "px"; f.removeAttribute("size"); }
+  }
+  return box.innerHTML;
 }
 
 let saving = Promise.resolve();
-function saveDraft(c = S.compose) {
+function saveDraft(c = S.compose, opts = {}) {
   const job = saving.then(async () => {
-    if (!c) return;
-    const st = S.compose === c ? composeState() : c.lastState;
+    if (!c || c.busy) return;         // Send has it: a second copy would stay in Drafts
+    const edits = c.edits;
+    const st = S.compose === c ? composeState(opts) : c.lastState;
     if (!st) return;
     if (S.compose === c) setStatus(t("saving"));
     try {
       const r = await api("save_draft", st);
-      c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
+      c.replace = r.id; c.lastState = { ...st, replace: r.id };
+      // words typed while it saved are not in this copy: they still need saving
+      if (c.edits === edits) c.dirty = false;
       if (S.compose === c) setStatus(t("saved"));
       refreshCounts();
     } catch (e) {
@@ -2079,6 +3248,8 @@ async function leaveCompose() {
   if (!c) return true;
   clearTimeout(c.autosave);
   if (c.busy) return false;
+  // a draft saved now would go without the file still uploading
+  if (c.atts.some((a) => a.uploading)) { toast(t("att_wait"), { id: "att-wait" }); return false; }
   if (c.dirty) {
     try { await saveDraft(c); toast(t("draft_saved")); }
     catch (e) { fail(e); return false; }
@@ -2098,8 +3269,9 @@ async function closeCompose() {
 
 async function discardCompose() {
   const c = S.compose;
-  if (!c) return;
+  if (!c || c.busy) return;           // Send is checking it: Discard waits for that to end
   clearTimeout(c.autosave);
+  c.busy = true;
   await saving;
   S.compose = null;
   if (c.replace) {
@@ -2113,19 +3285,20 @@ async function discardCompose() {
 async function sendCompose(force = false, at = null) {
   const c = S.compose;
   if (!c || c.busy) return;
+  if (c.atts.some((a) => a.uploading)) return toast(t("att_wait"), { id: "att-wait" });
   clearTimeout(c.autosave);
-  if (c.atts.some((a) => a.uploading)) return toast(t("uploading"));
+  // busy before the first wait: a second Send, Discard or Cmd+S in the meantime does nothing
+  lockCompose(c, true);
   await saving;
-  const st = composeState();
-  c.busy = true; renderToolbar();
+  const st = composeState({ commit: true });
   let r;
   try { r = await api("prepare_send", { ...st, force }); }
-  catch (e) { c.busy = false; renderToolbar(); return fail(e); }
-  c.busy = false;
+  catch (e) { lockCompose(c, false); return fail(e); }
   if (r.problems && r.problems.length) {
-    renderToolbar();
+    lockCompose(c, false);
     return problemsSheet(r.problems, at);
   }
+  c.busy = false;
   c.replace = r.id; c.dirty = false; c.lastState = { ...st, replace: r.id };
   const reopen = async () => { if (S.compose && !(await leaveCompose())) return; S.compose = c; renderCompose(); };
   // out of the way while it waits
@@ -2145,29 +3318,74 @@ async function sendCompose(force = false, at = null) {
 }
 
 // the pause after Send: Undo stops the mail before it leaves; after that it can't be called back
+// The backend holds the mail through the pause as well (api send with a delay), so closing the window or
+// the page does not drop it: the window asks first (ragdollClosing), a page that is gone still sends.
+const HELD = new Map();         // id -> the mail in its pause: { undo, now, quiet, ok, done }
 async function sendWithUndo(id, onUndo) {
   const wait = undoSeconds() * 1000;
-  let undone = false;
-  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
-  for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
-  if (undone) { tt.close(); return onUndo?.(); }
-  tt.node.querySelector(".toast-act")?.remove();
-  tt.node.querySelector(".toast-bar")?.remove();
+  if (wait) {
+    try { await api("send", { id, delay: wait / 1000 }); }
+    catch (e) { fail(e); return onUndo?.(); }
+  }
+  let undone = false, rush = false, finish;
+  const held = { undo: () => { undone = true; }, now: () => { rush = true; }, quiet: false, ok: false, done: new Promise((r) => { finish = r; }) };
+  HELD.set(id, held);
+  const tt = toast(t("sending"), wait ? { action: { label: t("undo"), run: held.undo }, ms: 0, bar: wait } : { ms: 0 });
+  const end = Date.now() + wait;
   try {
-    const res = await api("send", { id });
+    while (wait && Date.now() < end && !undone && !rush) await sleep(100);
+    if (undone) {
+      const r = await api("send_cancel", { id }).catch(() => ({ cancelled: false }));
+      // too late: it had started to go out, so it is waited for below like any other send
+      if (r.cancelled) { tt.close(); if (!held.quiet) onUndo?.(); return; }
+    }
+    tt.node.querySelector(".toast-act")?.remove();
+    tt.node.querySelector(".toast-bar")?.remove();
+    await sendHeld(id, tt, onUndo, held, wait);
+  } finally { HELD.delete(id); finish(); }
+}
+async function sendHeld(id, tt, onUndo, held, wait) {
+  try {
+    const res = await api(wait ? "send_wait" : "send", { id });
+    if (res.cancelled) { tt.close(); return; }
+    held.ok = true;
     tt.close();
     const after = res.problems_after_sending || [];
     if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
     else toast(t("sent_ok"));
     refreshCounts();
     if (["sent", "drafts", "scheduled"].includes(S.folder)) loadList({ quiet: true });
-    if (S.thread) openThread(S.focus || S.sel);
+    if (S.thread && !S.compose) openThread(S.focus || S.sel);
   } catch (e) {
     tt.close();
     fail(e);
     onUndo?.();
   }
 }
+// the window is being closed while a mail waits out its pause (ragdoll_app.py window_closing)
+window.ragdollClosing = () => {
+  if (!HELD.size) return api("quit_window").catch(() => {});
+  api("close_asked", { open: true }).catch(() => {});
+  let leaving = false;
+  const away = () => { if (!leaving) api("close_asked", { open: false }).catch(() => {}); };
+  const go = async (send) => {
+    leaving = true;
+    closeLayer();
+    const all = [...HELD.values()];
+    for (const h of all) { h.quiet = !send; if (send) h.now(); else h.undo(); }
+    await Promise.all(all.map((h) => h.done));
+    // a mail that could not go out stays open in the window, with its reason
+    if (send && all.some((h) => !h.ok)) return api("close_asked", { open: false }).catch(() => {});
+    api("quit_window").catch(() => {});
+  };
+  const box = sheet(el("div", {},
+    el("h2", { html: icon("send") + esc(t("closing_sending")) }),
+    el("div", { class: "sheet-acts" },
+      el("button", { class: "btn", onclick: () => { closeLayer(); away(); } }, t("keep_window")),
+      el("button", { class: "btn", onclick: () => go(false) }, t("cancel_sending")),
+      el("button", { class: "btn primary", onclick: () => go(true) }, t("send_now")))), { onclose: away });
+  box.querySelector(".btn.primary").focus();
+};
 
 function problemsSheet(problems, at = null) {
   const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
@@ -2219,7 +3437,7 @@ function pickTimeSheet() {
     el("div", { class: "sheet-acts" },
       el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
       el("button", { class: "btn primary", onclick: go }, t("schedule")))));
-  box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
   date.focus();
 }
 
@@ -2245,11 +3463,13 @@ window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); })
 
 // ---------------------------------------------------------------- settings
 
-async function openSettings() {
+// opts (all optional): tab, the page to open on; focus, the account field to put the cursor in
+async function openSettings(opts) {
+  opts = opts && !(opts instanceof Event) ? opts : {};
   let s;
   try { s = await api("settings"); } catch (e) { return fail(e); }
-  const v = { ...s, password: "", theme: S.theme };
-  let tab = "account";
+  const v = { ...s, password: "", theme: S.theme, signatures: (s.signatures || []).map((x) => ({ ...x })) };
+  let tab = opts.tab || "account", sigOn = 0;
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
@@ -2257,7 +3477,7 @@ async function openSettings() {
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
   const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
-    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["region", "languages", "region"],
+    ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["privacy", "shield", "privacy"], ["region", "languages", "region"],
     ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
     nav.replaceChildren(el("h3", {}, t("settings")));
@@ -2269,7 +3489,8 @@ async function openSettings() {
   let sigEd = null;
   const grab = () => {
     for (const inp of $$("input[data-k]", body)) v[inp.dataset.k] = inp.value;
-    if (sigEd) v.signature = sigEd.innerHTML;
+    const cur = v.signatures[sigOn];
+    if (sigEd && cur) { cur.html = sigEd.innerHTML; cur.name = $("input[data-sig-name]", body)?.value.trim() || ""; }
   };
   const draw = () => {
     body.replaceChildren();
@@ -2291,30 +3512,66 @@ async function openSettings() {
         finally { testBtn.disabled = false; }
       } }, t("test"));
       f.append(el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, testBtn, res));
+      f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "signature") {
-      sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
-      sigEd.innerHTML = v.signature || "";
-      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h)); } });
-      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, sigEd));
-    } else if (tab === "sending") {
-      const seg = el("div", { class: "seg" });
-      for (const n of UNDO_CHOICES) {
-        seg.append(el("button", { class: undoSeconds() === n ? "on" : "", onclick: () => { setPref({ undo: n }); draw(); } }, n ? t("seconds", n) : t("undo_off")));
+      // a list of signatures, each with a name; one is the default for new mail, one for replies
+      const sigs = v.signatures;
+      sigOn = Math.min(sigOn, Math.max(0, sigs.length - 1));
+      const list = el("div", { class: "seg sig-list" });
+      sigs.forEach((x, k) => list.append(el("button", { class: k === sigOn ? "on" : "", onclick: () => { grab(); sigOn = k; draw(); } }, sigName(x, k))));
+      const add = iconBtn("plus", t("sig_add"), () => {
+        grab();
+        sigs.push({ id: "s" + Date.now().toString(36), name: "", html: "" });
+        sigOn = sigs.length - 1;
+        if (sigs.length === 1) { v.sig_new = v.sig_new || sigs[0].id; v.sig_reply = v.sig_reply || sigs[0].id; }
+        draw();
+        $("input[data-sig-name]", body)?.focus();
+      }, { cls: "tiny" });
+      const head = el("div", { class: "sig-head" }, list, add);
+      const pick = (k) => selectBox([["", t("sig_none")], ...sigs.map((x, n) => [x.id, sigName(x, n)])], v[k] || "", (val) => { grab(); v[k] = val; draw(); });
+      const defaults = el("div", { class: "two-even" },
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_new")), pick("sig_new")),
+        el("label", {}, el("span", { class: "lab" }, t("sig_for_reply")), pick("sig_reply")));
+      if (!sigs.length) {
+        body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head));
+        return;
       }
+      const cur = sigs[sigOn];
+      const name = el("input", { type: "text", "data-sig-name": "", value: cur.name, placeholder: sigName({}, sigOn), maxlength: "60", spellcheck: "false", autocomplete: "off" });
+      name.addEventListener("input", () => { const b = list.children[sigOn]; if (b) b.textContent = name.value.trim() || sigName({}, sigOn); });
+      const del = el("button", { class: "btn", onclick: () => {
+        sigs.splice(sigOn, 1);
+        for (const k of ["sig_new", "sig_reply"]) if (v[k] === cur.id) v[k] = "";
+        sigOn = Math.max(0, sigOn - 1);
+        sigEd = null;
+        draw();
+      }, html: icon("trash-2", "small") + esc(t("sig_delete")) });
+      sigEd = el("div", { class: "sig-edit", contenteditable: "true" });
+      sigEd.innerHTML = cleanHTML(cur.html || "");
+      sigEd.addEventListener("focus", () => document.execCommand("defaultParagraphSeparator", false, "div"));
+      sigEd.addEventListener("paste", (e) => { const h = e.clipboardData.getData("text/html"); if (h) { e.preventDefault(); document.execCommand("insertHTML", false, cleanHTML(h, { paste: true })); } });
+      body.append(el("h2", {}, t("signature")), el("div", { class: "form" }, head,
+        el("label", {}, el("span", { class: "lab" }, t("sig_name")), name), sigEd,
+        el("div", {}, del), defaults));
+    } else if (tab === "sending") {
+      const seg = segmented(UNDO_CHOICES.map((n) => [n, n ? t("seconds", n) : t("undo_off")]), undoSeconds(), (n) => setPref({ undo: n }));
       const font = selectBox(FONTS.map(([k]) => [k, fontLabel(k)]), PREFS.font || "system", (val) => { setPref({ font: val }); draw(); });
-      const sizes = el("div", { class: "seg" });
-      for (const n of FONT_SIZES) sizes.append(el("button", { class: mailSize() === n ? "on" : "", onclick: () => { setPref({ font_size: n }); draw(); } }, String(n)));
       const sample = el("div", { class: "font-sample", style: `font-family:${mailFont()};font-size:${mailSize()}px` }, t("font_sample"));
+      const sizes = segmented(FONT_SIZES.map((n) => [n, String(n)]), mailSize(), (n) => { setPref({ font_size: n }); sample.style.fontSize = n + "px"; });
       body.append(el("h2", {}, t("composing")), el("div", { class: "form" },
         el("label", {}, el("span", { class: "lab" }, t("default_font")), font),
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("default_size")), sizes), sample,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("undo_send")), seg), el("div", { class: "note" }, t("undo_note"))));
     } else if (tab === "notify") {
-      const seg = el("div", { class: "seg" });
-      for (const [on, lab] of [[true, "on"], [false, "undo_off"]]) {
-        seg.append(el("button", { class: (PREFS.notify !== false) === on ? "on" : "", onclick: () => { setPref({ notify: on }); if (on) { askNotice(); if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); } } draw(); } }, t(lab)));
-      }
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.notify !== false, (on) => {
+        setPref({ notify: on });
+        if (!on) { $(".notice-off", form)?.remove(); return; }
+        askNotice();
+        if (window.pywebview) { noticeAsked = true; api("notice_on", { body: t("notifications") + ": " + t("on") }).catch(() => {}); }
+        setTimeout(check, noticeAsked ? 1500 : 0);
+        noticeAsked = false;
+      });
       const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("new_mail")), seg));
       body.append(el("h2", {}, t("notifications")), form);
       // macOS keeps its own switch for the app; when it is off, say so and lead to it
@@ -2334,6 +3591,19 @@ async function openSettings() {
       // a moment after the switch here: macOS may be asking its question right now
       setTimeout(check, noticeAsked ? 1500 : 0);
       noticeAsked = false;
+    } else if (tab === "privacy") {
+      const seg = segmented([[true, t("on")], [false, t("undo_off")]], PREFS.remote_images !== false, (on) => {
+        setPref({ remote_images: on });
+        rerenderBodies();
+      });
+      const form = el("div", { class: "form" }, el("div", { class: "stack" }, el("span", { class: "lab" }, t("remote_images")), seg),
+        el("div", { class: "note" }, t("remote_note")));
+      if (imgSenders().length) {
+        const row = el("div", { class: "img-senders" }, el("span", {}, t("img_senders_n", imgSenders().length)),
+          el("button", { class: "btn", onclick: () => { setPref({ img_senders: [] }); row.remove(); rerenderBodies(); } }, t("img_forget")));
+        form.append(row);
+      }
+      body.append(el("h2", {}, t("privacy")), form);
     } else if (tab === "cli") {
       const form = el("div", { class: "form" });
       body.append(el("h2", {}, t("cli")), form);
@@ -2366,24 +3636,29 @@ async function openSettings() {
         el("label", {}, el("span", { class: "lab" }, t("language")), lang),
         el("label", {}, el("span", { class: "lab" }, t("time_zone")), tz)));
     } else {
-      const seg = el("div", { class: "seg" });
-      for (const [k, ic] of [["system", "monitor"], ["light", "sun"], ["dark", "moon"]]) {
-        seg.append(el("button", { class: v.theme === k ? "on" : "", onclick: () => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); draw(); }, html: icon(ic, "small") + esc(t(k)) }));
-      }
-      const ts = el("div", { class: "seg" });
-      for (const n of [13, 14, 16, 18]) ts.append(el("button", { class: textSize() === n ? "on" : "", onclick: () => { setTextSize(n); draw(); } }, String(n)));
+      // the sheet stays as it is: the picked item slides over and the whole window fades to the new theme
+      const seg = segmented([["system", t("system"), "monitor"], ["light", t("light"), "sun"], ["dark", t("dark"), "moon"]], v.theme,
+        (k) => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); });
+      const ts = segmented([13, 14, 16, 18].map((n) => [n, String(n)]), textSize(), (n) => setTextSize(n));
       body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg,
         el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts)));
     }
   };
   async function save() {
     grab();
-    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "signature"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
-    if (!changed) return closeLayer();
+    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
+    const sigKey = (o) => JSON.stringify([(o.signatures || []).map(({ id, name, html }) => [id, name, html]), o.sig_new || "", o.sig_reply || ""]);
+    const sigChanged = sigKey(v) !== sigKey(s);
+    if (!changed && !sigChanged) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
     try {
-      const b = await api("save_settings", { ...v, account: true, folders: v.folders });
+      if (sigChanged) {
+        Object.assign(s, await api("save_signatures", { signatures: v.signatures, sig_new: v.sig_new, sig_reply: v.sig_reply }));
+        if (!changed) { closeLayer(); toast(t("saved")); return; }
+      }
+      const { signature, signatures, sig_new, sig_reply, ...acct } = v;
+      const b = await api("save_settings", { ...acct, account: true, folders: v.folders });
       S.boot = { ...S.boot, ...b };
       closeLayer();
       renderNav();
@@ -2395,9 +3670,51 @@ async function openSettings() {
   }
   drawNav(); draw();
   sheet(el("div", { class: "settings-wrap" }, el("div", { class: "settings" }, nav, body), foot), { wide: true });
+  if (opts.focus) $(`input[data-k="${opts.focus}"]`, body)?.focus();
+}
+
+// how much downloaded mail this computer keeps, and a button that clears it (it is fetched again when opened)
+function storageLine() {
+  const gb = (n) => (n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(1) + " GB" : size(n));
+  const val = el("span", { class: "storage-size" });
+  const btn = el("button", { class: "btn", onclick: async () => {
+    btn.disabled = true;
+    try { val.textContent = gb((await api("clear_storage")).bytes); toast(t("storage_cleared")); } catch (e) { fail(e); } finally { btn.disabled = false; }
+  } }, t("clear"));
+  api("storage").then((r) => { val.textContent = gb(r.bytes); }).catch(() => {});
+  return el("div", { class: "stack" }, el("span", { class: "lab" }, t("downloaded_mail")), el("div", { class: "storage-line" }, val, btn));
 }
 
 const UNDO_CHOICES = [0, 5, 10, 20, 30];
+
+// a segmented control: [value, label, icon?] items; the picked one sits on a thumb that slides to the next pick
+// (the control is changed in place, never drawn again, so the slide can be seen)
+function segmented(items, value, pick) {
+  const thumb = el("span", { class: "seg-thumb", "aria-hidden": "true" });
+  const seg = el("div", { class: "seg", role: "radiogroup" }, thumb);
+  const place = (slide) => {
+    const on = $("button.on", seg);
+    if (!on || !on.offsetWidth) return;
+    seg.classList.toggle("seg-slide", slide && !REDUCED.matches);
+    const a = seg.getBoundingClientRect(), b = on.getBoundingClientRect();     // exact, not rounded like offsetLeft
+    seg.style.setProperty("--seg-x", b.left - a.left - seg.clientLeft + "px");
+    seg.style.setProperty("--seg-w", b.width + "px");
+    seg.classList.add("seg-ready");
+  };
+  for (const [v, label, ic] of items) {
+    const b = el("button", { class: v === value ? "on" : "", role: "radio", "aria-checked": String(v === value),
+      html: (ic ? icon(ic, "small") : "") + esc(label), onclick: () => {
+        if (b.classList.contains("on")) return;
+        for (const x of $$("button", seg)) { x.classList.toggle("on", x === b); x.setAttribute("aria-checked", String(x === b)); }
+        place(true);
+        pick(v);
+      } });
+    seg.append(b);
+  }
+  // placed once it is laid out (it is made before it is shown), and again when its size changes
+  if (window.ResizeObserver) new ResizeObserver(() => place(false)).observe(seg);
+  return seg;
+}
 
 // a native select in our own frame, with a chevron
 function selectBox(options, value, onchange) {
@@ -2436,7 +3753,7 @@ function relabel() {
   syncFilterUI();
   renderNav();
   renderRows();
-  if (S.compose) { composeState(); renderCompose(); }
+  if (S.compose) { composeState({ commit: true }); renderCompose(); }
   else if (S.sched) openScheduled(S.sched);
   else if (S.thread) openThread(S.focus || S.sel);
   else renderToolbar();
@@ -2445,7 +3762,7 @@ function relabel() {
 
 // ---------------------------------------------------------------- setup (no account yet)
 
-function showSetup() {
+function showSetup(boot = {}) {
   $("#app").hidden = true;
   const box = $("#setup");
   box.hidden = false;
@@ -2473,9 +3790,15 @@ function showSetup() {
         lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host", "text", { "data-host": "smtp_host" }), inp("smtp_port", "number"))));
     }
     if (err) f.append(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
+    const bad = boot.config_error;     // the settings file has a typo: say so, and where it is (#49)
+    if (bad && !err) {
+      f.append(el("div", { class: "msg-err cfg-broken" }, el("span", { html: icon("triangle-alert") }),
+        el("span", {}, t("cfg_broken", bad.path), " ",
+          el("button", { class: "link", onclick: () => api("reveal", { path: bad.path }).catch(fail) }, t("cfg_show")))));
+    }
     const go = el("button", { class: "btn primary", disabled: busy, onclick: signIn }, busy ? t("signing_in") : t("sign_in"));
     f.append(go);
-    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") signIn(); });
+    f.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e) && e.target.tagName === "INPUT") signIn(); });
     const lang = selectBox([["system", t("system_x", LANG_NAMES.find(([k]) => k === systemLang())[1])], ...LANG_NAMES], PREFS.lang || "system", (val) => {
       PREFS.lang = val; api("prefs", { lang: val }).catch(() => {}); setLocale(PREFS); draw();
     });
@@ -2516,7 +3839,7 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "Z", "undo"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
     ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
@@ -2537,7 +3860,10 @@ function typing(e) {
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
 }
 function onKey(e) {
-  const mod = e.metaKey || e.ctrlKey;
+  if (K.isIME(e)) return;             // Esc, Enter and Backspace belong to the input method's candidate
+  const mod = isMod(e);
+  // Sync now; the web view would otherwise reload the whole page and drop what is open, a compose too
+  if ((mod && !e.altKey && e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow(); return; }
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
@@ -2548,9 +3874,14 @@ function onKey(e) {
   if (e.key === "Escape" && $("#app").classList.contains("side-open")) { e.preventDefault(); sideOpen(false); return; }
   if (S.compose) {
     if (mod && e.key === "Enter") { e.preventDefault(); sendCompose(); return; }
-    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveDraft().catch(fail); return; }
+    if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!S.compose.busy) saveDraft().catch(fail); return; }
     if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeCompose(); return; }
+    // the mailbox's single keys (Backspace, R, J...) never act while a mail is being written, even when
+    // focus fell to the page after a click on a button
+    return;
   }
+  // in a text box Cmd+Z stays the text's own undo; a compose never gets here
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && !typing(e)) { e.preventDefault(); undoMove(); return; }
   if (mod && e.key.toLowerCase() === "a" && !typing(e) && !S.compose) { e.preventDefault(); selectAll(); return; }
   if (typing(e) || mod || e.altKey) return;
   const id = S.focus || S.sel;
@@ -2576,9 +3907,9 @@ function onKey(e) {
   else if (k === "r") { e.preventDefault(); openCompose({ mode: "reply", id }); }
   else if (k === "a") { e.preventDefault(); openCompose({ mode: "replyall", id }); }
   else if (k === "f") { e.preventDefault(); openCompose({ mode: "forward", id }); }
-  else if (k === "e") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "archive") moveMail([id], "archive"); }
-  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); if (S.thread.rows.find((x) => x.id === id)?.folder !== "trash") moveMail([id], "trash"); }
-  else if (k === "v") { e.preventDefault(); moveKey([id]); }
+  else if (k === "e") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "archive") moveMail([mv], "archive"); }
+  else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "trash") moveMail([mv], "trash"); }
+  else if (k === "v") { e.preventDefault(); moveKey([moveId()]); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
   else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
@@ -2730,32 +4061,94 @@ function applyStatus(st) {
   const wasSyncing = S.syncing;
   S.syncing = st.syncing;
   renderNav();
-  const b = $("#banner");
-  if (st.error && !S.boot.demo) {
-    // known problems get a short title, what it means, and a button named for the fix;
-    // anything else shows its first sentence as the title and the rest below
-    const known = [[/^No password saved\./, "b_pw"], [/^No account yet\./, "b_acct"], [/^Sign-in failed\./, "b_signin"]]
-      .find(([re]) => re.test(st.error));
-    let title, sub, act;
-    if (known) {
-      const k = known[1];
-      title = t(k + "_title"); sub = STR[k + "_sub"] || ""; act = t(k + "_btn");
-    } else {
-      const text = tr(st.error), m = text.match(/^(.+?[.。])\s*(.*)$/s);
-      title = m ? m[1].replace(/[.。]$/, "") : text; sub = m ? m[2] : ""; act = t("b_fix");
-    }
-    $("#banner-title").textContent = title;
-    $("#banner-sub").textContent = sub;
-    $("#banner-sub").hidden = !sub;
-    $("#banner-btn").textContent = act;
-    b.hidden = false;
-  } else b.hidden = true;
+  S.status = st;
+  drawProblem();
   if (st.rev !== S.rev) { S.rev = st.rev; loadList({ quiet: true }); }
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
   showAsks(st.asks);
 }
-$("#banner-btn").addEventListener("click", openSettings);
+
+// ---- a problem with the mailbox: a small card floating at the foot of the list (it never pushes the list),
+// shaped by what the person can do about it:
+//   offline / server not answering (fixes itself): a quiet line, when mail last came in, the next try, "Try now"
+//   sign-in, no password, no account (needs the person): what is wrong and one button straight to the field
+//   anything else the server said: a neutral card, "Retry" and "Copy details" (the server's own words)
+// The backend's status says which (error_kind), when mail last came in (last_sync) and the next try (retry_at).
+const PROBLEM_KIND = [[/^(Sign-in failed)/, "auth"], [/^(No password saved|No account yet)/, "config"],
+  [/^(Can't find the mail server|The mail server did not answer|Can't reach the mail server)/, "offline"]];
+const problemKind = (st) => st.error_kind || PROBLEM_KIND.find(([re]) => re.test(st.error))?.[1] || "server";
+const prob = { key: null, dismissed: null, tryAt: 0, timer: 0 };
+function syncedAt(ts) { return dayKey(ts * 1000) === dayKey(Date.now()) ? fmt(ts, HM) : shortTime(ts); }
+function retryNow() {
+  prob.tryAt = Date.now();
+  drawProblem();
+  api("sync").catch(() => {});
+  setTimeout(refreshCounts, 1500);
+  setTimeout(refreshCounts, 4000);
+}
+function drawProblem() {
+  const st = S.status || {}, b = $("#banner"), col = $("#list-col");
+  const kind = st.error ? problemKind(st) : null;
+  const key = st.error ? kind + "|" + st.error : null;
+  $("#account").classList.toggle("alert", !!key);
+  clearTimeout(prob.timer);
+  if (!key || prob.dismissed === key) {
+    if (!b.hidden && !b.classList.contains("out")) {
+      b.classList.add("out");
+      col.classList.remove("has-banner");
+      setTimeout(() => { if (b.classList.contains("out")) { b.hidden = true; b.classList.remove("out"); } }, REDUCED.matches ? 0 : 180);
+    }
+    prob.key = prob.sig = null;
+    return;
+  }
+  // the next try, counted down; a spinner while it runs
+  const busy = st.syncing || Date.now() - prob.tryAt < 2500;
+  const left = st.retry_at ? Math.ceil(st.retry_at - Date.now() / 1000) : null;
+  const next = busy ? t("st_retrying") : left > 0 ? t("st_retry_in", left) : left != null ? t("st_retrying") : "";
+  const meta = [st.last_sync ? t("st_last", syncedAt(st.last_sync)) : "", kind === "offline" || kind === "server" ? next : ""].filter(Boolean).join(" · ");
+  let ic, tone = "", title, sub = "", acts = [];
+  const settingsAt = (focus) => () => openSettings({ tab: "account", focus });
+  if (kind === "offline") {
+    const net = !navigator.onLine || /^Can't find the mail server/.test(st.error);
+    ic = net ? "wifi-off" : "cloud-off"; tone = "quiet";
+    title = t(net ? "st_offline" : "st_noreply"); sub = t("st_still");
+    acts = [el("button", { class: "link-btn", onclick: retryNow, disabled: busy }, t("st_try_now"))];
+  } else if (kind === "auth" || kind === "config") {
+    const k = /^No account yet/.test(st.error) ? "b_acct" : /^No password saved/.test(st.error) ? "b_pw" : "b_signin";
+    ic = k === "b_acct" ? "circle-user-round" : "key-round"; tone = "warn";
+    title = t(k + "_title"); sub = STR[k + "_sub"] || "";
+    acts = [el("button", { class: "btn primary", onclick: settingsAt(k === "b_acct" ? "user" : "password") }, k === "b_acct" ? t("b_acct_btn") : t("st_enter_pw"))];
+  } else {
+    ic = "triangle-alert";
+    title = t("st_server"); sub = tr(st.error);
+    acts = [el("button", { class: "btn", onclick: retryNow, disabled: busy }, t("st_retry")),
+      iconBtn("copy", t("st_details"), () => copyText(st.error), { cls: "tiny" })];
+  }
+  if (st.retry_at || busy) prob.timer = setTimeout(drawProblem, 1000);
+  // drawn again only when more than the countdown changed (a hovered button stays as it is)
+  const sig = JSON.stringify([key, title, sub, !!meta, busy, LANG]);
+  if (sig === prob.sig && !b.hidden && !b.classList.contains("out")) {
+    const m = $(".banner-meta", b);
+    if (m) m.textContent = " · " + meta;
+    col.style.setProperty("--banner-h", b.offsetHeight + "px");
+    return;
+  }
+  prob.sig = sig;
+  b.className = "banner" + (tone ? " " + tone : "");
+  b.replaceChildren(
+    el("span", { class: "banner-ic", html: icon(busy && kind !== "auth" && kind !== "config" ? "loader-circle" : ic, busy && kind !== "auth" && kind !== "config" ? "spin" : "") }),
+    el("div", { class: "banner-text", title: kind === "server" ? tr(st.error) : null },
+      el("div", { class: "banner-title" }, el("b", {}, title), meta ? el("span", { class: "banner-meta" }, " · " + meta) : null),
+      sub ? el("span", { class: "banner-sub" }, sub) : null),
+    el("div", { class: "banner-acts" }, ...acts),
+    iconBtn("x", t("st_dismiss"), () => { prob.dismissed = key; drawProblem(); }, { cls: "tiny banner-x" }));
+  if (b.hidden) { b.hidden = false; if (!REDUCED.matches) b.classList.add("in"); setTimeout(() => b.classList.remove("in"), 260); }
+  prob.key = key;
+  // the list keeps room for the card at its foot, so the last mail can scroll out from under it
+  col.classList.add("has-banner");
+  col.style.setProperty("--banner-h", b.offsetHeight + "px");
+}
 $("#update").addEventListener("click", () => {
   if (S.update?.url) api("open_url", { url: S.update.url }).catch(fail);
   else toast(t("run_update"), { ms: 8000 });
@@ -2817,5 +4210,5 @@ function start(boot) {
   setLocale(PREFS);
   if (PREFS.list_width) $("#app").style.setProperty("--list-w", PREFS.list_width + "px");
   if (PREFS.side_width) $("#app").style.setProperty("--side-pick", PREFS.side_width + "px");
-  if (!b.configured) showSetup(); else start(b);
+  if (!b.configured) showSetup(b); else start(b);
 })();

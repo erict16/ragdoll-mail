@@ -56,7 +56,7 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 ~/.local/share/hmail to their new names (and the paths in the config with them); the old
 HMAIL_* environment variables still work.
 """
-import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib
+import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib, itertools
 import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
@@ -64,7 +64,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 FROZEN = bool(getattr(sys, "frozen", False))      # inside the built Ragdoll Mail app
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
@@ -102,13 +102,71 @@ QUOTE_MARKS = ("发件人", "From:", "原始邮件", "wrote:", "Từ:")
 QUOTE_RE = re.compile(
     r"^\s*(-{3,}\s*(原始邮件|Original Message|Forwarded message)|发件人[:：]|From:\s|Từ:\s|"
     r"On .{5,120} wrote:|在 .{5,80}写道[:：])", re.M | re.I)
+# Quoted history, line by line (app.js has the same rules for HTML mail). A separator line or "On ... wrote:" always
+# starts it. A "From:" line starts it only as the head of a real header block: a separator line just above it, or
+# the next lines carry Sent:, or Subject: with Date:/To:/Cc:, or Date: and To: under a From: with an address.
+# A mail's own "From: Shanghai / To: Singapore" is text, not history.
+QUOTE_SEP_RE = re.compile(r"^\s*(-{2,}\s*(原始邮件|原始郵件|Original Message|Forwarded message|转发邮件|轉寄郵件|"
+                          r"Ursprüngliche Nachricht|Message d'origine|Mensaje original)|"
+                          r"On .{5,160} wrote:|在\s?.{3,80}写道[:：])", re.I)
+QUOTE_FROM_RE = re.compile(r"^\s*\*?(From|发件人|寄件者|寄件人|Von|De|Từ|差出人|보낸 사람)\*?\s*[:：]", re.I)
+QUOTE_HEAD_RE = re.compile(
+    r"^\s*\*?(?:(?P<sent>Sent|发送时间|發送時間|寄件日期|Gesendet|Envoyé|Enviado|送信日時|보낸 날짜|Gửi lúc)|"
+    r"(?P<date>Date|日期|时间|時間|Datum|Fecha|Ngày|日付|날짜)|(?P<to>To|收件人|收件者|An|À|Para|Đến|宛先|받는 사람)|"
+    r"(?P<cc>Cc|抄送|副本|Kopie|Copie)|(?P<subject>Subject|主题|主題|主旨|Betreff|Objet|Asunto|Chủ đề|件名|제목))"
+    r"\*?\s*[:：]", re.I)
+QUOTE_LINE_RE = re.compile(r"^\s*([-_=*]\s*){5,}$")
+
+
+def quote_line(lines):
+    """The index of the line where quoted history starts (a separator line over its header block included), or -1."""
+    for i, line in enumerate(lines):
+        if QUOTE_SEP_RE.match(line):
+            return i
+        if not QUOTE_FROM_RE.match(line):
+            continue
+        above = next((k for k in range(i - 1, max(-1, i - 3), -1) if lines[k].strip()), None)
+        if above is not None and QUOTE_LINE_RE.match(lines[above]):
+            return above
+        block = []
+        for x in lines[i + 1:i + 8]:
+            if not x.strip() or QUOTE_FROM_RE.match(x):     # the block ends at an empty line or the next block
+                break
+            block.append(x)
+        keys = {m.lastgroup for m in map(QUOTE_HEAD_RE.match, block) if m}
+        if "sent" in keys or ("subject" in keys and keys & {"date", "to", "cc"}) or (
+                {"date", "to"} <= keys and "@" in line):
+            return i
+    return -1
+
+
+def quote_start(text):
+    """Where the quoted history starts in a plain text, or -1."""
+    lines = (text or "").split("\n")
+    i = quote_line(lines)
+    return -1 if i < 0 else sum(len(x) + 1 for x in lines[:i])
+
+
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|aw|wg|tr|trả lời|chuyển tiếp|bls|回复|答复|转发)\s*[:：]\s*)+", re.I)
 INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+(\.(png|jpe?g|gif|bmp|webp))?$", re.I)   # Exmail inline-image names
 WEEK = "一二三四五六日"
 # Fold only at the RFC 5322 hard limit: folding at 78 made Python encode long Message-IDs as
 # =?utf-8?q?...?=, which broke threading (sent:1431, 16th Nov 2026); no limit at all let a
 # reply-all To line pass 998 characters.
-OUT_POLICY = policy.SMTP.clone(max_line_length=998)
+# The subject and the names in the address lines are the exception: at 998 a Chinese subject became one
+# encoded word of hundreds of characters, and RFC 2047 allows 75. Those fold at 76, into words of at most 72.
+WORD_HEADERS = frozenset(("subject", "from", "to", "cc", "bcc", "reply-to", "sender"))
+WORD_POLICY = policy.SMTP.clone(max_line_length=76)
+
+
+class OutPolicy(policy.EmailPolicy):
+    def _fold(self, name, value, refold_binary=False):
+        if name.lower() in WORD_HEADERS:
+            return WORD_POLICY._fold(name, value, refold_binary)
+        return super()._fold(name, value, refold_binary)
+
+
+OUT_POLICY = OutPolicy(linesep="\r\n", max_line_length=998)
 PLACEHOLDER_RE = re.compile(r"\[[^\]\n]{0,40}\]|\bX{3,}\b|\bTBD\b|\{\{|待定|待补|待填|【[^】\n]{0,20}】")
 ATTACH_WORDS_RE = re.compile(r"(?i)\battach(ed|ment|ments)?\b|\benclosed\b|附件|附上|随附|见附|附图|đính kèm")
 
@@ -173,6 +231,8 @@ def move_old_setup(path=None, home=None):
             raw = json.load(f)
     except (OSError, ValueError):
         raw = {}                                           # load_config reports a broken file
+    if not isinstance(raw, dict):
+        return path, over                                  # likewise; and it is never written over
     changed = False
     old_data = os.path.join(home, ".local", "share", "hmail")
     new_data = os.path.join(home, ".local", "share", "ragdoll-mail")
@@ -206,19 +266,36 @@ def move_old_setup(path=None, home=None):
     return path, over
 
 
+CONFIG_ERROR = None     # {"path", "error"} when the settings file could not be read (#49)
+
+
 def load_config(path=None):
+    """The settings: config.json over the defaults. A file that can't be read (a stray comma after a
+    hand edit) must not stop the app from opening: the defaults are used, the file is left as it is,
+    and CONFIG_ERROR says what is wrong so the app can show it."""
+    global CONFIG_ERROR
     path, over = move_old_setup(path or env("CONFIG"))
     d = json.loads(json.dumps(DEFAULTS))
+    CONFIG_ERROR = None
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            user = json.load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                user = json.load(f)
+            if not isinstance(user, dict):
+                raise ValueError("the settings are not a JSON object")
+            for k, v in user.items():
+                if isinstance(d.get(k), dict) and not isinstance(v, dict):
+                    raise ValueError("%r must be an object like {...}" % k)
+        except (OSError, ValueError) as e:      # json.JSONDecodeError is a ValueError
+            CONFIG_ERROR = {"path": path, "error": str(e)}
+            user = {}
         for k, v in user.items():
             if isinstance(v, dict) and isinstance(d.get(k), dict):
                 d[k].update(v)
             else:
                 d[k] = v
     d.update(over)
-    d["user"] = (d.get("user") or "").strip().lower()
+    d["user"] = (d.get("user") if isinstance(d.get("user"), str) else "").strip().lower()
     return Cfg(d)
 
 
@@ -227,6 +304,13 @@ CFG = load_config()
 
 def die(msg):
     sys.exit(msg)
+
+
+class Refused(SystemExit):
+    """die() for a server that stopped part way: `done` says how many went before it stopped."""
+    def __init__(self, msg, done):
+        super().__init__(msg)
+        self.done = done
 
 
 _SHELL_ENV = {}
@@ -407,6 +491,9 @@ def keychain_delete(account, service=KEYCHAIN_SERVICE):
 
 
 def need_account():
+    if CONFIG_ERROR:
+        die("the settings file %s can't be read (%s): fix it, or move it away and set up again"
+            % (CONFIG_ERROR["path"], CONFIG_ERROR["error"]))
     if not (CFG.user and CFG.imap["host"]):
         die("no account configured: copy config.example.json to ~/.config/ragdoll-mail/config.json")
 
@@ -442,13 +529,20 @@ def q(folder):
     return '"' + mutf7(folder).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def imap():
+# Seconds one read from the server may wait. It counts from the last byte that came in, so a big
+# mail that keeps arriving never runs out of it; a connection that died during sleep or a Wi-Fi
+# change does, instead of holding the sync (and its file lock) for good (#40).
+IMAP_TIMEOUT = 60
+BIG_WAIT = 180      # the wait before the first byte of a big mail or file, which the server builds first
+
+
+def imap(timeout=None):
     need_account()
     # a server that does not answer must not hold the caller (the app's one connection) for minutes
     m = imaplib.IMAP4_SSL(CFG.imap["host"], CFG.imap["port"], timeout=15)
     m.login(CFG.user, password())
     with contextlib.suppress(Exception):
-        m.sock.settimeout(None)         # signing in is quick, a big mail is not: reads wait as before
+        m.sock.settimeout(timeout or IMAP_TIMEOUT)
     try:        # imaplib keeps the pre-login list; MOVE and UIDPLUS often appear only after login
         typ, data = m.capability()
         if typ == "OK" and data and data[0]:
@@ -463,15 +557,42 @@ def has_cap(m, name):
 
 
 @contextlib.contextmanager
-def session():
-    m = imap()
+def patient(m, secs=None):
+    """A longer read timeout for one known-big answer; the connection's own one after it."""
+    sock = getattr(m, "sock", None)
+    try:
+        old = sock.gettimeout()
+        sock.settimeout(max(old or 0, secs or BIG_WAIT))
+    except Exception:
+        yield m
+        return
     try:
         yield m
     finally:
-        try:
-            m.logout()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            sock.settimeout(old)
+
+
+def quit_imap(m, quick=False):
+    """LOGOUT. quick: the connection may be dead, so LOGOUT must not wait out the whole timeout."""
+    if m is None:
+        return
+    if quick:
+        with contextlib.suppress(Exception):
+            m.sock.settimeout(3)
+    with contextlib.suppress(Exception):
+        m.logout()
+
+
+@contextlib.contextmanager
+def session():
+    m = imap()
+    ok = False
+    try:
+        yield m
+        ok = True
+    finally:
+        quit_imap(m, quick=not ok)
 
 
 def select(m, folder, readonly=True):
@@ -556,7 +677,8 @@ def fetch_one(m, uid, items):
 def fetch_raw(m, folder, uid):
     use(m, folder)
     for again in (False, True):
-        typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
+        with patient(m):
+            typ, data = m.uid("FETCH", str(uid), "(BODY.PEEK[])")
         for item in data:
             if isinstance(item, tuple):
                 return item[1]
@@ -736,7 +858,8 @@ def fetch_part_raw(m, folder, uid, sec):
     if not SECTION_RE.fullmatch(str(sec)):      # it goes into the IMAP command as it is
         die("bad part number %r" % (sec,))
     use(m, folder)
-    got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
+    with patient(m):
+        got = fetch_one(m, uid, "(UID BODY.PEEK[%s.MIME] BODY.PEEK[%s])" % (sec, sec))
     mime, body = got.get(("BODY[%s.MIME]" % sec).encode()), got.get(("BODY[%s]" % sec).encode())
     if not isinstance(mime, bytes) or not isinstance(body, bytes):
         die("no mail %s (moved or deleted? run search again)" % make_id(folder, uid))
@@ -833,12 +956,19 @@ def fix_8bit(s):
         return b.decode("gb18030", "replace")
 
 
+ADJACENT_EW = re.compile(r"\?=\s+(?==\?[^?\s]+\?[bBqQ]\?)")
+
+
 def hdr(msg, name):
     try:
         raw = next((v for k, v in msg.raw_items() if k.lower() == name.lower()), None)
         if raw is not None and re.search("[\udc80-\udcff]", raw):
             # unencoded GBK header bytes: policy.default would turn them into U+FFFD
             return nfc(str(msg.policy.header_fetch_parse(name, fix_8bit(raw))))
+        if raw is not None and ADJACENT_EW.search(raw):
+            # the space between two encoded words means nothing (RFC 2047), but Python before 3.14
+            # keeps it in a name: a long Chinese name split by the sender reads "张三 张三"
+            return nfc(str(msg.policy.header_fetch_parse(name, ADJACENT_EW.sub("?=", raw))))
         v = msg.get(name)
         return nfc(str(v)) if v is not None else ""
     except Exception:
@@ -890,13 +1020,64 @@ def fmt_addrs(lst):
     return ", ".join(formataddr((one_line(n), one_line(a))) if n else one_line(a) for n, a in lst)
 
 
+BLOCK_TAGS = frozenset("""div p li ul ol tr table thead tbody tfoot h1 h2 h3 h4 h5 h6 blockquote pre hr
+    section article header footer nav main aside address center dl dt dd figure figcaption form fieldset
+    details summary""".split())
+TOKEN_RE = re.compile(r"<[^<>]*>|[^<]+|<")      # [^<>]: a stray "<" must not make it quadratic
+TAG_RE = re.compile(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>")
+
+
 def html_to_text(h):
-    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", " ", h or "")
-    h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>|</blockquote>", "\n", h)
-    h = re.sub(r"(?i)</t[dh]>", "\t", h)
-    h = htmlmod.unescape(re.sub(r"<[^<>]+>", "", h))      # [^<>]: a stray "<" must not make it quadratic
-    h = re.sub(r"[ \t ​]+", " ", h)
-    return re.sub(r"\n\s*\n+", "\n\n", h).strip()
+    """The text of an HTML mail, line by line as it shows: a block (<div>, <p>, a table row, ...) starts
+    a line of its own, also after a bare first line ("Hi,<div>Thanks</div>"); list items keep their
+    bullet or number."""
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>|<!--.*?-->", " ", h or "")
+    out = []
+    lists = []                  # the lists we are in: [ordered, next number]
+
+    def line():
+        if out and not out[-1].endswith("\n"):
+            out.append("\n")
+    for mo in TOKEN_RE.finditer(h):
+        tok = mo.group()
+        tag = TAG_RE.fullmatch(tok) if tok.startswith("<") else None
+        if tag is None:
+            if tok.startswith("<") and len(tok) > 1 and (tok[1] in "!?/" or tok[1].isalpha()):
+                continue        # some other markup: <!doctype>, <?xml>, <o:p>, ...
+            text = htmlmod.unescape(tok)
+            if "\n" in text and not text.strip():
+                continue        # the HTML's own line breaks between tags show as nothing
+            out.append(text.replace("\x00", "").replace("\x01", ""))
+            continue
+        close, name, rest = tag.group(1), tag.group(2).lower(), tag.group(3)
+        if name == "br":
+            out.append("\n")
+        elif name in ("td", "th"):
+            if close:
+                out.append("\t")
+        elif name in ("ul", "ol"):
+            line()
+            if close:
+                if lists:
+                    lists.pop()
+            else:
+                start = re.search(r"""(?i)\bstart\s*=\s*["']?(-?\d{1,6})""", rest)
+                lists.append([name == "ol", int(start.group(1)) if start else 1])
+        elif name == "li":
+            line()
+            if not close:
+                ordered, n = lists[-1] if lists else (False, 1)
+                if ordered:
+                    lists[-1][1] += 1
+                # \x00: two spaces of a nested list's indent, \x01: the space after the bullet;
+                # the clean-up below leaves them alone
+                out.append("\x00" * max(0, len(lists) - 1) + ("%d.\x01" % n if ordered else "-\x01"))
+        elif name in BLOCK_TAGS:
+            line()
+    text = re.sub("[  ​　]+", " ", "".join(out))
+    text = re.sub(r"(?m)^[ \t]+|[ \t]+$|(?<=\x01) +", "", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return text.replace("\x00", "  ").replace("\x01", " ")
 
 
 def b64_cut(p):
@@ -917,26 +1098,71 @@ def b64_cut(p):
         return None
 
 
+META_CHARSET_RE = re.compile(rb"""(?i)<meta[^>]+charset\s*=\s*["']?\s*([A-Za-z0-9_.:-]+)""")
+HIGH_PAIR_RE = re.compile(rb"[\x80-\xff]{2}")
+# tried in turn when the part names no charset or the wrong one: Chinese first (most of this
+# mail), then the other East Asian ones; GB18030 also reads GBK and GB2312
+GUESS_CHARSETS = ("utf-8", "gb18030", "big5", "shift_jis", "euc-kr")
+
+
+def decode_strict(b, cs):
+    """b in charset cs, strictly; a character cut off at the very end (the index reads only the start
+    of a mail) is dropped. None when cs does not fit."""
+    try:
+        return b.decode(cs)
+    except LookupError:
+        return None
+    except UnicodeDecodeError as e:
+        if e.end >= len(b) and e.start >= len(b) - 4:
+            try:
+                return b[:e.start].decode(cs)
+            except UnicodeDecodeError:
+                return None
+        return None
+
+
+def decode_text(b, declared=None, html=False):
+    """Bytes of a text part to text: the declared charset when it fits, then an HTML part's own
+    <meta charset>, then UTF-8 and the East Asian charsets in turn. Text whose 8-bit bytes all stand
+    alone cannot be multi-byte: Western (cp1252, Latin-1). Last, GB18030 with replacement (#46)."""
+    tries = [declared] if declared else []
+    if html:
+        mo = META_CHARSET_RE.search(b[:8192])
+        if mo:
+            tries.append(mo.group(1).decode("ascii", "ignore").lower())
+    if re.search(rb"[\x80-\xff]", b) and not HIGH_PAIR_RE.search(b):
+        tries += ["utf-8", "cp1252", "latin-1"]
+    tries += GUESS_CHARSETS
+    seen = set()
+    for cs in tries:
+        if cs in seen:
+            continue
+        seen.add(cs)
+        s = decode_strict(b, cs)
+        if s is not None:
+            return s
+    return b.decode("gb18030", "replace")
+
+
 def part_text(p):
-    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...)."""
+    """Text of a part; never raises on an unknown or wrong charset (unknown-8bit, csGB2312, ...).
+    The bytes are decoded here: get_content() reads a part without a charset as ASCII and turned
+    every Chinese character into "�" (#46)."""
     payload = b64_cut(p)
     if payload is None:
         try:
-            return nfc(p.get_content())
+            payload = p.get_payload(decode=True)
         except Exception:
-            pass
-        payload = p.get_payload(decode=True) or b""
-    else:
-        try:        # the cut can also split the last character: drop it rather than fail on it
-            return nfc(payload.decode(p.get_content_charset() or "utf-8", "ignore"))
-        except LookupError:
-            pass
-    for cs, err in ((p.get_content_charset() or "utf-8", "strict"), ("utf-8", "strict"), ("gb18030", "replace")):
-        try:
-            return nfc(payload.decode(cs, err))
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return ""
+            payload = None
+        if not isinstance(payload, bytes):
+            try:
+                return nfc(p.get_content())
+            except Exception:
+                return ""
+    declared = p.get_content_charset()
+    if declared in ("unknown-8bit", "x-unknown", "us-ascii", "ascii") and re.search(rb"[\x80-\xff]", payload):
+        declared = None         # 8-bit bytes the label cannot be right about
+    return nfc(decode_text(payload, declared, p.get_content_type() == "text/html"))
 
 
 def leaf_parts(msg):
@@ -979,8 +1205,8 @@ def body_text(msg):
 
 
 def new_text(text):
-    mo = QUOTE_RE.search(text or "")
-    return (text[:mo.start()] if mo else text or "").strip()
+    at = quote_start(text)
+    return (text[:at] if at >= 0 else text or "").strip()
 
 
 IMAGE_MAGIC = ((b"\x89PNG", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"),
@@ -1003,14 +1229,29 @@ def image_type(p):
     return next((t for magic, t in IMAGE_MAGIC if head.startswith(magic)), "")
 
 
-def is_inline(p):
-    """An image shown in the body (cid:), not a file: a PDF with a Content-ID is still a file."""
-    return (bool(p.get("Content-ID")) and p.get_content_disposition() != "attachment"
-            and bool(image_type(p)))
+def is_inline(p, refs=None):
+    """A picture shown in the mail's text, not a file. refs: the Content-IDs the HTML body shows
+    (body_refs). Then a part is such a picture when its Content-ID is one of them and it is an image
+    (by its type, its name or its bytes, or a nameless octet-stream a light mail left on the server),
+    whatever its disposition: Outlook, Foxmail and QQ Mail mark these pictures as attachments. An image
+    the body does not show is a file. A PDF with a Content-ID is always a file.
+    Without refs: an image with a Content-ID that is not marked as an attachment."""
+    cid = (p.get("Content-ID") or "").strip().strip("<>")
+    if not cid:
+        return False
+    if refs is None:
+        return p.get_content_disposition() != "attachment" and bool(image_type(p))
+    return cid in refs and (bool(image_type(p)) or p.get_content_type() == "application/octet-stream")
+
+
+def body_refs(msg):
+    """The Content-IDs the mail's HTML body shows."""
+    return cid_refs(bodies(msg)[1])
 
 
 def attachments(msg, inline=False):
     out = []
+    refs = body_refs(msg)
     for p in leaf_parts(msg):
         if p is msg and (msg.is_multipart() or not (
                 p.get_content_disposition() == "attachment" or p.get_filename()
@@ -1018,8 +1259,8 @@ def attachments(msg, inline=False):
             continue     # a mail that is only a file (a scanner's PDF) still shows that file
         is_file = (p.get_content_disposition() == "attachment" or p.get_filename()
                    or p.get_content_type() == "message/rfc822"
-                   or (p.get("Content-ID") and not is_inline(p)))
-        if is_file and (inline or not is_inline(p)):
+                   or (p.get("Content-ID") and not is_inline(p, refs)))
+        if is_file and (inline or not is_inline(p, refs)):
             out.append(p)
     return out
 
@@ -1046,7 +1287,7 @@ FWD_HEADER = "X-Forwarded-Message-Id"     # as Thunderbird does; Exmail keeps no
 
 
 def is_forward_subject(s):
-    return bool(re.match(r"(?i)\s*(fw|fwd|转发)\s*[:：]", s or ""))
+    return bool(FWD_PREFIX_RE.match(s or ""))
 
 
 def forward_source(msg):
@@ -1183,6 +1424,14 @@ def db():
             n += 1
         c.execute("insert or replace into meta values('body_fix', ?)", (str(n),))
         c.commit()
+    if not c.execute("select 1 from meta where k='charset_fix2'").fetchone():
+        # 0.10 and older read a text part without a charset as ASCII: "报价单" was stored as "���"
+        bad = c.execute("select id from msgs where has_body=1 and instr(body, char(65533))>0").fetchall()
+        for r in bad:
+            c.execute("update msgs set body='', has_body=0 where id=?", (r["id"],))
+            c.execute("update fts set body='' where rowid=?", (r["id"],))
+        c.execute("insert or replace into meta values('charset_fix2', ?)", (str(len(bad)),))
+        c.commit()
     if have < SCHEMA_VERSION:
         c.execute("insert or replace into meta values('schema', ?)", (str(SCHEMA_VERSION),))
         c.commit()
@@ -1312,10 +1561,11 @@ def header_row(seg):
             "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
 
 
-def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
+def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=False):
     """New mail headers, flags and deletions for one folder. Returns new row count.
     held(folder, since) -> {uid: {"seen": 1, ...}}: flags the caller has changed that the server may
-    not have had when it was asked at `since`; they stay as the caller set them."""
+    not have had when it was asked at `since`; they stay as the caller set them.
+    deep: the flags of older mail too (deep_flags), not only of the newest 300."""
     try:
         uidv = select(m, folder)
     except LookupError:
@@ -1328,27 +1578,19 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
     c.execute("insert or replace into state values(?,?)", (folder, uidv))
     c.commit()
     server = set(uids_of(m))
-    local = {r["uid"]: r["id"] for r in c.execute(
-        "select uid, id from msgs where folder=? and uidv=?", (folder, uidv))}
-    for uid, rid in local.items():
+    local = {r["uid"]: r for r in c.execute(
+        "select uid, id, seen, flagged, answered from msgs where folder=? and uidv=?", (folder, uidv))}
+    for uid, r in local.items():
         if uid not in server:
-            c.execute("delete from msgs where id=?", (rid,))
-            c.execute("delete from fts where rowid=?", (rid,))
+            c.execute("delete from msgs where id=?", (r["id"],))
+            c.execute("delete from fts where rowid=?", (r["id"],))
+    flags = Flags(c, folder, local, held)
     # flags: all of them on a full sync, the newest 300 otherwise
     known = sorted(u for u in server if u in local)
     check = known if full_flags else known[-300:]
-    for i in range(0, len(check), 500):
-        asked = time.time()
-        typ, data = m.uid("FETCH", ",".join(map(str, check[i:i + 500])), "(UID FLAGS)")
-        mine = held(folder, asked) if held else {}
-        for seg in segments(data):
-            uid = seg_uid(seg)
-            if uid in local:
-                seen, flagged, answered = flags_of(b"".join(seg))
-                if uid in mine:     # a mail just read in the app must not turn unread again
-                    seen, flagged = mine[uid].get("seen", seen), mine[uid].get("flagged", flagged)
-                c.execute("update msgs set seen=?, flagged=?, answered=? where id=?",
-                          (seen, flagged, answered, local[uid]))
+    fetch_flags(m, check, flags)
+    if deep and not full_flags and len(known) > 300:
+        deep_flags(m, c, folder, uidv, known[:-300], flags)
     c.commit()
     new = sorted((u for u in server if u not in local), reverse=True)
     chunks = [new[i:i + 100] for i in range(0, len(new), 100)]
@@ -1384,6 +1626,101 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None):
     return len(new)
 
 
+class Flags:
+    """Puts the server's flags into the index rows of one folder; a row is written only when they
+    differ, and a flag the caller holds (held) stays as the caller set it."""
+    def __init__(self, c, folder, local, held):
+        self.c, self.folder, self.local, self.held = c, folder, local, held
+
+    def mine(self, asked):
+        return self.held(self.folder, asked) if self.held else {}
+
+    def put(self, uid, mine, seen=None, flagged=None, answered=None):
+        r = self.local.get(uid)
+        if r is None:
+            return
+        if uid in mine:     # a mail just read in the app must not turn unread again
+            seen = mine[uid].get("seen", seen)
+            flagged = mine[uid].get("flagged", flagged)
+        new = [r["seen"] if seen is None else int(seen), r["flagged"] if flagged is None else int(flagged),
+               r["answered"] if answered is None else int(answered)]
+        if new != [r["seen"], r["flagged"], r["answered"]]:
+            self.c.execute("update msgs set seen=?, flagged=?, answered=? where id=?", (*new, r["id"]))
+
+
+def fetch_flags(m, uids, flags, extra=""):
+    """FLAGS of these UIDs (or of "1:*" with a modifier in extra) into the index."""
+    sets = [uids] if isinstance(uids, str) else [",".join(map(str, uids[i:i + 500])) for i in range(0, len(uids), 500)]
+    for s in sets:
+        if not s:
+            continue
+        asked = time.time()
+        typ, data = m.uid("FETCH", s, "(UID FLAGS)" + extra)
+        if typ != "OK":
+            continue            # e.g. a mail expunged a moment ago: the next pass asks again
+        mine = flags.mine(asked)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                flags.put(uid, mine, *flags_of(b"".join(seg)))
+
+
+SWEEP = 2000        # older mails whose flags are asked for on each pass, in turn, when CONDSTORE is missing
+
+
+def search_set(m, key):
+    typ, data = m.uid("SEARCH", None, key)
+    if typ != "OK":
+        return None
+    return {int(x) for x in b" ".join(x for x in data if isinstance(x, bytes)).split() if x.isdigit()}
+
+
+def highest_modseq(m, folder):
+    try:
+        v = m.untagged_responses.pop("HIGHESTMODSEQ", None)
+        if not v:
+            typ, data = m.status(q(folder), "(HIGHESTMODSEQ)")
+            mo = re.search(rb"HIGHESTMODSEQ (\d+)", b" ".join(x for x in data if isinstance(x, bytes))) if typ == "OK" else None
+            return int(mo.group(1)) if mo else None
+        return int(v[-1])
+    except (imaplib.IMAP4.abort, OSError):
+        raise
+    except Exception:       # noqa: BLE001 - a server that does not say: the other way is used
+        return None
+
+
+def deep_flags(m, c, folder, uidv, older, flags):
+    """Read / unread and the other flags of mail older than the newest 300, which were never asked
+    for again (#47). With CONDSTORE: only the flags changed since the last pass (CHANGEDSINCE).
+    Without: UID SEARCH UNSEEN and FLAGGED give seen and flagged of every mail in two commands, and
+    a rolling sweep of SWEEP mails per pass brings in the rest (answered) in turn."""
+    if has_cap(m, "CONDSTORE"):
+        key = "modseq:" + folder
+        r = c.execute("select v from meta where k=?", (key,)).fetchone()
+        was = (r[0].split() + ["", ""])[:2] if r else ["", ""]
+        now = highest_modseq(m, folder)
+        if now is not None:
+            if was[0] == str(uidv) and was[1].isdigit():
+                if int(was[1]) != now:
+                    fetch_flags(m, "1:*", flags, " (CHANGEDSINCE %d)" % int(was[1]))
+                c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+                return
+            c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+            # the first pass: everything once, the way below; from the next pass on only changes
+    asked = time.time()
+    unseen, flagged = search_set(m, "UNSEEN"), search_set(m, "FLAGGED")
+    mine = flags.mine(asked)
+    for u in older:
+        flags.put(u, mine, None if unseen is None else u not in unseen, None if flagged is None else u in flagged)
+    key = "sweep:" + folder
+    r = c.execute("select v from meta where k=?", (key,)).fetchone()
+    at = int(r[0]) if r and str(r[0]).isdigit() else None
+    below = [u for u in older if at is None or u < at] or older     # the oldest reached: from the top again
+    turn = below[-SWEEP:]
+    fetch_flags(m, turn, flags)
+    c.execute("insert or replace into meta values(?, ?)", (key, str(turn[0])))
+
+
 HEADER_ITEMS = "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER])"
 
 
@@ -1398,19 +1735,28 @@ def fetch_headers(folder, uids, m=None):
         return segments(data)
 
 
+BODY_BATCH = 50     # mails per FETCH command: one command for many mails, never one each
+
+
+def fetch_bodies_on(m, folder, uids, per=BODY_BATCH):
+    """{uid: the start of its body} for these UIDs, on a connection the caller keeps (and keeps the
+    folder open on: the next batch of the same folder needs no SELECT)."""
+    use(m, folder)
+    out = {}
+    for i in range(0, len(uids), per):
+        typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + per])),
+                          "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
+        for seg in segments(data):
+            uid = seg_uid(seg)
+            if uid is not None:
+                out[uid] = literal_after(seg, rb"BODY\[\]<0>")
+    return out
+
+
 def fetch_bodies(folder, uids):
     """Worker: the start of each body for these UIDs, on its own connection."""
-    out = {}
     with session() as m:
-        select(m, folder)
-        for i in range(0, len(uids), 25):
-            typ, data = m.uid("FETCH", ",".join(map(str, uids[i:i + 25])),
-                              "(UID BODY.PEEK[]<0.%d>)" % CFG.body_bytes)
-            for seg in segments(data):
-                uid = seg_uid(seg)
-                if uid is not None:
-                    out[uid] = literal_after(seg, rb"BODY\[\]<0>")
-    return out
+        return fetch_bodies_on(m, folder, uids, per=25)
 
 
 def store_bodies(c, folder, got):
@@ -1629,8 +1975,10 @@ def search_where(words, a):
 
 
 def search_rows(c, words, a):
+    """The newest matches first; a.offset (when set) skips that many, for the next page."""
     where, params = search_where(words, a)
-    return c.execute("select m.* from msgs m %s order by m.ts desc limit ?" % where, params + [a.limit]).fetchall()
+    return c.execute("select m.* from msgs m %s order by m.ts desc, m.id desc limit ? offset ?" % where,
+                     params + [a.limit, max(0, getattr(a, "offset", 0) or 0)]).fetchall()
 
 
 def search_total(c, words, a):
@@ -1810,7 +2158,7 @@ def cmd_read(a):
     plain, html = bodies(msg)
     text = plain.strip() or html_to_text(html)
     atts = [{"name": fname(p) or "(no name)", "kb": len(part_bytes(p)) // 1024,
-             "inline": is_inline(p)} for p in attachments(msg, inline=True)]
+             "inline": is_inline(p, body_refs(msg))} for p in attachments(msg, inline=True)]
     atts = [x for x in atts if not (x["inline"] and INLINE_ID.match(x["name"]))]
     if a.html:
         with open(a.html, "w", encoding="utf-8") as f:
@@ -1851,6 +2199,48 @@ def safe_name(n, max_bytes=200):
     return n
 
 
+# Files that run code when opened (Windows, macOS, Linux). The app never opens one of these from a mail:
+# it only saves it or shows it in its folder.
+PROGRAM_EXTS = frozenset("""
+    exe com scr pif cpl msi msp mst msc msix msixbundle appx appxbundle appinstaller application appref-ms
+    bat cmd ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 vb vbe vbs js jse ws wsc wsf wsh hta jar jnlp
+    lnk url scf inf reg gadget chm hlp diagcab library-ms search-ms searchconnector-ms settingcontent-ms
+    xbap xll iso img vhd vhdx py pyw pyc pyz pyzw pl rb
+    app command terminal tool pkg mpkg workflow action scpt scptd applescript osax prefpane kext
+    mobileconfig fileloc inetloc webloc
+    sh bash zsh csh ksh fish run bin desktop
+""".split())
+
+
+def is_program(name):
+    """True when opening a file of this name would run it. Windows ignores dots and spaces at the end
+    of a name, so "invoice.exe." counts too."""
+    n = (name or "").strip().rstrip(". ").lower()
+    return "." in n and n.rsplit(".", 1)[1] in PROGRAM_EXTS
+
+
+ZONE_ID = "[ZoneTransfer]\r\nZoneId=3\r\n"     # Windows: "this file came from the internet"
+
+
+def mark_downloaded(path):
+    """Mark a file written from a mail as downloaded, as a browser does: Windows' Mark-of-the-Web
+    (Zone.Identifier, so SmartScreen and Office Protected View step in) and the macOS quarantine flag
+    (so Gatekeeper asks before anything in it runs). Best effort: some disks cannot hold the mark."""
+    try:
+        if sys.platform == "win32":
+            with open(path + ":Zone.Identifier", "w", encoding="ascii", newline="") as f:
+                f.write(ZONE_ID)
+        elif sys.platform == "darwin":
+            import ctypes
+            libc = ctypes.CDLL("/usr/lib/libc.dylib", use_errno=True)
+            libc.setxattr.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                                      ctypes.c_uint32, ctypes.c_int)
+            v = ("0081;%08x;Ragdoll Mail;" % int(time.time())).encode()
+            libc.setxattr(os.fsencode(path), b"com.apple.quarantine", v, len(v), 0, 0)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
 def unique_path(folder, name, used):
     """folder/name, or folder/name (2).ext when this run already wrote that name."""
     stem, ext = os.path.splitext(name)
@@ -1879,6 +2269,7 @@ def cmd_attach(a):
         path = unique_path(out, safe_name(name), used)
         with open(path, "wb") as f:
             f.write(part_bytes(p))
+        mark_downloaded(path)
         print("saved %s (%d KB)" % (os.path.abspath(path), os.path.getsize(path) // 1024))
         n += 1
     if not n:
@@ -1914,6 +2305,15 @@ def clean_quoted_html(html):
     return html
 
 
+QUOTE_HEAD = '<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+
+
+def quote_of(html):
+    """The quoted history (quote_block) in a mail made here, or ""."""
+    k = (html or "").find(QUOTE_HEAD)
+    return html[k:] if k >= 0 else ""
+
+
 def quote_block(orig):
     plain, html = bodies(orig)
     if not html:
@@ -1929,14 +2329,16 @@ def quote_block(orig):
     f = addrs(hdr(orig, "From"))
     fn, fa = f[0] if f else ("", "")
 
+    esc = htmlmod.escape        # every name, address and subject here comes from the sender
+
     def people(v):
-        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (htmlmod.escape(n or a_), a_) for n, a_ in addrs(v))
+        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
     cc = people(hdr(orig, "Cc"))
-    head = ('<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
+    head = (QUOTE_HEAD +
             '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
             '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
-            % (htmlmod.escape(fn or fa), fa, t.year, t.month, t.day, WEEK[t.weekday()],
-               t.strftime("%H:%M"), htmlmod.escape(hdr(orig, "Subject")), people(hdr(orig, "To")),
+            % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
+               t.strftime("%H:%M"), esc(hdr(orig, "Subject")), people(hdr(orig, "To")),
                "<div>抄送：%s</div>" % cc if cc else ""))
     return head + ('<blockquote style="margin:0 0 0 4px;padding-left:8px;border-left:2px solid #d0d3d6">'
                    + html + "</blockquote>")
@@ -1974,13 +2376,18 @@ def clean_recipients(to, cc, drop):
     return out_to, out_cc
 
 
+# a reply or forward prefix as mail apps write it, with an ASCII or a full-width colon (RE：, 回复：)
+REPLY_PREFIX_RE = re.compile(r"(?i)\s*(re|aw|回复|答复|回覆|答覆|trả lời)\s*[:：]")
+FWD_PREFIX_RE = re.compile(r"(?i)\s*(fw|fwd|wg|tr|转发|轉寄|轉發|chuyển tiếp)\s*[:：]")
+
+
 def reply_subject(s):
-    """Re: + the full original subject; only an existing Re: is not doubled."""
-    return s if re.match(r"(?i)\s*re\s*:", s) else "Re: " + s
+    """Re: + the full original subject; only an existing reply prefix is not doubled."""
+    return s if REPLY_PREFIX_RE.match(s or "") else "Re: " + (s or "")
 
 
 def forward_subject(s):
-    return s if re.match(r"(?i)\s*(fw|fwd)\s*:", s) else "Fw: " + s
+    return s if FWD_PREFIX_RE.match(s or "") else "Fw: " + (s or "")
 
 
 def text_to_html(t):
@@ -1988,11 +2395,18 @@ def text_to_html(t):
 
 
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False):
-    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'."""
+                  signature_html="", high=False, font="", quote_html="", quote_src=None):
+    """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
+    (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times.
+    quote_html, quote_src: with no orig, a quote already made (quote_of an earlier draft) and the mail
+    that holds its pictures."""
+    if font and signature_html.strip():
+        signature_html = '<div data-rd-sig="1" style="%s">%s</div>' % (re.sub(r'["<>&\\]', "", font), signature_html)
     html = body_html + "<div><br></div>" + signature_html
     if orig is not None:
         html += "<div><br></div>" + quote_block(orig)
+    elif quote_html:
+        html += "<div><br></div>" + quote_html
     msg = EmailMessage()
     msg["From"] = formataddr((CFG.name, CFG.user)) if CFG.name else CFG.user
     if to:
@@ -2019,32 +2433,70 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
     msg.add_alternative(html, subtype="html")
     hpart = msg.get_body(("html",))
     used = set(re.findall(r"(?i)cid:([^\"'\s>)]+)", html))
-    if orig is not None:
+    src = orig if orig is not None else quote_src
+    if src is not None:
         done = set()
-        for p in orig.walk():
+        for p in src.walk():
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
-            if cid in used and cid not in done and is_inline(p):
+            if cid in used and cid not in done and is_inline(p, used):
                 mt, st = image_type(p).split("/", 1)
-                hpart.add_related(p.get_payload(decode=True) or b"", mt, st, cid="<%s>" % cid,
-                                  filename=fname(p))
+                add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
                 done.add(cid)
-        if mode == "forward":
+        if mode == "forward" and orig is not None:
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
-                    msg.add_attachment(part_bytes(p), "application", "octet-stream", filename=one_line(fname(p)))
+                    add_file(msg, part_bytes(p), "application", "octet-stream", fname(p))
                     continue
                 mt, st = p.get_content_type().split("/", 1)
-                msg.add_attachment(part_bytes(p), mt, st, filename=one_line(fname(p)))
+                add_file(msg, part_bytes(p), mt, st, fname(p))
     for f in attach:
-        ctype = mimetypes.guess_type(f)[0] or "application/octet-stream"
+        # a path, or (path, the file's own name): the name on disk may be a safe stand-in for it
+        f, name = f if isinstance(f, tuple) else (f, os.path.basename(f))
+        name = one_line(name or "").strip() or os.path.basename(f)
+        ctype = mimetypes.guess_type(name)[0] or mimetypes.guess_type(f)[0] or "application/octet-stream"
         if ctype.startswith("message/"):     # a .eml file: add_attachment wants a Message object for these
             ctype = "application/octet-stream"
         mt, st = ctype.split("/", 1)
         with open(f, "rb") as fh:
-            msg.add_attachment(fh.read(), mt, st, filename=one_line(os.path.basename(f)))
+            add_file(msg, fh.read(), mt, st, name)
     return msg
+
+
+def add_file(holder, data, mt, st, name, cid=None):
+    """Add a file to the mail, or with cid a picture its HTML shows (holder: the HTML part), under the
+    file's own name: as RFC 2231 filename*= (what the email module writes) and, for the mail apps that
+    read only that, as name= in RFC 2047 words on Content-Type, as Thunderbird and Outlook write it."""
+    name = one_line(name or "").strip() or None
+    if cid:
+        holder.add_related(data, mt, st, cid=cid, filename=name)
+    else:
+        holder.add_attachment(data, mt, st, filename=name)
+    if name:
+        name_param(list(holder.iter_parts())[-1], name)
+
+
+def name_param(part, name):
+    if name.isascii():
+        part.set_param("name", name)
+        return
+    words, cur = [], b""
+    for ch in name:         # whole characters in each word; 42 bytes = 56 base64 = a 68-character word
+        b = ch.encode()
+        if cur and len(cur) + len(b) > 42:
+            words.append(cur)
+            cur = b""
+        cur += b
+    words.append(cur)
+    value = "=?utf-8?B?%s?=" % "?=\n =?utf-8?B?".join(base64.b64encode(w).decode() for w in words)
+    keep = "".join('; %s="%s"' % (k, v) for k, v in (part.get_params() or [])[1:]
+                   if k.lower() != "name" and isinstance(v, str) and v.isascii() and '"' not in v)
+    # set as it is to be written: the email module would turn the words back into RFC 2231
+    for k, (h, _) in enumerate(part._headers):
+        if h.lower() == "content-type":
+            part._headers[k] = (h, '%s%s;\n name="%s"' % (part.get_content_type(), keep, value))
+            break
 
 
 def append_draft(m, raw):
@@ -2267,6 +2719,20 @@ def in_folder(m, folder, mid, last=15):
     return (mid.strip().strip("<>") + ">").encode() in blob
 
 
+def uid_of_mid(m, folder, mid, last=30):
+    """The UID of the mail with this Message-ID among the folder's last ones, or 0."""
+    select(m, folder)
+    u = uids_of(m)[-last:]
+    want = (mid or "").strip().strip("<>").encode()
+    if not u or not want:
+        return 0
+    typ, data = m.uid("FETCH", ",".join(map(str, u)), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    for seg in segments(data or []):
+        if b"<" + want + b">" in b"".join(p for p in seg if isinstance(p, bytes)):
+            return seg_uid(seg) or 0
+    return 0
+
+
 def sent_log():
     return os.path.join(CFG.home, "sent.log")
 
@@ -2283,11 +2749,22 @@ def already_sent(mid):
     return None
 
 
-def log_sent(mid, subject):
+def log_sent(mid, subject, bcc=""):
+    """One line per mail sent: Message-ID, when, subject, and who was Bcc'd (the mail itself no longer says)."""
     os.makedirs(CFG.home, exist_ok=True)
     with open(sent_log(), "a", encoding="utf-8") as f:
-        f.write("%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
-                                  re.sub(r"\s+", " ", subject)[:200]))
+        f.write("%s\t%s\t%s\t%s\n" % (mid, dt.datetime.now(CFG.tz).strftime("%Y-%m-%d %H:%M:%S"),
+                                      re.sub(r"\s+", " ", subject)[:200], re.sub(r"\s+", " ", bcc or "")))
+
+
+def sent_copy(out, bcc):
+    """The copy for Sent: the mail as it went out, plus its Bcc line, as other mail apps keep it.
+    Only this copy has it; the mail sent over SMTP never does."""
+    if not bcc:
+        return out
+    copy = to_msg(out)
+    copy["Bcc"] = one_line(bcc)
+    return copy.as_bytes(policy=OUT_POLICY)
 
 
 def cmd_send(a):
@@ -2354,15 +2831,63 @@ def servers_from_mx(domain):
     return None
 
 
+class SendLater(SystemExit):
+    """Sending stopped before anything left this machine (no network, the server did not answer,
+    it said "try later"): trying again later cannot send the mail twice. .cause is what went wrong."""
+    def __init__(self, cause):
+        super().__init__("not sent, nothing left this computer: %s" % (cause or type(cause).__name__))
+        self.cause = cause
+
+
+MAYBE_SENT = ("The connection broke while the mail was going out, so it may have been sent. "
+              "Check Sent before you send it again.")
+
+
+def smtp_send(s, frm, rcpts, out):
+    """sendmail in its two halves: until DATA nothing has left (SendLater on a failure there); a break
+    while the mail itself goes out may have sent it (MAYBE_SENT). Returns the refused recipients."""
+    try:
+        s.ehlo_or_helo_if_needed()
+        code, resp = s.mail(frm)
+        if code != 250:
+            raise smtplib.SMTPSenderRefused(code, resp, frm)
+        refused = {}
+        for r in rcpts:
+            code, resp = s.rcpt(r)
+            if code not in (250, 251):
+                refused[r] = (code, resp)
+        if len(refused) == len(rcpts):
+            raise smtplib.SMTPRecipientsRefused(refused)
+    except (smtplib.SMTPSenderRefused, smtplib.SMTPRecipientsRefused):
+        raise                                   # the server will not take it: trying again does not help
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        code, resp = s.data(out)
+    except smtplib.SMTPDataError as e:          # the server answered: it did not take the mail
+        if 400 <= e.smtp_code < 500:
+            raise SendLater(e) from e
+        raise
+    except (OSError, smtplib.SMTPException):
+        die(MAYBE_SENT)
+    return refused
+
+
 def send_draft(folder, uid, wait=3):
     """Send one draft over SMTP, make sure Sent has a copy, delete the draft, mark the original
-    answered. Returns what happened; dies (SystemExit) before sending when it must not go out."""
+    answered. Returns what happened; dies (SystemExit) before sending when it must not go out, and
+    raises SendLater when it stopped before anything left (a network or server hiccup)."""
     sent = CFG.folders["sent"]
-    with session() as m:
-        raw = fetch_raw(m, folder, uid)
-        msg = to_msg(raw)
-        mid = hdr(msg, "Message-ID").strip()
-        when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    try:
+        with session() as m:
+            raw = fetch_raw(m, folder, uid)
+            msg = to_msg(raw)
+            mid = hdr(msg, "Message-ID").strip()
+            when = already_sent(mid) or ("(found in Sent)" if mid and in_folder(m, sent, mid, last=40) else None)
+    except SystemExit:
+        raise
+    except Exception as e:      # noqa: BLE001 - the draft was not even read: nothing went out
+        raise SendLater(e) from e
     if when:
         die("NOT SENT AGAIN: this draft already went out %s. Check Sent; remove the draft with delete-draft."
             % when)
@@ -2372,20 +2897,31 @@ def send_draft(folder, uid, wait=3):
     rcpts = [x for _, x in addrs(hdr(msg, "To")) + addrs(hdr(msg, "Cc")) + addrs(hdr(msg, "Bcc"))]
     if not rcpts:
         die("the draft has no recipients")
+    bcc = hdr(msg, "Bcc").strip()
     del msg["Bcc"]
     del msg["Date"]
     msg["Date"] = formatdate(localtime=True)     # the time it is sent, not when the draft was made
-    out = msg.as_bytes(policy=OUT_POLICY)
-    s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    out = msg.as_bytes(policy=OUT_POLICY)        # what goes out: never a Bcc line
+    keep = sent_copy(out, bcc)
+    pw = password()
     try:
-        s.login(CFG.user, password())
-        refused = s.sendmail(CFG.user, rcpts, out)
+        s = smtp_open(CFG.smtp["host"], CFG.smtp["port"], 300)
+    except (OSError, smtplib.SMTPException) as e:
+        raise SendLater(e) from e
+    try:
+        try:
+            s.login(CFG.user, pw)
+        except smtplib.SMTPAuthenticationError:
+            raise                               # a wrong password stays wrong
+        except (OSError, smtplib.SMTPException) as e:
+            raise SendLater(e) from e
+        refused = smtp_send(s, CFG.user, rcpts, out)
     finally:
         try:
             s.quit()
         except Exception:
             pass
-    log_sent(mid, hdr(msg, "Subject"))           # from here on a retry refuses instead of sending twice
+    log_sent(mid, hdr(msg, "Subject"), bcc)      # from here on a retry refuses instead of sending twice
     saved, cleanup = False, []
     try:
         # a fresh connection: the first one may have timed out during a long upload
@@ -2396,7 +2932,7 @@ def send_draft(folder, uid, wait=3):
                     saved = True
                     break
             if not saved:
-                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), out)
+                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), keep)
                 if typ == "OK":
                     pass
                 elif b"saved by smtp" in b" ".join(x for x in data if isinstance(x, bytes)).lower():
@@ -2451,7 +2987,7 @@ def move_uids(m, folder, uids, dest):
                 else:
                     m.expunge()
         if typ != "OK":
-            die("the server refused the move after %d mails: %s" % (moved, data))
+            raise Refused("the server refused the move after %d mails: %s" % (moved, data), moved)
         moved += len(uids[i:i + 200])
     return moved
 
@@ -2719,6 +3255,26 @@ def running(cmd):
             f.close()
             with contextlib.suppress(OSError):
                 os.remove(path)
+
+
+def pid_running(pid, cmd="app"):
+    """True when process pid still runs `cmd` (its run marker is locked)."""
+    if not isinstance(pid, int):
+        return False
+    path = os.path.join(CFG.home, "run", "%d-%s.lock" % (pid, cmd))
+    if not os.path.exists(path):
+        return False
+    try:
+        f = open(path, "a+")
+    except OSError:
+        return True
+    try:
+        free = try_lock(f)
+        if free:
+            unlock(f)
+        return not free
+    finally:
+        f.close()
 
 
 def busy_commands():
@@ -3031,10 +3587,14 @@ def add_to_path(d, home):
 
 # ---- hand-off to the app: a small file in <data dir>/asks that the running app picks up
 
+_ASK_N = itertools.count()
+
+
 def tell_app(kind, mail_id, subject=""):
     d = os.path.join(CFG.home, "asks")
     os.makedirs(d, exist_ok=True)
-    name = "%d-%d" % (time.time_ns(), os.getpid())
+    # the clock can repeat (Windows counts in 15 ms steps): the counter keeps two quick hand-offs apart
+    name = "%020d-%d-%06d" % (time.time_ns(), os.getpid(), next(_ASK_N))
     tmp = os.path.join(d, name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"kind": kind, "id": mail_id, "subject": subject, "at": int(time.time())}, f, ensure_ascii=False)
@@ -3160,11 +3720,15 @@ def cmd_schedule(a):
         return
     drafts_only(a.id, "schedule")
     if a.cancel:
-        items = sched_read()
-        keep = [x for x in items if x["id"] != a.id]
-        if len(keep) == len(items):
-            die("%s is not scheduled" % a.id)
-        sched_write(keep)
+        with file_lock("sched", True):      # the app changes the list too (ragdoll_app.sched_edit)
+            items = sched_read()
+            keep = [x for x in items if x["id"] != a.id]
+            if len(keep) == len(items):
+                die("%s is not scheduled" % a.id)
+            if any(isinstance(x.get("sending"), dict) and pid_running(x["sending"].get("pid"))
+                   for x in items if x["id"] == a.id):
+                die("%s is going out right now" % a.id)
+            sched_write(keep)
         print(json.dumps({"id": a.id, "scheduled": False}))
         return
     if not a.yes:
@@ -3178,8 +3742,9 @@ def cmd_schedule(a):
         die("that time has already passed")
     if at > time.time() + 5 * 366 * 86400:
         die("pick a time within the next five years")
-    items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
-    sched_write(items)
+    with file_lock("sched", True):
+        items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
+        sched_write(items)
     print(json.dumps({"id": a.id, "at": local_time(at), "app_running": app_running(),
                       "note": "Ragdoll Mail sends it at that time while the app is open; if the app is "
                               "closed then, it goes out when the app next starts."}, ensure_ascii=False, indent=1))

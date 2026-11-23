@@ -9,7 +9,14 @@ VERSION = re.search(r'^__version__ = "([^"]+)"', open("ragdoll.py", encoding="ut
 # 1024 grid (824 px tile, room for the shadow); Windows keeps the full-size one.
 ICON = "assets/icon-mac.png" if sys.platform == "darwin" else "assets/icon.png"
 
-a = Analysis(["ragdoll_app.py"], datas=[("app", "app")], hiddenimports=["ragdoll"] + (["UserNotifications"] if sys.platform == "darwin" else []),
+# Windows has no time zone database of its own: invite times need the tzdata package's files
+TZ = []
+if sys.platform == "win32":
+    from PyInstaller.utils.hooks import collect_data_files
+    TZ = collect_data_files("tzdata")
+
+a = Analysis(["ragdoll_app.py"], datas=[("app", "app")] + TZ,
+             hiddenimports=["ragdoll"] + (["UserNotifications"] if sys.platform == "darwin" else []) + (["tzdata"] if sys.platform == "win32" else []),
              excludes=["tkinter", "unittest", "pydoc"])
 pyz = PYZ(a.pure)
 
