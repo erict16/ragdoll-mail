@@ -71,6 +71,11 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
 .top nav { display: flex; gap: 24px; margin-left: auto; font-size: 14.5px; color: var(--text-2); }
 .top nav a { text-decoration: none; }
 .top nav a:hover { color: var(--text); }
+.top nav a.gh { display: inline-flex; align-items: center; gap: 8px; }
+.top .stars { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px 1px 6px; border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; font-variant-numeric: tabular-nums; line-height: 18px; }
+.top .stars[hidden] { display: none; }
+.top .stars svg.i { width: 12px; height: 12px; }
+.top .stars b { font-weight: 500; }
 .top .btn { padding: 7px 14px; font-size: 14px; }
 
 /* ---- buttons */
@@ -236,7 +241,6 @@ h2.big { font-size: clamp(40px, 6.6vw, 84px); line-height: 1.02; letter-spacing:
 .fact .ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--accent-soft); color: var(--accent-ink); }
 .fact h3 { margin: 20px 0 8px; font-size: 21px; letter-spacing: -.015em; line-height: 1.25; }
 .fact p { margin: 0; color: var(--text-2); font-size: 15.5px; }
-.cmp-link { text-align: center; margin: 32px 0 0; font-size: 15.5px; }
 
 /* ---- why it exists, in one line */
 .quote { padding-top: 140px; text-align: center; }
@@ -248,6 +252,22 @@ h2.big { font-size: clamp(40px, 6.6vw, 84px); line-height: 1.02; letter-spacing:
 .quote .sign::before { content: "— "; }
 
 /* ---- questions */
+#compare { padding-top: 140px; }
+#compare .sub.center { margin-left: auto; margin-right: auto; }
+#compare .table { margin-top: 40px; }
+#compare .cmp { width: auto; left: auto; }
+#compare .cmp table { table-layout: fixed; min-width: 880px; }
+#compare .cmp thead th:first-child { width: 24%; }
+#compare .cmp th, #compare .cmp td { vertical-align: middle; padding: 14px 12px; }
+#compare .cmp td, #compare .cmp thead th:not(:first-child) { text-align: center; }
+#compare .cmp thead th:nth-child(2) { color: var(--accent); font-size: 13.5px; }
+#compare .note { margin-top: 14px; }
+#compare .gaps { margin-top: 28px; font-size: 16px; }
+.cmp tbody tr:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.cmp tbody th { position: sticky; left: 0; background: var(--card); z-index: 1; }
+.cmp td.y svg.i { width: 18px; height: 18px; color: var(--accent); }
+.cmp td.n { color: var(--text-3); }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 #questions { padding-top: 140px; }
 .faq { max-width: 780px; margin: 40px auto 0; }
 .faq details { border-bottom: 1px solid var(--line); }
@@ -294,7 +314,7 @@ footer .grow { flex: 1; }
   .race-row .race-track { grid-column: 1 / -1; grid-row: 2; }
   .race-val { text-align: right; }
   .race-foot { flex-direction: column; }
-  .facts-wrap, .quote, #questions { padding-top: 96px; }
+  .facts-wrap, #compare, .quote, #questions { padding-top: 96px; }
   .finale { padding: 120px 0 110px; }
 }
 @media (max-width: 520px) {

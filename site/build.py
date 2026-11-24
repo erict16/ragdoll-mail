@@ -10,6 +10,7 @@ REPO = "https://github.com/erict16/ragdoll-mail"
 DL = REPO + "/releases/latest/download/"
 
 ICONS = {
+    "star": '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     "undo": '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
@@ -45,7 +46,7 @@ EN = {
     "desc": "A free, open-source mail app for Mac and Windows with a command line built in. Claude Code, Codex and "
             "other agents can search your mail, draft replies and send them once you say yes. Local SQLite search, "
             "any IMAP mailbox.",
-    "nav": ["How it works", "Speed", "Compare"], "download": "Download",
+    "download": "Download",
     "pill": ["Free", "Open source", "Mac and Windows"],
     "h1": "The mail app your AI agent <em>can actually use</em>.",
     "lead": "A desktop mail app with a command line built in. Claude Code, Codex or any agent can search your mail "
@@ -94,7 +95,6 @@ EN = {
          "with us."),
         ("check", "Free and open source", "No ads, no subscription. MIT license, so anyone can check what it does."),
     ],
-    "c_more": "Compare with Superhuman, Shortwave, Foxmail and others",
     "quote": "Spark started charging, and I wanted a free alternative to it. Himalaya was too slow to search my mail. "
              "So I built Ragdoll Mail.",
     "sign": "Eric Tan, who reads his own mail in it every day",
@@ -110,6 +110,14 @@ EN = {
          "and press Send yourself."),
         ("Is my mail safe?", "Your mail is stored on your computer and on your own mail server, and nowhere else. "
          "The app sends nothing to us. We do not run a server."),
+        ("Is there a good Foxmail alternative for Mac?",
+         "Ragdoll Mail is one: it runs on Mac (Apple silicon) and Windows, signs in to the same mailboxes as Foxmail "
+         "(Tencent Exmail, QQ Mail, 163 and any IMAP mailbox), and its search answers at once."),
+        ("Which mail app works best with Tencent Exmail?",
+         "Any IMAP app can read Exmail, but Exmail's own search gives back the whole folder. Ragdoll Mail searches "
+         "its own index instead, so only the mails with your words come back."),
+        ("Can I keep my current mail app?",
+         "Yes. Ragdoll Mail reads the same mailbox. Your phone and your other mail apps keep working as before."),
         ("Is it really free?", "Yes. There are no ads, no subscription and no account. The code is open source under "
          "the MIT license, so anyone can check what it does."),
     ],
@@ -122,7 +130,7 @@ ZH = dict(EN, **{
     "title": "Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）",
     "desc": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，"
             "你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。",
-    "nav": ["怎么用", "速度", "对比"], "download": "下载",
+    "download": "下载",
     "pill": ["免费", "开源", "Mac 和 Windows"],
     "h1": "让 AI 助手<em>真正用得上</em>的邮件软件。",
     "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复，你点头后还能直接帮你发。",
@@ -168,7 +176,6 @@ ZH = dict(EN, **{
         ("lock", "邮件只在你手里", "软件只和你自己的邮件服务器打交道，中间没有别家的云，也不用注册账号。"),
         ("check", "免费，开源", "没有广告，不用订阅。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
-    "c_more": "和 Superhuman、Shortwave、Foxmail 等软件对比",
     "quote": "Spark 开始收费了，我想要一个免费的 Spark 平替。Himalaya 搜邮件又太慢。所以我自己做了 Ragdoll Mail。",
     "sign": "Eric Tan，每天都用它收发自己的邮件",
 
@@ -179,6 +186,13 @@ ZH = dict(EN, **{
         ("AI 会不会不问我就把邮件发出去？", "不会误发。发送命令必须带上明确的确认才会执行，我们推荐的设置也会让 AI 先问你。"
          "你说可以，AI 就用 ragdoll send 帮你发；你也可以在软件里打开草稿，自己点发送。"),
         ("我的邮件安全吗？", "邮件只存在两个地方：你的电脑，和你自己的邮件服务器。软件不会把任何东西发给我们，我们也没有服务器。"),
+        ("Mac 上有好用的 Foxmail 替代吗？",
+         "Ragdoll Mail 就是一个：支持 Mac（M 系列芯片）和 Windows，能登录 Foxmail 能登录的邮箱"
+         "（腾讯企业邮箱、QQ 邮箱、163 和任何 IMAP 邮箱），而且搜索秒出结果。"),
+        ("腾讯企业邮箱用哪个客户端好？",
+         "任何支持 IMAP 的软件都能收企业邮箱，但企业邮箱自带的搜索会把整个文件夹都返回。"
+         "Ragdoll Mail 搜的是自己的本地索引，只返回真正含这些词的邮件。"),
+        ("能和现在用的邮件软件一起用吗？", "能。Ragdoll Mail 读的是同一个邮箱，手机和其他邮件软件照常用。"),
         ("真的免费吗？", "真的。没有广告，不用订阅，也不用注册。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
     "e_h2": "给你的 AI 一个邮箱。", "e_sub": "免费开源，不用注册，没有广告。",
@@ -186,8 +200,20 @@ ZH = dict(EN, **{
 })
 
 
+def cmp_cell(c):
+    e = html.escape
+    if c in ("Yes", "是", "有", "可以"):
+        return '<td class="y">%s<span class="vh">%s</span></td>' % (icon("check"), e(c))
+    if c in ("No", "否", "没有"):
+        return '<td class="n"><span aria-hidden="true">–</span><span class="vh">%s</span></td>' % e(c)
+    return "<td>%s</td>" % e(c)
+
+
 def page(L):
     e = html.escape
+    C = COMPARE_EN if L["lang"] == "en" else COMPARE_ZH
+    cmp_head = "".join("<th>%s</th>" % e(c) for c in C["cmp_cols"])
+    cmp_rows = "".join("<tr><th>%s</th>%s</tr>" % (e(r[0]), "".join(cmp_cell(c) for c in r[1:])) for r in C["cmp"])
     up = "../" if L["path"] else ""
     url = SITE + L["path"]
     other_url = SITE + ("" if L["path"] else "zh/")
@@ -276,11 +302,8 @@ def page(L):
 <header class="top"><div class="wrap">
   <a class="brand" href="{up or './'}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
   <nav>
-    <a class="hide-s" href="#agent">{e(L['nav'][0])}</a>
-    <a class="hide-s" href="#speed">{e(L['nav'][1])}</a>
-    <a class="hide-s" href="compare/">{e(L['nav'][2])}</a>
     <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
-    <a href="{REPO}">GitHub</a>
+    <a class="gh" href="{REPO}">GitHub<span class="stars" data-stars hidden>{icon("star")}<b></b></span></a>
   </nav>
   <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(L['download'])}</a>
 </div></header>
@@ -322,7 +345,14 @@ def page(L):
 
 <section class="facts-wrap"><div class="wrap">
   <div class="facts">{facts}</div>
-  <p class="cmp-link reveal"><a class="more" href="compare/">{e(L['c_more'])} →</a></p>
+</div></section>
+
+<section id="compare"><div class="wrap">
+  <h2 class="center reveal">{e(C['cmp_h'])}</h2>
+  <p class="sub center reveal">{e(C['lead'])}</p>
+  <div class="table cmp reveal"><table><thead><tr>{cmp_head}</tr></thead><tbody>{cmp_rows}</tbody></table></div>
+  <p class="note center">{e(C['cmp_note'])}</p>
+  <p class="sub center gaps reveal">{e(C['gaps'])}</p>
 </div></section>
 
 <section class="quote"><div class="wrap reveal">
@@ -351,7 +381,7 @@ def page(L):
   <a href="{REPO}/blob/main/docs/command-line.md">{e(L['foot'][1])}</a>
   <a href="{REPO}/issues">{e(L['foot'][2])}</a>
   <a href="exmail/">{e(L['foot'][3])}</a>
-  <a href="compare/">{e(L['foot'][4])}</a>
+  <a href="#compare">{e(L['foot'][4])}</a>
   <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
 </div></footer>
 <script src="{up}main.js" defer></script>
@@ -467,21 +497,14 @@ GUIDE_ZH = {
 
 
 # ---------------------------------------------------------------- the comparison
-# What people search when they look for another mail app ("Foxmail alternative", "Exmail client for Mac"):
+# The comparison table on the landing page ("Foxmail alternative", "Exmail client for Mac"):
 # the same table as the README, gaps included.
 
 YES = "Yes"
 COMPARE_EN = {
-    "lang": "en", "path": "compare/", "other": "../zh/compare/", "other_name": "简体中文", "hreflang": "zh-Hans",
-    "en_path": "compare/", "zh_path": "zh/compare/", "home": "../", "og": "og.png",
-    "title": "Ragdoll Mail vs Foxmail, Outlook, Apple Mail, Thunderbird and Spark",
-    "desc": "A free, open-source mail app for Mac and Windows compared with Foxmail, Outlook, Apple Mail, Thunderbird "
-            "and Spark: price, privacy, search, Tencent Exmail and QQ Mail support, and what it does not do yet.",
-    "kick": "Compare",
-    "h1": "How Ragdoll Mail compares",
+    "cmp_h": "How it compares",
     "lead": "Ragdoll Mail does one thing: your own mailbox, with a search that finds the mail. Here it is next to "
             "the apps you may know, the good parts and the gaps.",
-    "cmp_h": "Side by side",
     "cmp_cols": ["", "Ragdoll Mail", "Apple Mail", "Outlook (new)", "Thunderbird", "Foxmail", "Spark"],
     "cmp": [
         ("Price", "Free", "Free", "Free with ads, or paid", "Free", "Free", "Free plan; Plus and Pro are paid"),
@@ -491,52 +514,19 @@ COMPARE_EN = {
         ("Open code that anyone can check", YES, "No", "No", YES, "No", "No"),
         ("Your own AI assistant can use the mailbox", YES, "No", "No", "No", "No", "Yes, sending needs Pro"),
         ("Phone app", "No", YES, YES, "Android", "No", YES),
-        ("Several mailboxes in one window", "Not yet", YES, YES, YES, YES, YES),
+        ("Several mailboxes in one window", "On the roadmap", YES, YES, YES, YES, YES),
     ],
     "cmp_note": "Compared from each product's public pages, November 2026. Something wrong or out of date? "
                 "Open an issue on GitHub and we will fix it.",
-    "why_blocks": [
-        ("Where Ragdoll Mail is strong", [
-            "Search. It keeps a full-text index on your computer, so a word, a name or an order number finds the right "
-            "mails in under a tenth of a second, in Chinese and English, also offline. Mailboxes like Tencent Exmail "
-            "give back the whole folder when a mail app asks them to search.",
-            "Privacy. The app talks only to your own mail server. Your password is in the system's password store.",
-            "Fewer mistakes. Undo send, send later, and a check for a missing attachment, an empty subject or a "
-            "[Name] left in the text.",
-            "Chinese mail. Names and file names from older Chinese mail systems show as they should."]),
-        ("Where the others are better", [
-            "Ragdoll Mail has no phone app and no calendar, and it shows one mailbox at a time. If you need those, "
-            "use one of the others, or use both: they read the same mailbox."]),
-    ],
-    "q_h": "Questions",
-    "q": [
-        ("Is there a good Foxmail alternative for Mac?",
-         "Ragdoll Mail is one: it runs on Mac (Apple silicon) and Windows, signs in to the same mailboxes as Foxmail "
-         "(Tencent Exmail, QQ Mail, 163 and any IMAP mailbox), and its search answers at once."),
-        ("Which mail app works best with Tencent Exmail?",
-         "Any IMAP app can read Exmail, but Exmail's own search gives back the whole folder. Ragdoll Mail searches "
-         "its own index instead, so only the mails with your words come back."),
-        ("Can I keep my current mail app?",
-         "Yes. Ragdoll Mail reads the same mailbox. Your phone and your other mail apps keep working as before."),
-        ("What does it cost?", "Nothing. It is free and open source (MIT). No account, no ads."),
-    ],
-    "cta_h": "Try it on your own mailbox",
-    "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
-    "nav_home": "Ragdoll Mail", "foot": ["Source code", "Command line", "Report a problem"],
+    "gaps": "No phone app and no calendar. Several mailboxes in one window is on the roadmap. Need one of "
+            "those today? Use another app alongside: both read the same mailbox.",
 }
 
 SHI = "有"
 COMPARE_ZH = {
-    "lang": "zh-Hans", "path": "zh/compare/", "other": "../../compare/", "other_name": "English", "hreflang": "en",
-    "en_path": "compare/", "zh_path": "zh/compare/", "home": "../", "og": "og-zh.png",
-    "title": "Foxmail 替代之选：腾讯企业邮箱、QQ 邮箱的 Mac / Windows 客户端对比",
-    "desc": "免费开源的邮件客户端 Ragdoll Mail，和 Foxmail、Outlook、苹果邮件、Thunderbird、Spark 对比："
-            "价格、隐私、搜索、腾讯企业邮箱和 QQ 邮箱支持，以及它还做不到的地方。",
-    "kick": "对比",
-    "h1": "Ragdoll Mail 和其他邮件软件比",
+    "cmp_h": "和其他邮件软件比",
     "lead": "Ragdoll Mail 只做一件事：用你自己的邮箱收发邮件，而且一搜就到。下面把它和常见的邮件软件放在一起，"
             "优点和不足都写清楚。",
-    "cmp_h": "逐项对比",
     "cmp_cols": ["", "Ragdoll Mail", "苹果“邮件”", "新版 Outlook", "Thunderbird", "Foxmail", "Spark"],
     "cmp": [
         ("价格", "免费", "免费", "免费版有广告，或付费", "免费", "免费", "有免费版，Plus 和 Pro 收费"),
@@ -545,33 +535,10 @@ COMPARE_ZH = {
         ("代码公开，谁都能查", "是", "否", "否", "是", "否", "否"),
         ("你自己的 AI 助手可以用这个邮箱", "是", "否", "否", "否", "否", "可以，发信要 Pro"),
         ("手机版", "没有", SHI, SHI, "安卓", "没有", SHI),
-        ("一个窗口里看多个邮箱", "还没有", "可以", "可以", "可以", "可以", "可以"),
+        ("一个窗口里看多个邮箱", "计划中", "可以", "可以", "可以", "可以", "可以"),
     ],
     "cmp_note": "根据各产品公开的页面整理，2026 年 11 月。有写错或过时的地方？在 GitHub 上告诉我们，马上改。",
-    "why_blocks": [
-        ("Ragdoll Mail 强在哪", [
-            "搜索。它在你电脑上建全文索引，搜一个词、一个人名或订单号，0.1 秒内就找到对的邮件，中文英文都行，断网也能搜。"
-            "腾讯企业邮箱这类邮箱，邮件软件让它按内容搜时，它会把整个文件夹都返回。",
-            "隐私。软件只连你自己的邮件服务器，密码存在系统自带的钥匙串里。",
-            "少出错。发出后可以撤回，可以定时发送；写了“附件”却没附件、主题空着、[姓名] 没改，都会提醒。",
-            "中文邮件。老系统发来的中文名字和附件名，都能正常显示，不会乱码。"]),
-        ("别人强在哪", [
-            "Ragdoll Mail 没有手机版，没有日历，一次只能看一个邮箱。需要这些的话，用别的软件，或者两个一起用：它们读的是同一个邮箱。"]),
-    ],
-    "q_h": "常见问题",
-    "q": [
-        ("Mac 上有好用的 Foxmail 替代吗？",
-         "Ragdoll Mail 就是一个：支持 Mac（M 系列芯片）和 Windows，能登录 Foxmail 能登录的邮箱"
-         "（腾讯企业邮箱、QQ 邮箱、163 和任何 IMAP 邮箱），而且搜索秒出结果。"),
-        ("腾讯企业邮箱用哪个客户端好？",
-         "任何支持 IMAP 的软件都能收企业邮箱，但企业邮箱自带的搜索会把整个文件夹都返回。"
-         "Ragdoll Mail 搜的是自己的本地索引，只返回真正含这些词的邮件。"),
-        ("能和现在用的邮件软件一起用吗？", "能。Ragdoll Mail 读的是同一个邮箱，手机和其他邮件软件照常用。"),
-        ("收费吗？", "免费，开源（MIT 协议）。不用注册账号，没有广告。"),
-    ],
-    "cta_h": "用你自己的邮箱试试",
-    "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
-    "nav_home": "Ragdoll Mail", "foot": ["源代码", "命令行", "反馈问题"],
+    "gaps": "没有手机版，没有日历。一个窗口看多个邮箱已在计划中。现在就需要的话，可以和别的软件一起用：它们读的是同一个邮箱。",
 }
 
 
@@ -657,7 +624,7 @@ def guide(G):
   <a class="brand" href="{G['home']}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
   <nav>
     <a href="{G['other']}" hreflang="{G['hreflang']}">{e(G['other_name'])}</a>
-    <a href="{REPO}">GitHub</a>
+    <a class="gh" href="{REPO}">GitHub<span class="stars" data-stars hidden>{icon("star")}<b></b></span></a>
   </nav>
   <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(G['mac'][0].split()[0])}</a>
 </div></header>
@@ -694,7 +661,7 @@ def guide(G):
 """
 
 
-PAGES = [("", "zh/"), ("exmail/", "zh/exmail/"), ("compare/", "zh/compare/")]
+PAGES = [("", "zh/"), ("exmail/", "zh/exmail/")]
 
 
 def sitemap():
@@ -710,7 +677,7 @@ def sitemap():
 
 
 if __name__ == "__main__":
-    jobs = [(L["path"], page(L)) for L in (EN, ZH)] + [(G["path"], guide(G)) for G in (GUIDE_EN, GUIDE_ZH, COMPARE_EN, COMPARE_ZH)]
+    jobs = [(L["path"], page(L)) for L in (EN, ZH)] + [(G["path"], guide(G)) for G in (GUIDE_EN, GUIDE_ZH)]
     for path, text in jobs:
         out = os.path.join(HERE, path, "index.html")
         os.makedirs(os.path.dirname(out), exist_ok=True)
