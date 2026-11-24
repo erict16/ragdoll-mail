@@ -2955,13 +2955,14 @@ class Backend:
 
     def api_demo_ask(self, a):
         """In the demo only: what an agent's `ragdoll draft --reply` and `ragdoll open` do, for the tour video:
-        a reply draft is saved and the app is asked to open it."""
+        a reply draft is saved and, unless a["open"] is false, the app is asked to open it."""
         if not self.demo:
             fail("only in the demo")
         c = self.api_compose({"mode": "reply", "id": a["id"]})
         i, _ = self.save(dict(c, html=text_in(a, "html")))
-        self.asks_n += 1
-        self.asks.append({"n": self.asks_n, "kind": "open", "id": i, "subject": c["subject"], "at": int(time.time())})
+        if a.get("open", True):
+            self.asks_n += 1
+            self.asks.append({"n": self.asks_n, "kind": "open", "id": i, "subject": c["subject"], "at": int(time.time())})
         self.bump()
         return {"id": i}
 

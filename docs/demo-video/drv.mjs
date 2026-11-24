@@ -1,8 +1,10 @@
 // Small CDP driver: headless Chromium, real input, screencast to frames with timestamps.
 import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
-// any Chromium with H.264 works; set CHROME to its binary (default: Playwright's headless shell on an Apple silicon Mac)
-const CH = process.env.CHROME || `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1255/chrome-headless-shell-mac-arm64/chrome-headless-shell`;
+// any Chromium with H.264 works; set CHROME to its binary (default: Playwright's headless shell, on a Mac or on Windows)
+const CH = process.env.CHROME || (process.platform === "win32"
+  ? `${process.env.LOCALAPPDATA}/ms-playwright/chromium_headless_shell-1255/chrome-headless-shell-win64/chrome-headless-shell.exe`
+  : `${process.env.HOME}/Library/Caches/ms-playwright/chromium_headless_shell-1255/chrome-headless-shell-mac-arm64/chrome-headless-shell`);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function launch({ width = 1280, height = 800, dpr = 2, theme = "light", lang, transparent } = {}) {
   const port = 20000 + Math.floor(Math.random() * 20000);

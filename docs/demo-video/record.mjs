@@ -12,15 +12,19 @@ const remember = async (name, sel) => { boxes[name] = await D.box(sel); return b
 const byText = async (sel, text) => D.js(`(() => { const x = [...document.querySelectorAll(${JSON.stringify(sel)})].find(b => b.innerText.trim().includes(${JSON.stringify(text)})); if (!x) return null; const r = x.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
 const clickBox = (b, ms) => D.click(b.x + b.w / 2, b.y + b.h / 2, ms);
 const T = lang === "zh"
-  ? { send: "发送", later: "定时发送", tomorrow: "明天上午", first: "刘洋", q1: "PO-1234", q2: "密封条", who: "张伟",
-      ask: "回复张伟：第一批 4 号发货，8 号那周安装没问题。",
+  ? { inbox: "收件箱", drafts: "草稿箱", sent: "已发送", q1: "密封条", hitWho: "刘洋", who: "张伟",
+      ask: "回复张伟：第一批 4 号发货，8 号那周安装没问题。先存草稿。",
       search: "ragdoll search 张伟 PO-1234 --json",
-      done: "草稿已经在 Ragdoll Mail 里打开了，你看好了就发。",
+      saved: "草稿存好了，在草稿箱里。",
+      yes: "看过了，发吧。",
+      done: "发出去了。",
       body: "<div>张经理你好，</div><div><br></div><div>第一批 4 号发货，你们现场把安装排在 8 号那一周没有问题。</div>" }
-  : { send: "Send", later: "Send later", tomorrow: "Tomorrow morning", first: "Daniel", q1: "PO-1234", q2: "door seal", who: "Jane Doe",
-      ask: "Reply to Jane: the first batch ships on the 4th, so the 8th works.",
+  : { inbox: "Inbox", drafts: "Drafts", sent: "Sent", q1: "door seal", hitWho: "Daniel", who: "Jane Doe",
+      ask: "Reply to Jane: the first batch ships on the 4th, so the 8th works. Save it as a draft.",
       search: "ragdoll search jane PO-1234 --json",
-      done: "The draft is open in Ragdoll Mail. Send it when you're happy.",
+      saved: "The reply is saved in your Drafts.",
+      yes: "Looks good. Send it.",
+      done: "Sent.",
       body: "<div>Hi Jane,</div><div><br></div><div>The first batch ships on the 4th, so your team can plan the installation for the week of the 8th.</div>" };
 try {
   await D.goto(`http://127.0.0.1:${process.env.PORT || 8795}/#t=devtok`, 3000);
@@ -31,7 +35,7 @@ try {
     s.textContent = ".tl{position:fixed;left:20px;top:0;height:var(--head-h,52px);display:flex;align-items:center;gap:8px;z-index:99;pointer-events:none}.tl i{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.12)}"
       + ".tw{position:fixed;left:250px;top:118px;width:700px;background:#1b1b1a;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.30),0 0 0 .5px rgba(0,0,0,.4);z-index:98;overflow:hidden;opacity:0;transform:translateY(24px) scale(.97);transition:opacity .35s ease,transform .45s cubic-bezier(.2,.8,.2,1)}"
       + ".tw.on{opacity:1;transform:none}.tw .bar{display:flex;gap:7px;padding:11px 14px 0}.tw .bar b{width:11px;height:11px;border-radius:50%;background:#3a3936}"
-      + ".tw pre{margin:0;color:#d9d7d2;padding:12px 20px 18px;font:14px/1.8 ui-monospace,SFMono-Regular,Menlo,'PingFang SC',monospace;white-space:pre-wrap;min-height:250px}"
+      + ".tw pre{margin:0;color:#d9d7d2;padding:12px 20px 18px;font:14px/1.8 ui-monospace,SFMono-Regular,Menlo,Consolas,'Cascadia Mono','PingFang SC','Microsoft YaHei',monospace;white-space:pre-wrap;min-height:250px}"
       + ".tw .p{color:#7fbab5}.tw .y{color:#e3b366}.tw .c{color:#8b8983}.tw .k{display:inline-block;width:8px;height:16px;background:#d9d7d2;vertical-align:-3px;margin-left:1px}";
     document.head.append(s);
     const tl = document.createElement("div"); tl.className = "tl";
@@ -52,6 +56,7 @@ try {
         step();
       }),
       out: (html) => { lines.push(html); draw(false); },
+      clear: () => { lines = []; draw(false); },
     };
   })()`);
   await sleep(300);
@@ -68,93 +73,97 @@ try {
     const r = (l.data || l).rows.find((x) => JSON.stringify(x).includes(${JSON.stringify(T.who)}));
     return r ? r.id : "inbox:1";
   })()`);
-  const draftId = "drafts:2";
   await D.record(out + "/frames");
   await sleep(200);
   D.mlog.push([D.now(), D.mouse.x, D.mouse.y]);
   D.mark("start");
   await sleep(700);
 
-  // (a) an AI agent in a terminal writes the reply with the ragdoll command; the draft opens in the app
+  const say = (who, text, ms = 30) => D.js(`__term.line(${JSON.stringify(who === "you" ? '<span class="y">you  </span><span class="c">›</span> ' : '<span class="y">agent</span> <span class="c">›</span> ')}, ${JSON.stringify(text)}, ${ms})`);
+  const run = (cmd) => D.js(`__term.line('<span class="p">$</span> ', ${JSON.stringify(cmd)}, 18)`);
+  const show = (text) => D.js(`__term.out(${JSON.stringify('  <span class="c">' + text + "</span>")})`);
+  const nav = async (label, ms = 800) => { const b = await byText("#nav .nav-item", label); await clickBox(b, ms); };
+
+  // (a) an AI agent in a terminal writes the reply with the ragdoll command and saves it as a draft
   D.mark("term");
   await D.js(`__term.show(true)`);
   await sleep(550);
-  await D.js(`__term.line('<span class="y">you  </span><span class="c">›</span> ', ${JSON.stringify(T.ask)}, 34)`);
-  await sleep(550);
-  await D.js(`__term.line('<span class="p">$</span> ', ${JSON.stringify(T.search)}, 20)`);
+  await say("you", T.ask, 32);
+  await sleep(500);
+  await run(T.search);
   await sleep(250);
-  await D.js(`__term.line('<span class="p">$</span> ', ${JSON.stringify("ragdoll draft --reply " + mailId + " --body reply.html")}, 20)`);
-  await sleep(250);
-  await D.js(`__term.line('<span class="p">$</span> ', ${JSON.stringify("ragdoll check " + draftId + " --reply")}, 20)`);
-  await sleep(200);
-  await D.js(`__term.out('  <span class="p">CHECK OK</span>')`);
-  await sleep(350);
-  await D.js(`__term.line('<span class="p">$</span> ', ${JSON.stringify("ragdoll open " + draftId)}, 20)`);
-  // the app opens the draft behind the terminal, as `ragdoll open` makes it do
-  const got = await D.js(`(async () => {
-    const r = await fetch("/api/demo_ask", { method: "POST", headers: { "X-Token": "devtok", "Content-Type": "application/json" }, body: JSON.stringify({ id: ${JSON.stringify(mailId)}, html: ${JSON.stringify(T.body)} }) });
-    const j = await r.json(); window.ragdollPoll(); return JSON.stringify(j);
+  await run("ragdoll draft --reply " + mailId + " --body reply.html");
+  // the draft lands in the mailbox, as `ragdoll draft` makes it do
+  const draftId = await D.js(`(async () => {
+    const r = await fetch("/api/demo_ask", { method: "POST", headers: { "X-Token": "devtok", "Content-Type": "application/json" }, body: JSON.stringify({ id: ${JSON.stringify(mailId)}, html: ${JSON.stringify(T.body)}, open: false }) });
+    const j = await r.json(); window.ragdollPoll(); return (j.data || j).id;
   })()`);
-  console.log("draft", got);
+  console.log("draft", draftId);
+  const shortId = "drafts:" + String(draftId).split(":").pop();
+  await show(`{"id": "${shortId}"}`);
+  await sleep(250);
+  await run("ragdoll check " + shortId + " --reply");
+  await show('<span class="p">CHECK OK</span>');
   await sleep(300);
-  await D.js(`__term.line('<span class="y">agent</span> <span class="c">›</span> ', ${JSON.stringify(T.done)}, 20)`);
+  await say("agent", T.saved, 22);
   D.mark("termdone");
-  await sleep(1500);
+  await sleep(1300);
   D.mark("reveal");
   await D.js(`__term.show(false)`);
-  await sleep(1000);
-  // (b) you read it and press Send; undo
-  const sb = await D.box(`#toolbar button[data-tip="${T.send}"]`);
-  await D.move(sb.x + sb.w / 2, sb.y + sb.h / 2, 900);
-  await sleep(350);
-  await clickBox(sb, 120);
-  D.mark("sent");
-  await sleep(250);
-  const ub = await D.box("#toasts .toast-act");
-  boxes.toast = await D.box("#toasts .toast");
-  await D.move(ub.x + ub.w / 2, ub.y + ub.h / 2, 750);
-  await sleep(450);
-  D.mark("undo");
-  await clickBox(ub, 100);
-  await sleep(900);
-  D.mark("back");
-  // (c) send later
-  const lb = await D.box(`#toolbar button[data-tip="${T.later}"]`);
-  await clickBox(lb, 700);
-  D.mark("menu");
-  await sleep(500);
-  boxes.menu = await D.box("#layer .menu");
-  const tb = await byText("#layer .menu button", T.tomorrow);
-  await D.move(tb.x + 60, tb.y + tb.h / 2, 600);
-  await sleep(650);
-  await clickBox(tb, 100);
-  D.mark("scheduled");
-  await sleep(1300);
-  // back to the inbox for the search
-  const ib = await D.box("#nav .nav-item");
-  if (ib) await clickBox(ib, 600);
-  await sleep(500);
+  await sleep(700);
 
-  // (d) search while typing: a number from the subject, then words from deep in a mail's text
+  // (b) you find it in Drafts and read it
+  D.mark("drafts");
+  await nav(T.drafts, 900);
+  await sleep(700);
+  const dr = await D.box("#rows .row");
+  await clickBox(dr, 650);
+  D.mark("draftopen");
+  await sleep(2400);
+
+  // (c) you say yes; the agent sends it
+  D.mark("term2");
+  await D.js(`__term.clear(); __term.show(true)`);
+  await sleep(500);
+  await say("you", T.yes, 40);
+  await sleep(450);
+  await run("ragdoll send " + shortId + " --yes");
+  await D.js(`(async () => {
+    await fetch("/api/send", { method: "POST", headers: { "X-Token": "devtok", "Content-Type": "application/json" }, body: JSON.stringify({ id: ${JSON.stringify(draftId)} }) });
+    window.ragdollPoll();
+  })()`);
+  await show('{"sent": true}');
+  await sleep(250);
+  await say("agent", T.done, 30);
+  D.mark("termdone2");
+  await sleep(1100);
+  D.mark("reveal2");
+  await D.js(`__term.show(false)`);
+  await sleep(600);
+
+  // (d) it is in Sent
+  D.mark("sent");
+  await nav(T.sent, 900);
+  await sleep(700);
+  const sr = await D.box("#rows .row");
+  await clickBox(sr, 650);
+  D.mark("sentopen");
+  await sleep(2000);
+
+  // (e) back to the inbox, then search while typing
+  D.mark("inbox");
+  await nav(T.inbox, 800);
+  await sleep(600);
   await remember("searchBtn", "#search-btn");
   await D.clickSel("#search-btn", 650);
   D.mark("type1");
-  D.move(700, 112, 450);          // out of the way of the words, while they are typed
+  D.move(700, 112, 450);
   await sleep(250);
-  // a pause in the middle, so the list narrows while the words are typed
-  const half = (q) => (q.length > 2 ? [q.slice(0, 2), q.slice(2)] : [q.slice(0, 1), q.slice(1)]);
-  const typeIn = async (q) => { const [a, b] = half(q); await D.type(a, 110); await sleep(480); await D.type(b, 95); };
-  await typeIn(T.q1);
+  await D.type(T.q1.slice(0, 2), 110); await sleep(450); await D.type(T.q1.slice(2), 95);
   D.mark("typed1");
-  await sleep(1150);
-  D.mark("type2");
-  await D.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 4, commands: ["selectAll"] });
-  await D.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 4 });
-  await sleep(150);
-  await typeIn(T.q2);
-  D.mark("typed2");
-  await sleep(700);
-  const hit = await D.box("#rows .row");
+  await sleep(1000);
+  let hit = null;   // the mail with the words, once the list has narrowed to it
+  for (let i = 0; i < 20 && !hit; i++) { hit = await byText("#rows .row", T.hitWho); if (!hit) await sleep(150); }
   if (hit) await clickBox(hit, 600);
   D.mark("hit");
   await sleep(1800);

@@ -19,7 +19,7 @@
   <a href="README.zh-CN.md"><b>简体中文</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: an AI agent in a terminal writes a reply with the ragdoll command, the draft opens in the app, the send is undone and set for tomorrow, and search finds mail as you type"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail on a Mac: an AI agent in a terminal writes a reply with the ragdoll command, you read the draft in the app, the agent sends it when you say yes, it shows in Sent, and search finds mail as you type"></p>
 
 ## What is Ragdoll Mail?
 

@@ -6,10 +6,11 @@
 #   site/media/demo-en.mp4, demo-zh.mp4  (H.264, 1920x1200) and their first frames as .webp posters
 #   docs/demo.gif                         (the English cut, for the README)
 # Needs node, ffmpeg, python3 with Pillow (set PY to that python), and Chromium (see CHROME in drv.mjs).
+# Runs on a Mac, or on Windows from Git Bash (ffmpeg on PATH, PY=python).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-PY=${PY:-python3}
+PY=${PY:-$(command -v python3 >/dev/null 2>&1 && python3 -c "" 2>/dev/null && echo python3 || echo python)}
 FF=${FF:-ffmpeg}
 PORT=${PORT:-8795}
 WORK=${WORK:-${TMPDIR:-/tmp}/ragdoll-demo-video}
@@ -17,10 +18,14 @@ mkdir -p "$WORK/out"
 cd "$WORK"
 export PORT
 
+stop() {     # whatever listens on the port (lsof on a Mac, PowerShell on Windows)
+  if command -v lsof >/dev/null 2>&1; then for p in $(lsof -ti tcp:"$PORT" -sTCP:LISTEN); do kill "$p"; done
+  else powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort $PORT -State Listen -ErrorAction SilentlyContinue | % { Stop-Process -Id \$_.OwningProcess -Force }; exit 0" || true; fi
+}
 server() {   # a fresh demo mailbox for each take
-  for p in $(lsof -ti tcp:"$PORT" -sTCP:LISTEN); do kill "$p"; done
+  stop
   sleep 1
-  (cd "$REPO" && RAGDOLL_APP_TOKEN=devtok python3 ragdoll_app.py --demo --demo-lang "$1" --browser --no-open --port "$PORT" > "$WORK/server.log" 2>&1 &)
+  (cd "$REPO" && RAGDOLL_APP_TOKEN=devtok $PY ragdoll_app.py --demo --demo-lang "$1" --browser --no-open --port "$PORT" > "$WORK/server.log" 2>&1 &)
   for i in $(seq 1 40); do sleep 0.5; curl -s -o /dev/null "http://127.0.0.1:$PORT/" && return 0; done
   echo "the demo server did not start"; exit 1
 }
@@ -32,8 +37,10 @@ server() {   # a fresh demo mailbox for each take
   node "$HERE/record.mjs" $l "take-$l" 2.5
   node "$HERE/assets.mjs" $l "assets-$l"
 done
-[ -n "$SKIP_RECORD" ] || for p in $(lsof -ti tcp:"$PORT" -sTCP:LISTEN); do kill "$p"; done
+[ -n "$SKIP_RECORD" ] || stop
 
+# the music, 4 bars longer: bars 6-9 (the drop) once more after bar 11, so the end card's hit comes at 38 s (compose.py)
+$FF -v error -y -i "$HERE/music.m4a" -filter_complex "[0:a]asplit=3[x][y][z];[x]atrim=0:22.05,asetpts=PTS-STARTPTS[a];[y]atrim=10.05:18.05,asetpts=PTS-STARTPTS[b];[z]atrim=start=22.05,asetpts=PTS-STARTPTS[c];[a][b]acrossfade=d=0.02:c1=tri:c2=tri[ab];[ab][c]acrossfade=d=0.02:c1=tri:c2=tri" -c:a aac -b:a 160k music-long.m4a
 for l in en zh; do
   $PY "$HERE/compose.py" $l "take-$l" "assets-$l" "master-$l.mp4" | tail -1
   $FF -v error -y -i "master-$l.mp4" -c:v libx264 -preset veryslow -crf 22 -tune animation -pix_fmt yuv420p \
@@ -43,12 +50,11 @@ for l in en zh; do
   # the background music (music.py, made with the code-composer skill), quiet and faded to the cut's length
   D=$($PY -c "import subprocess as s;print(s.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0','out/demo-$l.mp4']).decode().strip())")
   F=$($PY -c "print(round($D-2.5,2))")
-  $FF -v error -y -i "out/demo-$l.mp4" -i "$HERE/music.m4a" -filter_complex "[1:a]atrim=0:$D,afade=t=in:d=0.4,afade=t=out:st=$F:d=2.5,loudnorm=I=-20:TP=-2:LRA=9[a]" \
+  $FF -v error -y -i "out/demo-$l.mp4" -i music-long.m4a -filter_complex "[1:a]atrim=0:$D,afade=t=in:d=0.4,afade=t=out:st=$F:d=2.5,loudnorm=I=-20:TP=-2:LRA=9[a]" \
     -map 0:v -map "[a]" -c:v copy -c:a aac -b:a 128k -ar 48000 -movflags +faststart -shortest "out/demo-$l-a.mp4"
   mv "out/demo-$l-a.mp4" "out/demo-$l.mp4"
   cp "out/demo-$l.mp4" "out/demo-$l.webp" "$REPO/site/media/"
 done
-# the GIF: 10 frames a second, 5 while the camera moves (those frames change everywhere and cost the most)
-MV=$($PY "$HERE/compose.py" en take-en assets-en x --moving)
-$FF -v error -y -i master-en.mp4 -vf "fps=10,select='if(gt(${MV},0),not(mod(n,2)),1)',scale=1000:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" -fps_mode vfr "$REPO/docs/demo.gif"
+# the GIF: 20 frames a second all the way through, so the camera moves and the typing look smooth
+$FF -v error -y -i master-en.mp4 -vf "fps=20,scale=860:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" "$REPO/docs/demo.gif"
 ls -la "$REPO/site/media" "$REPO/docs/demo.gif"
