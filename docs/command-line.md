@@ -109,6 +109,8 @@ ragdoll schedule --list
 
 `mark` (`--read` / `--unread`, `--star` / `--unstar`), `archive` and `move` change the server and the index together. `move --to` takes a short name (`inbox`, `archive`, `junk`) or a folder name from `ragdoll folders`. Nothing is deleted; move the mail back to undo. The trash stays behind `ragdoll trash <ids> --yes`.
 
+A reply or forward quotes the original under a header block. It is in English, Outlook style (`From:` / `Sent:` / `To:` / `Cc:` / `Subject:`), or in Chinese, Foxmail style (`发件人：` / `时间：` / `主题：` / `收件人：` / `抄送：`). `draft --lang en` or `--lang zh` picks it for one draft; `"lang": "en"` or `"zh"` in the config picks it for all. With neither, it follows the computer's language. The app uses the language set in its Settings.
+
 `schedule` puts a draft on the app's send-later list. The app sends it at that time while it is open; if it is closed then, the mail goes out the next time it starts. `schedule <id> --cancel` keeps it as a draft.
 
 ## Hand a draft to the app

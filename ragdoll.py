@@ -23,7 +23,8 @@ is filled in two passes: headers and attachment names for every mail first
   attach <id> [--out DIR] [--name PART] [--inline]
   draft [--reply <id> [--all] | --forward <id>] [--to A,B] [--cc A,B] [--bcc A,B]
         [--remove A,B] [--subject S] (--body FILE.html | --text "...")
-        [--attach FILE ...] [--no-sig] [--high] [--replace <draft id>]
+        [--attach FILE ...] [--no-sig] [--high] [--lang en|zh]
+        [--replace <draft id>]
   drafts [--json]
   check <draft id> [--reply] [--blanks-ok] [--no-required-cc] [--json]
   send <draft id> --yes
@@ -97,6 +98,7 @@ DEFAULTS = {
     "body_bytes": 30000,
     "body_chars": 20000,
     "update_check": True,
+    "lang": "system",       # the quote header's language: "en", "zh", or "system" (the computer's)
 }
 QUOTE_MARKS = ("发件人", "From:", "原始邮件", "wrote:", "Từ:")
 QUOTE_RE = re.compile(
@@ -150,6 +152,9 @@ def quote_start(text):
 PREFIX_RE = re.compile(r"^\s*((re|fw|fwd|aw|wg|tr|trả lời|chuyển tiếp|bls|回复|答复|转发)\s*[:：]\s*)+", re.I)
 INLINE_ID = re.compile(r"^[0-9A-Fa-f]{8}@[0-9A-Fa-f.]+(\.(png|jpe?g|gif|bmp|webp))?$", re.I)   # Exmail inline-image names
 WEEK = "一二三四五六日"
+WEEK_EN = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+MONTHS_EN = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+             "November", "December")
 # Fold only at the RFC 5322 hard limit: folding at 78 made Python encode long Message-IDs as
 # =?utf-8?q?...?=, which broke threading (sent:1431, 16th Nov 2026); no limit at all let a
 # reply-all To line pass 998 characters.
@@ -2349,6 +2354,30 @@ def clean_quoted_html(html):
     return html
 
 
+def system_lang():
+    """The computer's language: "zh" when it is Chinese, else "en"."""
+    names = [os.environ.get(k, "") for k in ("LC_ALL", "LC_MESSAGES", "LANG")]
+    if sys.platform == "darwin":
+        with contextlib.suppress(Exception):
+            names.append(subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True,
+                                        text=True, timeout=2).stdout)
+    elif os.name == "nt":
+        with contextlib.suppress(Exception):
+            import ctypes, locale
+            names.append(locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), ""))
+    first = next((n for n in names if n.strip()), "")
+    return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
+
+
+def quote_lang(lang=None):
+    """The quote header's language, "zh" or "en", for an app language (en, zh-Hans, zh-Hant, ja, ...),
+    "system", or None (the config's "lang"). Chinese gets the Chinese header; every other language the English one."""
+    lang = lang or CFG.d.get("lang") or "system"
+    if lang == "system":
+        lang = system_lang()
+    return "zh" if str(lang).lower().startswith("zh") else "en"
+
+
 QUOTE_HEAD = '<div style="padding:8px 0;border-top:1px solid #e0e0e0;font-size:13px;color:#646a73">'
 
 
@@ -2358,7 +2387,8 @@ def quote_of(html):
     return html[k:] if k >= 0 else ""
 
 
-def quote_block(orig):
+def quote_block(orig, lang=None):
+    """The header block and the original mail, quoted. lang: the header's language (quote_lang), else the config's."""
     plain, html = bodies(orig)
     if not html:
         html = '<div style="white-space:pre-wrap">%s</div>' % htmlmod.escape(plain)
@@ -2372,18 +2402,31 @@ def quote_block(orig):
         t = dt.datetime.now(CFG.tz)
     f = addrs(hdr(orig, "From"))
     fn, fa = f[0] if f else ("", "")
-
     esc = htmlmod.escape        # every name, address and subject here comes from the sender
-
-    def people(v):
-        return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
-    cc = people(hdr(orig, "Cc"))
-    head = (QUOTE_HEAD +
-            '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
-            '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
-            % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
-               t.strftime("%H:%M"), esc(hdr(orig, "Subject")), people(hdr(orig, "To")),
-               "<div>抄送：%s</div>" % cc if cc else ""))
+    subject = esc(hdr(orig, "Subject"))
+    if quote_lang(lang) == "zh":
+        # Foxmail's own layout, as Chinese clients show it
+        def people(v):
+            return ", ".join("&quot;%s&quot; &lt;%s&gt;" % (esc(n or a_), esc(a_)) for n, a_ in addrs(v))
+        cc = people(hdr(orig, "Cc"))
+        head = (QUOTE_HEAD +
+                '<div>发件人：&quot;%s&quot; &lt;%s&gt;</div><div>时间：%d年%d月%d日 (周%s) %s</div>'
+                '<div>主题：%s</div><div>收件人：%s</div>%s</div>'
+                % (esc(fn or fa), esc(fa), t.year, t.month, t.day, WEEK[t.weekday()],
+                   t.strftime("%H:%M"), subject, people(hdr(orig, "To")),
+                   "<div>抄送：%s</div>" % cc if cc else ""))
+    else:
+        # Outlook's layout. The day and month names are spelled here: strftime follows the computer's locale.
+        def people(v):
+            return "; ".join("%s &lt;%s&gt;" % (esc(n), esc(a_)) if n else esc(a_) for n, a_ in addrs(v))
+        cc = people(hdr(orig, "Cc"))
+        sent = "%s, %s %d, %d %d:%02d %s" % (WEEK_EN[t.weekday()], MONTHS_EN[t.month - 1], t.day, t.year,
+                                            (t.hour % 12) or 12, t.minute, "AM" if t.hour < 12 else "PM")
+        head = (QUOTE_HEAD +
+                '<div>From: %s</div><div>Sent: %s</div><div>To: %s</div>%s'
+                '<div>Subject: %s</div></div>'
+                % (people(hdr(orig, "From")) or esc(fa), sent, people(hdr(orig, "To")),
+                   "<div>Cc: %s</div>" % cc if cc else "", subject))
     return head + ('<blockquote style="margin:0 0 0 4px;padding-left:8px;border-left:2px solid #d0d3d6">'
                    + html + "</blockquote>")
 
@@ -2439,16 +2482,16 @@ def text_to_html(t):
 
 
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False, font="", quote_html="", quote_src=None):
+                  signature_html="", high=False, font="", quote_html="", quote_src=None, lang=None):
     """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
     (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times.
     quote_html, quote_src: with no orig, a quote already made (quote_of an earlier draft) and the mail
-    that holds its pictures."""
+    that holds its pictures. lang: the quote header's language (quote_lang)."""
     if font and signature_html.strip():
         signature_html = '<div data-rd-sig="1" style="%s">%s</div>' % (re.sub(r'["<>&\\]', "", font), signature_html)
     html = body_html + "<div><br></div>" + signature_html
     if orig is not None:
-        html += "<div><br></div>" + quote_block(orig)
+        html += "<div><br></div>" + quote_block(orig, lang)
     elif quote_html:
         html += "<div><br></div>" + quote_html
     msg = EmailMessage()
@@ -2616,7 +2659,8 @@ def cmd_draft(a):
             subject = a.subject or (forward_subject(hdr(orig, "Subject")) if mode == "forward" else "")
         if not subject:
             die("give --subject")
-        msg = build_message(body, to, cc, subject, orig, mode, parse_people(a.bcc), a.attach or [], sig, a.high)
+        msg = build_message(body, to, cc, subject, orig, mode, parse_people(a.bcc), a.attach or [], sig, a.high,
+                            lang=getattr(a, "lang", None))
         new_uid = append_draft(m, msg.as_bytes(policy=OUT_POLICY))
         if a.replace:
             f2, u2 = drafts_only(a.replace, "--replace")
@@ -3858,6 +3902,8 @@ def parser():
     p.add_argument("--attach", action="append")
     p.add_argument("--no-sig", action="store_true")
     p.add_argument("--high", action="store_true")
+    p.add_argument("--lang", choices=("en", "zh"), help="the quote header in English (Outlook) or Chinese "
+                   "(Foxmail); default: the config's \"lang\", else the computer's language")
     p.add_argument("--replace")
     p.set_defaults(fn=cmd_draft)
     p = sp.add_parser("drafts")

@@ -32,12 +32,13 @@ class QuoteHeader(unittest.TestCase):
                b'To: "y" <"b<b>"@y.com>\r\nCc: <"c<i>"@z.com>\r\n'
                b"Subject: <s>hi</s>\r\nDate: Mon, 16 Nov 2026 08:10:47 +0800\r\n"
                b"Content-Type: text/plain; charset=utf-8\r\n\r\nhello\r\n")
-        head = R.quote_block(msg_of(raw)).split("<blockquote")[0]
-        self.assertNotIn("<img", head)
-        self.assertNotIn("<b>", head)
-        self.assertNotIn("<i>", head)
-        self.assertNotIn("<s>", head)
-        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", head)
+        for lang in ("en", "zh"):
+            head = R.quote_block(msg_of(raw), lang).split("<blockquote")[0]
+            self.assertNotIn("<img", head)
+            self.assertNotIn("<b>", head)
+            self.assertNotIn("<i>", head)
+            self.assertNotIn("<s>", head)
+            self.assertIn("&lt;img src=x onerror=alert(1)&gt;", head)
         tags = re.findall(r"<(\w+)", head)
         self.assertEqual(set(tags), {"div"})
 
@@ -511,11 +512,11 @@ class OriginalMoved(DemoBackend):
         a["replace"] = self.b.api_save_draft(dict(a))["id"]
         msg = msg_of(self.b.raw(a["replace"]))
         self.assertEqual(R.hdr(msg, "In-Reply-To"), "<outlook-0@cust.vn>")
-        self.assertIn("发件人", R.bodies(msg)[1])
+        self.assertIn("From: Linh", R.bodies(msg)[1])
         reopened = self.b.api_compose({"mode": "draft", "id": a["replace"]})
         self.assertNotEqual(reopened["orig"], orig)                   # where the original is now
         self.assertEqual(self.b.parse(reopened["orig"])[0], R.CFG.folders["archive"])
-        self.assertIn("发件人", reopened["quote"])
+        self.assertIn("From: Linh", reopened["quote"])
         _, out = self.b.call("prepare_send", dict(a))
         self.assertTrue(out["ok"], out)
         self.assertTrue(self.b.send_now({"id": out["data"]["id"]})["sent"])
@@ -529,13 +530,13 @@ class OriginalMoved(DemoBackend):
             self.assertTrue(out["ok"], out)
             msg = msg_of(self.b.raw(out["data"]["id"]))
             html = R.bodies(msg)[1]
-            self.assertEqual(html.count("发件人"), 1)                 # the quote the draft had, once
+            self.assertEqual(html.count("From: Linh"), 1)                 # the quote the draft had, once
             self.assertEqual(R.hdr(msg, "In-Reply-To" if mode == "reply" else R.FWD_HEADER), "<outlook-0@cust.vn>")
             self.assertEqual({p["Content-ID"].strip("<>") for p in msg.walk() if p["Content-ID"]},
                              {"image001.png@01DA1234", "image002.jpg@01DA1234"})   # its pictures too
             self.assertEqual(A.app_problems(msg, mode == "reply"), [])
             reopened = self.b.api_compose({"mode": "draft", "id": out["data"]["id"]})
-            self.assertIn("发件人", reopened["quote"])
+            self.assertIn("From: Linh", reopened["quote"])
             self.assertIn("data:image/", reopened["quote"])
             a["replace"] = out["data"]["id"]
             _, out = self.b.call("prepare_send", dict(a))
@@ -922,6 +923,132 @@ class Tidy(DemoBackend):
         self.assertEqual(runs, [1])
         src = open(A.__file__, encoding="utf-8").read()
         self.assertIn("self.stopping.wait(86400)", src[src.index("def tidy_loop"):src.index("def tidy(")])
+
+
+LANG_MAIL = (b'From: "Linh Tran" <linh@cust.vn>\r\nTo: "Me" <me@example.com>, hoa@partner.vn\r\n'
+             b"Cc: boss@example.com\r\nSubject: PO-1234\r\nDate: Mon, 16 Nov 2026 14:05:00 +0800\r\n"
+             b"Message-ID: <lang@cust.vn>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPlease send it.\r\n")
+
+
+class QuoteLanguage(unittest.TestCase):
+    """A reply's quote header is in the app's (or the command's) language: Outlook's in English, Foxmail's in Chinese."""
+    ZH = ('<div>发件人：&quot;Linh Tran&quot; &lt;linh@cust.vn&gt;</div><div>时间：2026年11月16日 (周一) 14:05</div>'
+          '<div>主题：PO-1234</div><div>收件人：&quot;Me&quot; &lt;me@example.com&gt;, '
+          '&quot;hoa@partner.vn&quot; &lt;hoa@partner.vn&gt;</div>'
+          '<div>抄送：&quot;boss@example.com&quot; &lt;boss@example.com&gt;</div></div>')
+    EN = ('<div>From: Linh Tran &lt;linh@cust.vn&gt;</div><div>Sent: Monday, November 16, 2026 2:05 PM</div>'
+          '<div>To: Me &lt;me@example.com&gt;; hoa@partner.vn</div><div>Cc: boss@example.com</div>'
+          '<div>Subject: PO-1234</div></div>')
+
+    def setUp(self):
+        own_cfg(self)
+
+    def head(self, lang=None):
+        return R.quote_block(msg_of(LANG_MAIL), lang).split("<blockquote")[0]
+
+    def test_chinese_header_is_foxmails(self):
+        for lang in ("zh", "zh-Hans", "zh-Hant"):
+            self.assertEqual(self.head(lang), R.QUOTE_HEAD + self.ZH)
+
+    def test_english_header_is_outlooks(self):
+        for lang in ("en", "ja", "de", "fr"):       # every other language: the English header
+            self.assertEqual(self.head(lang), R.QUOTE_HEAD + self.EN)
+
+    def test_english_date_ignores_the_computers_locale(self):
+        raw = LANG_MAIL.replace(b"14:05:00", b"00:07:00").replace(b"Mon, 16", b"Sun, 15")
+        self.assertIn("Sent: Sunday, November 15, 2026 12:07 AM", R.quote_block(msg_of(raw), "en"))
+        raw = LANG_MAIL.replace(b"14:05:00", b"12:30:00")
+        self.assertIn("Sent: Monday, November 16, 2026 12:30 PM", R.quote_block(msg_of(raw), "en"))
+
+    def test_bare_sender_and_no_cc(self):
+        raw = LANG_MAIL.replace(b'"Linh Tran" <linh@cust.vn>', b"linh@cust.vn").replace(b"Cc: boss@example.com\r\n", b"")
+        en, zh = R.quote_block(msg_of(raw), "en"), R.quote_block(msg_of(raw), "zh")
+        self.assertIn("<div>From: linh@cust.vn</div>", en)
+        self.assertNotIn("Cc:", en)
+        self.assertIn("<div>发件人：&quot;linh@cust.vn&quot; &lt;linh@cust.vn&gt;</div>", zh)
+        self.assertNotIn("抄送", zh)
+
+    def test_config_and_system_language(self):
+        R.CFG.d["lang"] = "zh"
+        self.assertEqual(self.head(), R.QUOTE_HEAD + self.ZH)
+        self.assertEqual(self.head("en"), R.QUOTE_HEAD + self.EN)     # the command's --lang wins
+        R.CFG.d["lang"] = "en"
+        self.assertEqual(self.head(), R.QUOTE_HEAD + self.EN)
+        R.CFG.d["lang"] = "system"
+        old = R.system_lang
+        try:
+            for sys_lang, want in (("zh", self.ZH), ("en", self.EN)):
+                R.system_lang = lambda: sys_lang
+                self.assertEqual(self.head(), R.QUOTE_HEAD + want)
+                self.assertEqual(self.head("system"), R.QUOTE_HEAD + want)
+        finally:
+            R.system_lang = old
+
+    def test_build_message_passes_the_language(self):
+        for lang, mark in (("en", "Sent: Monday"), ("zh", "发件人：")):
+            msg = R.build_message("<div>OK</div>", [("", "linh@cust.vn")], [], "Re: PO-1234", msg_of(LANG_MAIL),
+                                  "reply", lang=lang)
+            self.assertIn(mark, msg.get_body(("html",)).get_content())
+
+    def test_both_headers_are_found_as_quoted_history(self):
+        for lang in ("en", "zh"):
+            with self.subTest(lang=lang):
+                html = "<div>Noted.</div><div><br></div>" + R.quote_block(msg_of(LANG_MAIL), lang)
+                text = R.html_to_text(html)
+                self.assertEqual(R.new_text(text).strip(), "Noted.")
+                self.assertTrue(any(x in text for x in R.QUOTE_MARKS))
+                self.assertTrue(R.QUOTE_RE.search(text))
+                self.assertEqual(R.quote_of(html), R.quote_block(msg_of(LANG_MAIL), lang))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_page_finds_both_headers(self):
+        import json, subprocess
+        with open(os.path.join(os.path.dirname(__file__), "..", "app", "app.js"), encoding="utf-8") as f:
+            js = f.read()
+        start, end = js.index("const QUOTE_SEP ="), js.index("// a mail's text as the lines a reader sees")
+        cases = [R.html_to_text("<div>Noted.</div><div><br></div>" + R.quote_block(msg_of(LANG_MAIL), lang)).split("\n")
+                 for lang in ("en", "zh")]
+        want = [R.quote_line(x) for x in cases]
+        self.assertTrue(all(i > 0 for i in want), want)
+        script = js[start:end] + "\nconsole.log(JSON.stringify(" + json.dumps(cases) + ".map(quoteLine)));"
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), want)
+
+
+class AppQuoteLanguage(DemoBackend):
+    """The app: the language set in Settings, else the demo mailbox's, else the computer's."""
+    def quote(self):
+        orig = self.add_mail(LANG_MAIL)
+        return self.b.api_compose({"mode": "reply", "id": orig})["quote"]
+
+    def test_demo_mailbox_language_by_default(self):
+        self.assertIn("Sent: Monday, November 16, 2026 2:05 PM", self.quote())
+        self.b.demo_set = A.DEMO_SETS["zh"]
+        self.assertIn("时间：2026年11月16日 (周一) 14:05", self.quote())
+
+    def test_settings_language_wins(self):
+        for lang, mark in (("zh-Hans", "发件人："), ("zh-Hant", "发件人："), ("en", "Sent: "), ("ja", "Sent: ")):
+            with self.subTest(lang=lang):
+                self.b.api_prefs({"lang": lang})
+                self.assertIn(mark, self.quote())
+
+    def test_system_language_outside_the_demo(self):
+        self.b.demo = False
+        self.b.api_prefs({"lang": "system"})
+        self.assertEqual(self.b.quote_lang(), "system")
+        self.b.demo = True
+        self.assertEqual(self.b.quote_lang(), "en")
+
+    def test_saved_reply_has_the_same_header(self):
+        self.b.api_prefs({"lang": "zh-Hans"})
+        orig = self.add_mail(LANG_MAIL)
+        c = self.b.api_compose({"mode": "reply", "id": orig})
+        a = compose(self.b, mode="reply", orig=orig, to=c["to"], subject=c["subject"])
+        html = R.bodies(msg_of(self.b.raw(self.b.api_save_draft(a)["id"])))[1]
+        self.assertEqual(html.count("发件人："), 1)
+        self.assertNotIn("Sent: ", html)
 
 
 if __name__ == "__main__":

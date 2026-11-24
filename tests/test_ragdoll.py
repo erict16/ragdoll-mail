@@ -5,7 +5,7 @@ from email import policy
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll  # noqa: E402
 
-ragdoll.CFG = ragdoll.Cfg(dict(ragdoll.DEFAULTS, user="me@example.com", name="Me", utc_offset_hours=8,
+ragdoll.CFG = ragdoll.Cfg(dict(ragdoll.DEFAULTS, user="me@example.com", name="Me", utc_offset_hours=8, lang="zh",
                            signature_marks=["+1 555 0100"], require_cc=["boss@example.com"]))
 SIG = "<div>Me</div><div>M: +1 555 0100</div>"
 
