@@ -74,7 +74,7 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
 .top nav a.gh { display: inline-flex; align-items: center; gap: 8px; }
 .top .stars { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px 1px 6px; border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; font-variant-numeric: tabular-nums; line-height: 18px; }
 .top .stars[hidden] { display: none; }
-.top .stars svg.i { width: 12px; height: 12px; }
+.top .stars svg.i { width: 12px; height: 12px; color: #e3a008; fill: currentColor; }
 .top .stars b { font-weight: 500; }
 .top .btn { padding: 7px 14px; font-size: 14px; }
 
