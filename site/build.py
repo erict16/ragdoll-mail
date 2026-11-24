@@ -67,7 +67,6 @@ EN = {
     "desc": "A free, open-source mail app for Mac and Windows with a command line built in. Claude Code, Codex and "
             "other agents can search your mail, draft replies and send them once you say yes. Local SQLite search, "
             "any IMAP mailbox.",
-    "download": "Download",
     "pill": ["Free", "Open source", "Mac and Windows"],
     "h1": "The mail app your AI agent <em>can actually use</em>.",
     "lead": "A desktop mail app with a command line built in. Claude Code, Codex or any agent can search your mail "
@@ -154,7 +153,6 @@ ZH = dict(EN, **{
     "title": "Ragdoll Mail：AI 助手也能用的免费邮件软件（Mac / Windows）",
     "desc": "免费开源的 Mac 和 Windows 邮件软件，自带命令行。Claude Code、Codex 这类 AI 助手可以帮你搜邮件、写回复，"
             "你点头后它还能直接帮你发。本地 SQLite 搜索，支持任何 IMAP 邮箱。",
-    "download": "下载",
     "pill": ["免费", "开源", "Mac 和 Windows"],
     "h1": "让 AI 助手<em>真正用得上</em>的邮件软件。",
     "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复，你点头后还能直接帮你发。",
@@ -330,7 +328,6 @@ def page(L):
   <nav>
     {top_right(L['lang'], L['other'], L['hreflang'])}
   </nav>
-  <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(L['download'])}</a>
 </div></header>
 
 <main>
@@ -651,7 +648,6 @@ def guide(G):
   <nav>
     {top_right(G['lang'], G['other'], G['hreflang'])}
   </nav>
-  <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(G['mac'][0].split()[0])}</a>
 </div></header>
 
 <main class="doc">

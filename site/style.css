@@ -94,7 +94,6 @@ svg.i { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-widt
 .top .stars[hidden] { display: none; }
 .top .stars svg.i { width: 15px; height: 15px; color: #e3a008; fill: currentColor; }
 .top .stars b { font-weight: 600; }
-.top .btn { padding: 7px 14px; font-size: 14px; }
 
 /* ---- buttons */
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 12px; font: 500 15.5px var(--font);
@@ -342,7 +341,6 @@ footer .grow { flex: 1; }
   .top .brand { white-space: nowrap; }
   .top .lang summary { padding: 0 6px; gap: 4px; }
   .top .lang summary span { display: none; }
-  .top .btn { display: none; }
   .cta .btn { width: 100%; justify-content: center; }
   .shot { padding: 0 8px; margin-top: 44px; }
   .shot .demo { border-radius: 9px; }
