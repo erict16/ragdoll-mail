@@ -84,9 +84,10 @@ class Pieces(unittest.TestCase):
             self.assertTrue(A.app_target().replace(os.sep, "/").endswith("/Applications/Ragdoll Mail.app"))
 
     def test_a_folder_it_cannot_write_in_is_said_before_anything_starts(self):
-        self.assertIsNone(A.install_blocker(self.dir) if WIN else A.install_blocker(os.path.join(self.dir, "X.app")))
-        gone = os.path.join(self.dir, "missing", "deeper")
-        self.assertIn("can't replace itself", A.install_blocker(gone if WIN else os.path.join(gone, "X.app")))
+        with unittest.mock.patch.object(A.sys, "platform", "win32" if WIN else "darwin"):
+            self.assertIsNone(A.install_blocker(self.dir) if WIN else A.install_blocker(os.path.join(self.dir, "X.app")))
+            gone = os.path.join(self.dir, "missing", "deeper")
+            self.assertIn("can't replace itself", A.install_blocker(gone if WIN else os.path.join(gone, "X.app")))
         with unittest.mock.patch.object(A.sys, "platform", "darwin"):
             self.assertEqual(A.install_blocker("/Volumes/Ragdoll Mail/Ragdoll Mail.app"), A.INSTALL_MOVE_MSG)
             self.assertEqual(A.install_blocker("/private/var/folders/x/AppTranslocation/y/d/Ragdoll Mail.app"),
