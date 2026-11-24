@@ -91,6 +91,15 @@ input, textarea, select { font: inherit; color: inherit; }
 .side { position: relative; min-height: 0; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; padding: 0 10px 10px; }
 .side-top { height: var(--head-h); flex: none; display: flex; align-items: center; margin: 0 -10px; padding: 0 10px 0 14px; }
 .native.mac:not(.fullscreen) .side-top { padding-left: 88px; }
+/* Windows without its title bar strip: Windows' own window buttons, top right, in its own symbol font */
+.win-ctl { position: fixed; top: 0; right: 0; z-index: 70; display: flex; height: 32px; }
+.win-btn { width: 46px; height: 100%; display: grid; place-items: center; color: var(--text); background: none; border-radius: 0;
+  font: 10px/1 "Segoe Fluent Icons", "Segoe MDL2 Assets"; transition: background-color .1s; }
+.win-btn:hover { background: var(--hover); }
+.win-btn:active { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.win-btn.close:hover { background: #c42b1c; color: #fff; }
+.win-btn.close:active { background: color-mix(in srgb, #c42b1c 85%, #000); color: #fff; }
+.frameless .toolbar { padding-right: max(146px, calc((100% - 820px) / 2 + 26px)); }
 .side-top .grow { align-self: stretch; }
 /* the sidebar's right edge: drag to make it wider or narrower, double-click for the default width */
 .side-grip { position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; z-index: 3; }
@@ -475,6 +484,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 /* a segmented control: 2px padding + 1px border = 3px around the picked item, so its corners are 9 - 3 = 6px.
    The picked item is drawn by a thumb (app.js segmented) that slides to the next pick; until it is placed,
    the button itself carries the same look. The shadow is even all round, so the gap looks the same above and below. */
+/* the app icon picker (Settings, Appearance) */
+.icon-pick { display: flex; gap: 10px; }
+.icon-opt { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 96px; padding: 10px 6px 8px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--raised); color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, color .15s; }
+.icon-opt img { width: 56px; height: 56px; border-radius: 13px; -webkit-user-drag: none; }
+.icon-opt:hover { color: var(--text); }
+.icon-opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--text); font-weight: 600; }
 .seg { position: relative; display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
 .seg button { position: relative; z-index: 1; height: 28px; padding: 0 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
 .seg button:not(.on):hover { color: var(--text); }

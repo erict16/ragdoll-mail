@@ -1787,7 +1787,7 @@ function goBack() {
 function showEmpty() {
   S.thread = null; S.focus = null; S.sched = null; S.multi.clear();
   threadSeq++; schedSeq++;            // a mail or a scheduled one still on its way stays out of the empty pane
-  $("#pane").innerHTML = `<div class="pane-empty"><img src="logo.png" alt=""></div>`;
+  $("#pane").innerHTML = `<div class="pane-empty"><img src="${logoSrc()}" alt=""></div>`;
   renderToolbar();
 }
 
@@ -3643,8 +3643,17 @@ async function openSettings(opts) {
       const seg = segmented([["system", t("system"), "monitor"], ["light", t("light"), "sun"], ["dark", t("dark"), "moon"]], v.theme,
         (k) => { v.theme = k; applyTheme(k); api("prefs", { theme: k }).catch(() => {}); });
       const ts = segmented([13, 14, 16, 18].map((n) => [n, String(n)]), textSize(), (n) => setTextSize(n));
+      const icons = el("div", { class: "icon-pick", role: "radiogroup" });
+      const drawIcons = () => icons.replaceChildren(...APP_ICONS.map(([k, src, lab]) => {
+        const on = (PREFS.icon || "classic") === k;
+        return el("button", { class: "icon-opt" + (on ? " on" : ""), role: "radio", "aria-checked": on ? "true" : "false",
+          onclick: () => { PREFS.icon = k; showAppIcon(); drawIcons(); api("prefs", { icon: k }).catch(() => {}); } },
+        el("img", { src, alt: "" }), el("span", {}, t(lab)));
+      }));
+      drawIcons();
       body.append(el("h2", {}, t("appearance")), el("div", { class: "form" }, seg,
-        el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts)));
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("text_size")), ts),
+        el("div", { class: "stack" }, el("span", { class: "lab" }, t("app_icon")), icons)));
     }
   };
   async function save() {
@@ -3692,6 +3701,14 @@ const UNDO_CHOICES = [0, 5, 10, 20, 30];
 
 // a segmented control: [value, label, icon?] items; the picked one sits on a thumb that slides to the next pick
 // (the control is changed in place, never drawn again, so the slide can be seen)
+// the app icon the person picked (Settings, Appearance): the page's logo and tab icon follow it
+const APP_ICONS = [["classic", "logo.png", "icon_classic"], ["painted", "logo-painted.png", "icon_painted"]];
+function logoSrc() { return (APP_ICONS.find(([k]) => k === PREFS.icon) || APP_ICONS[0])[1]; }
+function showAppIcon() {
+  const src = logoSrc(), fav = document.querySelector('link[rel="icon"]');
+  if (fav) fav.href = src;
+  for (const img of document.querySelectorAll(".pane-empty img, img.logo")) img.src = src;
+}
 function segmented(items, value, pick) {
   const thumb = el("span", { class: "seg-thumb", "aria-hidden": "true" });
   const seg = el("div", { class: "seg", role: "radiogroup" }, thumb);
@@ -3808,7 +3825,7 @@ function showSetup(boot = {}) {
     lang.classList.add("setup-lang");
     lang.prepend(el("span", { class: "select-lead", html: icon("languages", "small") }));
     box.replaceChildren(el("div", { class: "setup-drag pywebview-drag-region" }), lang,
-      el("div", { class: "setup-card" }, el("img", { class: "logo", src: "logo.png", alt: "" }), el("h1", {}, t("setup_title")), f));
+      el("div", { class: "setup-card" }, el("img", { class: "logo", src: logoSrc(), alt: "" }), el("h1", {}, t("setup_title")), f));
   };
   async function signIn() {
     if (busy) return;
@@ -4174,6 +4191,42 @@ addEventListener("resize", fullScreenCheck);
 function nativeWindow() {
   document.documentElement.classList.add("native");
   syncWindowTheme();
+  if (WIN) winFrame();
+}
+// Windows: the app draws its own title bar (win_frameless in ragdoll_app.py): Windows' own window buttons in its
+// own symbol font, and the bars move the window through Windows, so it still snaps to the sides
+async function winFrame() {
+  // the page can be ready before the window has dropped Windows' title bar, so ask again for a few seconds
+  let st;
+  for (let i = 0; i < 20; i++) {
+    try { st = await api("win", { do: "state" }); } catch { return; }
+    if (st.frameless) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!st.frameless) return;
+  const root = document.documentElement, box = $("#win-ctl");
+  root.classList.add("frameless");
+  const press = (what) => api("win", { do: what }).then((r) => setMax(r.max)).catch(() => {});
+  const btn = (cls, what) => el("button", { class: "win-btn " + cls, tabindex: "-1", onclick: () => press(what) });
+  const minB = btn("min", "min"), maxB = btn("max", "max"), closeB = btn("close", "close");
+  function setMax(m) {
+    root.classList.toggle("win-max", !!m);
+    maxB.textContent = m ? "" : "";
+    minB.textContent = ""; closeB.textContent = "";
+    minB.dataset.tip = t("win_min"); maxB.dataset.tip = t(m ? "win_restore" : "win_max"); closeB.dataset.tip = t("win_close");
+    for (const b of [minB, maxB, closeB]) b.setAttribute("aria-label", b.dataset.tip);
+  }
+  box.replaceChildren(minB, maxB, closeB);
+  box.hidden = false;
+  setMax(st.max);
+  let rt;
+  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => api("win", { do: "state" }).then((r) => setMax(r.max)).catch(() => {}), 120); });
+  // a press on a bar moves the window; a double press maximizes it, as on a real title bar
+  document.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !e.target.closest(".pywebview-drag-region")) return;
+    e.preventDefault();
+    press(e.detail === 2 ? "max" : "drag");
+  });
 }
 if (window.pywebview) nativeWindow();
 else window.addEventListener("pywebviewready", nativeWindow);
@@ -4216,6 +4269,7 @@ function start(boot) {
   }
   applyTheme(b.theme);
   PREFS = b.prefs || {};
+  showAppIcon();
   if (!b.prefs) try { PREFS = await api("prefs", {}); } catch { /* defaults */ }
   setLocale(PREFS);
   if (PREFS.list_width) $("#app").style.setProperty("--list-w", PREFS.list_width + "px");

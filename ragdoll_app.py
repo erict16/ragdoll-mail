@@ -1891,7 +1891,7 @@ class Backend:
             return 500, {"ok": False, "error": "Something went wrong (%s)" % type(e).__name__}
 
     # calls the page makes by itself, not because the user did something
-    PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme",
+    PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme", "win",
                          "settings", "senders", "contacts"))
 
     def q(self, sql, params=()):
@@ -2708,7 +2708,7 @@ class Backend:
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
                 "prefs": self.prefs(), "news": self.news, "asks": self.asks,
-                "window": WINDOW.w is not None}
+                "window": WINDOW.w is not None, "frameless": WINDOW.frameless}
 
     def flag_folders(self):
         """Folders whose flagged mail shows in the Flagged list (not Trash or Junk)."""
@@ -2790,7 +2790,10 @@ class Backend:
     def api_prefs(self, a):
         # one change at a time, each on top of the one before: two at once lost the language (#61)
         with self.preflock:
-            return self.change_prefs(a)
+            p = self.change_prefs(a)
+        if a.get("icon") in APP_ICONS:
+            set_app_icon(a["icon"])
+        return p
 
     def change_prefs(self, a):
         p = self.prefs()
@@ -2811,6 +2814,8 @@ class Backend:
             p["undo"] = a["undo"]
         if a.get("font") in FONTS:
             p["font"] = a["font"]
+        if a.get("icon") in APP_ICONS:
+            p["icon"] = a["icon"]
         if a.get("font_size") in FONT_SIZES:
             p["font_size"] = a["font_size"]
         if a.get("text_size") in TEXT_SIZES:
@@ -3983,6 +3988,10 @@ class Backend:
             fail("can't open that link")
         webbrowser.open(u)
         return {}
+
+    def api_win(self, a):
+        """Windows, the app's own title bar: the window buttons, moving the window, and whether it is maximized."""
+        return win_do(a.get("do"))
 
     def api_window_theme(self, a):
         window_theme(bool(a.get("dark")), a.get("bg"), a.get("text"), system=a.get("system") is True)
@@ -5477,7 +5486,7 @@ def system_dark():
     return False
 
 
-WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False, asked=0)
+WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False, asked=0, frameless=False, proc=None)
 
 
 def close_window():
@@ -5719,6 +5728,117 @@ def win_hwnd(window):
             return 0
 
 
+def win_frameless(hwnd):
+    """Windows: no title bar strip, as on the Mac. The window keeps its real frame, so it still resizes from its
+    edges, snaps to the screen's sides and keeps its shadow; only the caption is taken out of the frame
+    (WM_NCCALCSIZE), and the page draws the window buttons (win_do, .win-ctl in the page)."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.windll.user32
+    LRESULT = ctypes.c_ssize_t
+    WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    u32.CallWindowProcW.restype = LRESULT
+    u32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    u32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    u32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    u32.IsZoomed.argtypes = [wintypes.HWND]
+
+    class NCCALC(ctypes.Structure):
+        _fields_ = [("rgrc", wintypes.RECT * 3), ("lppos", ctypes.c_void_p)]
+
+    def frame_y(h):
+        # a maximized window reaches past the screen by its sizing frame: keep that much off the top
+        try:
+            dpi = u32.GetDpiForWindow(h)
+            return u32.GetSystemMetricsForDpi(33, dpi) + u32.GetSystemMetricsForDpi(92, dpi)   # SM_CYFRAME, SM_CXPADDEDBORDER
+        except Exception:
+            return u32.GetSystemMetrics(33) + u32.GetSystemMetrics(92)
+
+    old = None
+
+    def proc(h, msg, wp, lp):
+        if msg == 0x0083 and wp:                                    # WM_NCCALCSIZE
+            r = ctypes.cast(lp, ctypes.POINTER(NCCALC)).contents.rgrc[0]
+            top = r.top
+            res = u32.CallWindowProcW(old, h, msg, wp, lp)          # the sides and the foot keep their frame
+            r.top = top + (frame_y(h) if u32.IsZoomed(h) else 0)    # the caption goes
+            return res
+        return u32.CallWindowProcW(old, h, msg, wp, lp)
+
+    cb = WNDPROC(proc)
+    old = u32.SetWindowLongPtrW(hwnd, -4, ctypes.cast(cb, ctypes.c_void_p))     # GWLP_WNDPROC
+    if not old:
+        return False
+    WINDOW.proc = cb                                                # keep the callback alive
+    # SWP_FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER | NOACTIVATE: the frame is measured again
+    u32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010)
+    WINDOW.frameless = True
+    return True
+
+
+def win_do(what):
+    """The page's window buttons and title bar on Windows (win_frameless)."""
+    if sys.platform != "win32" or not WINDOW.hwnd:
+        return {"max": False, "frameless": False}
+    import ctypes
+    u32, hwnd = ctypes.windll.user32, WINDOW.hwnd
+    zoomed = bool(u32.IsZoomed(hwnd))
+    cmd = {"min": 0xF020, "max": 0xF120 if zoomed else 0xF030, "close": 0xF060}.get(what)   # SC_MINIMIZE, SC_RESTORE/MAXIMIZE, SC_CLOSE
+    if cmd:
+        u32.PostMessageW(hwnd, 0x0112, cmd, 0)                     # WM_SYSCOMMAND: as if the real buttons were pressed
+    elif what == "drag":
+        # Windows moves the window itself, so it snaps to the sides and to the top; that has to start on the
+        # window's own thread, with the page's hold on the mouse let go first
+        def go():
+            u32.ReleaseCapture()
+            u32.SendMessageW(hwnd, 0x00A1, 2, 0)                    # WM_NCLBUTTONDOWN on HTCAPTION
+        try:
+            from System import Action
+            WINDOW.w.native.BeginInvoke(Action(go))
+        except Exception:
+            u32.PostMessageW(hwnd, 0x0112, 0xF012, 0)               # SC_MOVE by the caption
+    return {"max": bool(u32.IsZoomed(hwnd)), "frameless": WINDOW.frameless}
+
+
+# the app icons people can pick (Settings, Appearance): the file for the page, the Mac and Windows
+APP_ICONS = {"classic": ("logo.png", "logo-mac.png", "logo.ico"),
+             "painted": ("logo-painted.png", "logo-painted-mac.png", "logo-painted.ico")}
+
+
+def app_icon_file(name):
+    """The icon file this system shows for the window, the taskbar or the Dock."""
+    page, mac, ico = APP_ICONS.get(name) or APP_ICONS["classic"]
+    f = os.path.join(STATIC, mac if sys.platform == "darwin" else ico if sys.platform == "win32" else page)
+    return f if os.path.exists(f) else None
+
+
+def set_app_icon(name):
+    """Show the picked icon now: the Dock on a Mac, the window and its taskbar button on Windows. The icon of
+    the app file itself (Finder, a pinned taskbar shortcut) stays the one it was built with."""
+    f = app_icon_file(name)
+    if not f or WINDOW.w is None:
+        return
+    try:
+        if sys.platform == "darwin":
+            import AppKit
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(lambda: AppKit.NSApplication.sharedApplication().setApplicationIconImage_(
+                AppKit.NSImage.alloc().initWithContentsOfFile_(f)))
+        elif sys.platform == "win32" and WINDOW.hwnd:
+            import ctypes
+            u32 = ctypes.windll.user32
+            u32.LoadImageW.restype = ctypes.c_void_p
+            u32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+            u32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+            for which, metric in ((1, 11), (0, 49)):                   # ICON_BIG / SM_CXICON, ICON_SMALL / SM_CXSMICON
+                size = u32.GetSystemMetrics(metric)
+                h = u32.LoadImageW(None, f, 1, size, size, 0x0010)      # IMAGE_ICON, LR_LOADFROMFILE
+                if h:
+                    u32.SendMessageW(WINDOW.hwnd, 0x0080, which, h)    # WM_SETICON
+    except Exception:       # noqa: BLE001 - the icon stays as it was
+        traceback.print_exc(file=sys.stderr)
+
+
 def hex_ref(c):
     """'#RRGGBB' -> Windows COLORREF (0x00BBGGRR)."""
     c = (c or "").lstrip("#")
@@ -5948,12 +6068,21 @@ def run_window(url, home):
         w.events.before_show += lambda: mac_titlebar(w)
         w.events.shown += lambda: mac_titlebar(w)
     elif sys.platform == "win32":
-        w.events.shown += lambda: window_theme(dark, "#191919" if dark else "#FFFFFF",
-                                               "#E8E8E6" if dark else "#191919")
-    # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, so give it the Mac one.
-    icon = os.path.join(STATIC, "logo-mac.png" if sys.platform == "darwin" else "logo.png")
-    webview.start(private_mode=False, storage_path=os.path.join(home, "webview"),
-                  icon=icon if os.path.exists(icon) else None)
+        def shown():
+            WINDOW.hwnd = WINDOW.hwnd or win_hwnd(w)
+            try:
+                if WINDOW.hwnd:
+                    win_frameless(WINDOW.hwnd)
+            except Exception:       # noqa: BLE001 - the window keeps Windows' own title bar
+                traceback.print_exc(file=sys.stderr)
+            window_theme(dark, "#191919" if dark else "#FFFFFF", "#E8E8E6" if dark else "#191919")
+        w.events.shown += shown
+    if sys.platform == "win32":     # the page moves the window through Windows itself (win_do "drag"), not pywebview
+        webview.settings["DRAG_REGION_SELECTOR"] = ".pywebview-drag-off"
+    # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, and as the window's icon on
+    # Windows, which needs an .ico: the icon the person picked, in the file this system takes
+    picked = (WINDOW.backend.prefs().get("icon") if WINDOW.backend else None) or "classic"
+    webview.start(private_mode=False, storage_path=os.path.join(home, "webview"), icon=app_icon_file(picked))
 
 
 def main(argv=None):
