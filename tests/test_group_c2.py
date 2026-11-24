@@ -261,7 +261,8 @@ class ProblemNotice(DemoBackend):
     def test_page(self):
         html, js = read("app", "index.html"), read("app", "app.js")
         self.assertNotIn("banner-btn", html)
-        self.assertLess(html.index('id="rows"'), html.index('id="banner"'))      # over the list, not above it
+        self.assertLess(html.index('id="banner"'), html.index('id="update"'))      # in the sidebar, above the update button
+        self.assertLess(html.index('<aside'), html.index('id="banner"'))
         draw = js[js.index("function drawProblem("):js.index("// ---------------------------------------------------------------- start")]
         for k in ("st.retry_at", "st.last_sync", "problemKind(st)", "settingsAt(", '"password"',
                   "copyText(st.error)", "prob.dismissed", '"alert"'):
@@ -269,7 +270,7 @@ class ProblemNotice(DemoBackend):
         self.assertNotIn("S.boot.demo", draw)
         css = read("app", "style.css")
         self.assertNotIn("background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn-text) 16%", css)
-        self.assertIn(".list-col.has-banner .rows", css)
+        self.assertNotIn("has-banner", css + js)                # nothing makes room for it: it is part of the sidebar
 
 
 class WindowPlace(DemoBackend):

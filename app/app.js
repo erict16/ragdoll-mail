@@ -300,15 +300,9 @@ function leave(node, ms = 150) {
   setTimeout(() => node.remove(), ms);
 }
 
-// toasts sit at the foot of the reading pane, centered in it; on a narrow window, centered in the window
-function placeToasts() {
-  const box = $("#toasts"), r = $("#reader")?.getBoundingClientRect();
-  box.style.left = r && r.width >= 360 && r.left > 0 ? r.left + r.width / 2 + "px" : "";
-}
-addEventListener("resize", () => placeToasts());
+// short messages sit at the foot of the window, centred in it; a sync problem waits in the sidebar (drawProblem)
 function toast(text, opts = {}) {
   const box = $("#toasts");
-  placeToasts();
   // a toast with an id takes the place of the one before it (text size steps, for one)
   if (opts.id) for (const old of $$(`.toast[data-id="${opts.id}"]`, box)) old.replaceWith();
   const node = el("div", { "data-id": opts.id, class: "toast" + (opts.error ? " err" : ""), role: "status" },
@@ -4097,15 +4091,15 @@ function retryNow() {
   setTimeout(refreshCounts, 4000);
 }
 function drawProblem() {
-  const st = S.status || {}, b = $("#banner"), col = $("#list-col");
+  const st = S.status || {}, b = $("#banner");
   const kind = st.error ? problemKind(st) : null;
   const key = st.error ? kind + "|" + st.error : null;
   $("#account").classList.toggle("alert", !!key);
+  $("#here-btn")?.classList.toggle("alert", !!key);       // the sidebar is a drawer: its button carries the dot
   clearTimeout(prob.timer);
   if (!key || prob.dismissed === key) {
     if (!b.hidden && !b.classList.contains("out")) {
       b.classList.add("out");
-      col.classList.remove("has-banner");
       setTimeout(() => { if (b.classList.contains("out")) { b.hidden = true; b.classList.remove("out"); } }, REDUCED.matches ? 0 : 180);
     }
     prob.key = prob.sig = null;
@@ -4139,8 +4133,7 @@ function drawProblem() {
   const sig = JSON.stringify([key, title, sub, !!meta, busy, LANG]);
   if (sig === prob.sig && !b.hidden && !b.classList.contains("out")) {
     const m = $(".banner-meta", b);
-    if (m) m.textContent = " · " + meta;
-    col.style.setProperty("--banner-h", b.offsetHeight + "px");
+    if (m) m.textContent = meta;
     return;
   }
   prob.sig = sig;
@@ -4148,15 +4141,12 @@ function drawProblem() {
   b.replaceChildren(
     el("span", { class: "banner-ic", html: icon(busy && kind !== "auth" && kind !== "config" ? "loader-circle" : ic, busy && kind !== "auth" && kind !== "config" ? "spin" : "") }),
     el("div", { class: "banner-text", title: kind === "server" ? tr(st.error) : null },
-      el("div", { class: "banner-title" }, el("b", {}, title), meta ? el("span", { class: "banner-meta" }, " · " + meta) : null),
+      el("div", { class: "banner-title" }, el("b", {}, title)),
       sub ? el("span", { class: "banner-sub" }, sub) : null),
-    el("div", { class: "banner-acts" }, ...acts),
+    el("div", { class: "banner-acts" }, el("span", { class: "banner-meta" }, meta), ...acts),
     iconBtn("x", t("st_dismiss"), () => { prob.dismissed = key; drawProblem(); }, { cls: "tiny banner-x" }));
   if (b.hidden) { b.hidden = false; if (!REDUCED.matches) b.classList.add("in"); setTimeout(() => b.classList.remove("in"), 260); }
   prob.key = key;
-  // the list keeps room for the card at its foot, so the last mail can scroll out from under it
-  col.classList.add("has-banner");
-  col.style.setProperty("--banner-h", b.offsetHeight + "px");
 }
 // Homebrew and a clone update from a terminal; the app from the download page (#76)
 function offerUpdate(up) {
