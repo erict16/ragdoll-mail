@@ -1,5 +1,5 @@
 """Offline tests for the app icon picker and the Windows window without a title bar."""
-import os, re, shutil, sys, unittest
+import os, re, shutil, struct, sys, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ragdoll as R  # noqa: E402
@@ -36,6 +36,32 @@ class Icons(unittest.TestCase):
             self.assertIn('["%s", "%s"' % (k, page), js)
         self.assertIn('api("prefs", { icon: k })', js)
         self.assertNotIn('src="logo.png"', js.replace('<link rel="icon" href="logo.png">', ""))
+
+    def test_icon_images_are_plain_bitmaps(self):
+        """System.Drawing.Icon — what pywebview uses on Windows — refuses an .ico whose images are
+        PNG-compressed ("Argument 'picture' must be a picture that can be used as a Icon"), and the
+        app then died before its window opened. Every image in a Windows .ico is a plain bitmap."""
+        for kind, (_page, _mac, ico) in A.APP_ICONS.items():
+            with open(os.path.join(A.STATIC, ico), "rb") as f:
+                data = f.read()
+            count = struct.unpack_from("<H", data, 4)[0]
+            self.assertTrue(count, ico)
+            sizes = []
+            for i in range(count):
+                w, h, _c, _r, _p, bpp, _size, off = struct.unpack_from("<BBBBHHII", data, 6 + 16 * i)
+                sizes.append(w or 256)
+                self.assertEqual(bpp, 32, "%s %sx%s" % (ico, w or 256, h or 256))
+                self.assertNotEqual(data[off:off + 4], b"\x89PNG",
+                                    "%s: the %sx%s image is PNG-compressed" % (ico, w or 256, h or 256))
+            self.assertIn(16, sizes, kind)      # the size of a title bar and of the taskbar
+            self.assertIn(256, sizes, kind)     # the size Windows asks for a large view
+
+    def test_windows_window_sets_its_own_icon(self):
+        """On Windows the app sets the window's icon itself (LoadImage/SendMessage), so a file
+        pywebview would refuse can never stop the window from opening."""
+        src = read("ragdoll_app.py")
+        self.assertIn('icon=None if sys.platform == "win32" else app_icon_file(picked)', src)
+        self.assertIn("set_app_icon(picked)", src)
 
 
 class IconPref(unittest.TestCase):

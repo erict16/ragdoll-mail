@@ -6063,6 +6063,7 @@ def run_window(url, home):
     WINDOW.w = w
     keep_window_place(w, place)
     w.events.closing += window_closing      # a mail on its way is sent or asked about first
+    picked = (WINDOW.backend.prefs().get("icon") if WINDOW.backend else None) or "classic"   # the icon they picked
     if sys.platform == "darwin":
         mac_full_frame_rate()
         w.events.before_show += lambda: mac_titlebar(w)
@@ -6076,13 +6077,15 @@ def run_window(url, home):
             except Exception:       # noqa: BLE001 - the window keeps Windows' own title bar
                 traceback.print_exc(file=sys.stderr)
             window_theme(dark, "#191919" if dark else "#FFFFFF", "#E8E8E6" if dark else "#191919")
+            set_app_icon(picked)    # the window and its taskbar button, the way we do it for a picked icon
         w.events.shown += shown
     if sys.platform == "win32":     # the page moves the window through Windows itself (win_do "drag"), not pywebview
         webview.settings["DRAG_REGION_SELECTOR"] = ".pywebview-drag-off"
-    # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, and as the window's icon on
-    # Windows, which needs an .ico: the icon the person picked, in the file this system takes
-    picked = (WINDOW.backend.prefs().get("icon") if WINDOW.backend else None) or "classic"
-    webview.start(private_mode=False, storage_path=os.path.join(home, "webview"), icon=app_icon_file(picked))
+    # the icon the person picked: pywebview sets it as the Dock icon on macOS, over the bundle's .icns.
+    # Not on Windows, where it builds a System.Drawing.Icon of the file and refuses one whose images are
+    # PNG-compressed — the window never opened then. There the app sets its own icon (shown, set_app_icon).
+    webview.start(private_mode=False, storage_path=os.path.join(home, "webview"),
+                  icon=None if sys.platform == "win32" else app_icon_file(picked))
 
 
 def main(argv=None):
