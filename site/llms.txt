@@ -18,4 +18,4 @@
 - [Command-line guide](https://github.com/erict16/ragdoll-mail/blob/main/docs/command-line.md)
 - [中文介绍](https://erict16.github.io/ragdoll-mail/zh/)
 - [Tencent Exmail setup guide](https://erict16.github.io/ragdoll-mail/exmail/) ([中文](https://erict16.github.io/ragdoll-mail/zh/exmail/)): IMAP imap.exmail.qq.com:993 SSL, SMTP smtp.exmail.qq.com:465 SSL, user name = full address; with WeChat or dynamic-code sign-in, use the 客户端专用密码
-- [Compared with Foxmail, Outlook, Apple Mail, Thunderbird and Spark](https://erict16.github.io/ragdoll-mail/compare/) ([中文](https://erict16.github.io/ragdoll-mail/zh/compare/))
+- [Compared with Foxmail, Outlook, Apple Mail, Thunderbird and Spark](https://erict16.github.io/ragdoll-mail/#compare) ([中文](https://erict16.github.io/ragdoll-mail/zh/#compare))

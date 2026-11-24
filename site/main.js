@@ -19,6 +19,31 @@
     if (top && w) top.href = w.href;
   }
 
+  // ---- GitHub stars beside the GitHub link (kept for an hour so the API is asked rarely)
+  (async () => {
+    const spots = $$("[data-stars]");
+    if (!spots.length) return;
+    const KEY = "rd-stars";
+    const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "") + "k" : String(n));
+    const show = (n) => spots.forEach((s) => {
+      $("b", s).textContent = fmt(n);
+      s.hidden = false;
+      s.parentElement.setAttribute("aria-label", `GitHub, ${n} stars`);
+    });
+    let kept = null;
+    try { kept = JSON.parse(localStorage.getItem(KEY)); } catch {}
+    if (kept && Number.isFinite(kept.n)) show(kept.n);
+    if (kept && Date.now() - kept.t < 36e5) return;
+    try {
+      const r = await fetch("https://api.github.com/repos/erict16/ragdoll-mail");
+      if (!r.ok) return;
+      const n = (await r.json()).stargazers_count;
+      if (!Number.isFinite(n)) return;
+      show(n);
+      try { localStorage.setItem(KEY, JSON.stringify({ n, t: Date.now() })); } catch {}
+    } catch {}
+  })();
+
   // ---- a line under the bar, sections that rise in
   const bar = $(".top");
   const onScroll = () => bar && bar.classList.toggle("scrolled", scrollY > 8);
