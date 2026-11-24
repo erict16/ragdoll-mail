@@ -44,6 +44,11 @@
     } catch {}
   })();
 
+  // ---- the language menu closes on a click outside it, or Escape
+  const langs = $$(".top .lang");
+  addEventListener("click", (ev) => langs.forEach((d) => { if (!d.contains(ev.target)) d.open = false; }));
+  addEventListener("keydown", (ev) => { if (ev.key === "Escape") langs.forEach((d) => { d.open = false; }); });
+
   // ---- a line under the bar, sections that rise in
   const bar = $(".top");
   const onScroll = () => bar && bar.classList.toggle("scrolled", scrollY > 8);

@@ -36,6 +36,27 @@ ICONS = {
 }
 
 
+GITHUB_MARK = ('<svg class="i gh-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 '
+               '8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 '
+               '3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36'
+               '.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 '
+               '3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 '
+               '1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/>'
+               '</svg>')
+LANG_NAME = {"en": "English", "zh-Hans": "简体中文"}
+
+
+def top_right(lang, other, hreflang):
+    """The header's right side: a language menu and GitHub's Star button with the count."""
+    e = html.escape
+    here, there = LANG_NAME[lang], LANG_NAME[hreflang]
+    return (f'<details class="lang"><summary>{icon("languages")}<span>{e(here)}</span>{icon("chevron")}</summary>'
+            f'<div class="lang-menu"><span aria-current="true">{e(here)}</span>'
+            f'<a href="{other}" hreflang="{hreflang}" lang="{hreflang}">{e(there)}</a></div></details>'
+            f'<a class="gh" href="{REPO}">{GITHUB_MARK}<span>Star</span>'
+            f'<span class="stars" data-stars hidden>{icon("star")}<b></b></span></a>')
+
+
 def icon(name):
     return '<svg class="i" viewBox="0 0 24 24" aria-hidden="true">%s</svg>' % ICONS[name]
 
@@ -54,9 +75,9 @@ EN = {
     "mac": ["Download for Mac", "Apple silicon"], "win": ["Download for Windows", "10 and 11"],
     "first": "Not signed by Apple or Microsoft yet. The first time, choose Open Anyway (Mac: System Settings → "
              "Privacy &amp; Security) or Run anyway (Windows: More info).",
-    "demo": "en", "demo_name": "Ragdoll Mail in 35 seconds", "demo_len": "PT35S",
-    "shot_alt": "Ragdoll Mail in use: an AI agent in a terminal writes a reply with the ragdoll command, the draft "
-                "opens in the app, the send is undone and set for tomorrow morning, and search finds mail as you type",
+    "demo": "en", "demo_name": "Ragdoll Mail in 40 seconds", "demo_len": "PT41S",
+    "shot_alt": "Ragdoll Mail in use: an AI agent in a terminal saves a reply to Drafts with the ragdoll command, you "
+                "read it in the app, the agent sends it when you say yes, it shows in Sent, and search finds mail as you type",
     "sound": ["Sound on", "Sound off"],
 
     "a_h2": ["Your agent writes.", "You say yes."],
@@ -82,12 +103,15 @@ EN = {
     ],
 
     "s_h2": ["Search never leaves", "your computer."],
+    "s_sub": "Every mail goes into a SQLite full-text index on your disk, so a search never waits for the mail server, "
+             "and works offline.",
     "faster": "faster than asking the mail server",
     "bars": [("Ragdoll Mail, on your disk", 0.0063, "0.006 s", "989 mails that contain the word"),
              ("The mail server (IMAP)", 1.03, "1.03 s", "5,044 mails: the whole folder")],
     "race": {"segs": ["Sign in", "Search"], "unit": " s", "rerun": "Run again"},
     "bars_note": "One search for “invoice” in a real Tencent Exmail inbox of 5,044 mails, 21 November 2026. "
-                 "The server needed 0.9 s to sign in and 0.13 s to search, and sent back the whole folder.",
+                 "The server needed 0.9 s to sign in and 0.13 s to search, and sent back the whole folder. That was a good "
+                 "run: on a big mailbox a server search often takes many seconds, and often finds nothing at all.",
 
     "facts": [
         ("mail", "Any IMAP mailbox", "Gmail, iCloud, Fastmail, Tencent Exmail, QQ Mail, 163 Mail and the rest."),
@@ -136,9 +160,9 @@ ZH = dict(EN, **{
     "lead": "一个自带命令行的桌面邮件软件。Claude Code、Codex 或任何 AI 助手，都能帮你搜邮件、写回复，你点头后还能直接帮你发。",
     "mac": ["下载 Mac 版", "M 系列芯片"], "win": ["下载 Windows 版", "Windows 10 / 11"],
     "first": "还没有苹果和微软的签名。第一次打开时：Mac 在 系统设置 → 隐私与安全性 里点“仍要打开”；Windows 点“更多信息 → 仍要运行”。",
-    "demo": "zh", "demo_name": "30 秒看懂 Ragdoll Mail", "demo_len": "PT33S",
-    "shot_alt": "Ragdoll Mail 使用演示：AI 助手在终端里用 ragdoll 命令写好回复，草稿在软件里打开；撤销发送后改成明天上午发；"
-                "最后边打字边搜到邮件",
+    "demo": "zh", "demo_name": "40 秒看懂 Ragdoll Mail", "demo_len": "PT41S",
+    "shot_alt": "Ragdoll Mail 使用演示：AI 助手在终端里用 ragdoll 命令把回复存进草稿箱，你在软件里看过，说可以，AI 就发出去，"
+                "在“已发送”里能看到；最后边打字边搜到邮件",
     "sound": ["打开声音", "关闭声音"],
 
     "a_h2": ["AI 来写，", "你来点头。"],
@@ -164,12 +188,14 @@ ZH = dict(EN, **{
     ],
 
     "s_h2": ["搜索全在", "你自己的电脑上。"],
+    "s_sub": "每封邮件都存进你电脑上的 SQLite 全文索引，搜索不用等邮件服务器，断网也能搜。",
     "faster": "比让邮件服务器去搜快这么多",
     "bars": [("Ragdoll Mail，你的硬盘上", 0.0063, "0.006 秒", "989 封，都含这个词"),
              ("邮件服务器（IMAP）", 1.03, "1.03 秒", "5,044 封，也就是整个文件夹")],
     "race": {"segs": ["登录", "搜索"], "unit": " 秒", "rerun": "再跑一次"},
     "bars_note": "2026 年 11 月 21 日实测：在一个有 5,044 封邮件的腾讯企业邮箱收件箱里搜“invoice”。"
-                 "服务器登录用了 0.9 秒，搜索 0.13 秒，返回的是整个文件夹。",
+                 "服务器登录用了 0.9 秒，搜索 0.13 秒，返回的是整个文件夹。这还是顺利的一次："
+                 "邮箱一大，服务器搜索常常要好几秒，很多时候干脆搜不出来。",
 
     "facts": [
         ("mail", "任何 IMAP 邮箱", "腾讯企业邮箱、QQ 邮箱、163 邮箱、Gmail、iCloud、Fastmail 都行。"),
@@ -225,7 +251,7 @@ def page(L):
          "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}},
         {"@context": "https://schema.org", "@type": "VideoObject", "name": L["demo_name"], "description": L["shot_alt"],
          "inLanguage": L["lang"], "thumbnailUrl": SITE + "media/demo-%s.webp" % L["demo"],
-         "contentUrl": SITE + "media/demo-%s.mp4" % L["demo"], "uploadDate": "2026-11-21", "duration": L["demo_len"]},
+         "contentUrl": SITE + "media/demo-%s.mp4" % L["demo"], "uploadDate": "2026-11-24", "duration": L["demo_len"]},
         {"@context": "https://schema.org", "@type": "FAQPage",
          "mainEntity": [{"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}} for q, a in L["q"]]},
     ]
@@ -302,8 +328,7 @@ def page(L):
 <header class="top"><div class="wrap">
   <a class="brand" href="{up or './'}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
   <nav>
-    <a href="{L['other']}" hreflang="{L['hreflang']}">{e(L['other_name'])}</a>
-    <a class="gh" href="{REPO}">GitHub<span class="stars" data-stars hidden>{icon("star")}<b></b></span></a>
+    {top_right(L['lang'], L['other'], L['hreflang'])}
   </nav>
   <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(L['download'])}</a>
 </div></header>
@@ -338,6 +363,7 @@ def page(L):
 
   <section id="speed"><div class="wrap">
     <h2 class="big reveal">{e(L['s_h2'][0])}<br><em>{e(L['s_h2'][1])}</em></h2>
+    <p class="sub reveal">{e(L['s_sub'])}</p>
     <div class="mega reveal"><b data-n="{times}">{times}×</b><span>{e(L['faster'])}</span></div>
     {race}
   </div></section>
@@ -623,8 +649,7 @@ def guide(G):
 <header class="top"><div class="wrap">
   <a class="brand" href="{G['home']}"><img src="{up}img/icon.webp" alt="" width="30" height="30">Ragdoll Mail</a>
   <nav>
-    <a href="{G['other']}" hreflang="{G['hreflang']}">{e(G['other_name'])}</a>
-    <a class="gh" href="{REPO}">GitHub<span class="stars" data-stars hidden>{icon("star")}<b></b></span></a>
+    {top_right(G['lang'], G['other'], G['hreflang'])}
   </nav>
   <a class="btn primary" data-dl href="{DL}ragdoll-mail-mac.dmg">{e(G['mac'][0].split()[0])}</a>
 </div></header>

@@ -4,7 +4,7 @@ python compose.py <en|zh> <take dir> <assets dir> <out.mp4> [--frames a,b,c] [--
 Camera: keyframes (time, centre x, centre y, zoom) in the app's CSS pixels, eased in between.
 Captions: one pill per beat, faded and lifted in. Cursor and click rings are drawn here (headless
 Chromium draws none). The end card fades in over the app and holds."""
-import json, math, subprocess, sys
+import json, math, os, subprocess, sys
 from PIL import Image, ImageDraw, ImageFilter
 
 lang, take, assets, out = sys.argv[1:5]
@@ -30,37 +30,57 @@ def ease_out(k):
 # ------------------------------------------------------------------ the story, in source time
 FULL = (640, 400, 1.0)
 SEARCH = (452, 236, 1.72)
-READ = (948, 262, 1.72)
-READ_LOW = (948, 455, 1.72)
-COMPOSE = (948, 232, 1.72)
-TOAST = (640, 600, 1.6)
-MENU = (900, 238, 1.72)
-TOAST2 = (660, 600, 1.45)
+DRAFTV = (706, 250, 1.12)        # the list on the left, the draft or the sent mail on the right, its lines whole
 TERMV = (600, 290, 1.3)
 zh = lang == "zh"
 t0 = M["start"] + 0.05                      # the cut starts here
 cam = [  # (source time, view); between two keys the camera eases from one to the next
     (t0, FULL), (M["term"] - 0.05, FULL), (M["term"] + 0.6, TERMV),
-    (M["reveal"] - 0.05, TERMV), (M["reveal"] + 0.7, COMPOSE),
-    (M["sent"] - 0.05, COMPOSE), (M["sent"] + 0.75, TOAST),
-    (M["undo"] + 0.1, TOAST), (M["undo"] + 0.9, MENU),
-    (M["scheduled"] + 0.1, MENU), (M["scheduled"] + 0.8, TOAST2),
-    (M["scheduled"] + 1.3, TOAST2), (M["type1"] - 0.05, SEARCH),
-    (M["typed2"] + 0.3, SEARCH), (M["hit"] + 0.5, FULL),
+    (M["reveal"] - 0.05, TERMV), (M["reveal"] + 0.7, FULL),
+    (M["draftopen"] - 0.1, FULL), (M["draftopen"] + 0.7, DRAFTV),
+    (M["term2"] - 0.05, DRAFTV), (M["term2"] + 0.6, TERMV),
+    (M["reveal2"] - 0.05, TERMV), (M["reveal2"] + 0.7, FULL),
+    (M["sentopen"] - 0.1, FULL), (M["sentopen"] + 0.7, DRAFTV),
+    (M["inbox"] - 0.6, DRAFTV), (M["inbox"] + 0.1, FULL),
+    (M["type1"] - 0.1, FULL), (M["type1"] + 0.5, SEARCH),
+    (M["typed1"] + 0.4, SEARCH), (M["hit"] + 0.5, FULL),
 ]
 t_end_src = M["hit"] + 1.7                  # the app part ends; the end card follows
-caps = [  # (caption index, from, to, top or bottom) in source time; at the top while the action is at the bottom
+caps = [  # (caption index, from, to, top or bottom) in source time
     (0, M["term"] + 0.2, M["termdone"] - 0.15, "b"),
-    (1, M["termdone"] - 0.05, M["sent"] - 0.1, "b"),
-    (2, M["sent"] + 0.05, M["undo"] + 0.75, "t"),
-    (3, M["back"] + 0.2, M["scheduled"] + 0.9, "b"),
-    (4, M["type1"] - 0.1, M["type2"] - 0.12, "b"),
-    (5, M["type2"] - 0.02, M["hit"] + 1.5, "b"),
+    (1, M["termdone"] - 0.05, M["drafts"] + 0.2, "b"),
+    (2, M["drafts"] + 0.35, M["term2"] - 0.1, "b"),
+    (3, M["term2"] + 0.2, M["reveal2"] + 0.3, "b"),
+    (4, M["reveal2"] + 0.45, M["inbox"] - 0.3, "b"),
+    (5, M["type1"] - 0.05, M["hit"] + 1.5, "b"),
 ]
-# speed: parts with nothing new on screen run a little faster (source seconds per output second)
-speed = [(t0, 1.0), (M["reveal"] + 0.2, 1.15), (M["sent"] - 0.3, 1.0), (M["back"], 1.15), (M["menu"] - 0.2, 1.0),
-         (M["scheduled"] + 0.4, 1.3), (M["type1"] - 0.3, 1.0)]
+# speed: parts with nothing new on screen run a little faster (source seconds per output second).
+# Two of them are fitted to the music (music.m4a, 120 BPM, bars of 2 s from 0.05 s): the drop at bar 6 comes
+# as the agent says the draft is saved, and the big hit (bar 16, at 38 s once make.sh repeats bars 6-9) comes with the end card.
+DROP, HIT = 10.05, 37.99
 END_FADE, END_HOLD = 0.6, 3.1
+
+
+def fitted():
+    def plan(r_type, r_gap):
+        return [(t0, r_type), (M["termdone"], 1.0), (M["reveal"] + 0.2, 1.25), (M["draftopen"] - 0.2, 1.0),
+                (M["reveal2"] + 0.2, 1.25), (M["sentopen"] - 0.2, 1.0), (M["sentopen"] + 1.0, 1.3),
+                (M["inbox"] - 0.3, r_gap), (M["type1"] - 0.3, 1.0)]
+    r_type = min(1.25, max(0.8, (M["termdone"] - t0) / DROP))
+    lo, hi = 1.0, 4.0           # the quiet walk back to the inbox takes up the rest
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        end = out_len(plan(r_type, mid))
+        lo, hi = (mid, hi) if end + END_FADE > HIT else (lo, mid)
+    return plan(r_type, (lo + hi) / 2)
+
+
+def out_len(sp):
+    marks = sp + [(t_end_src, 1.0)]
+    return sum((b - a) / r for (a, r), (b, _) in zip(marks, marks[1:]) if b > a)
+
+
+speed = fitted()
 
 
 def src_time_map():
@@ -256,6 +276,15 @@ def render(o):
     return end_card(k - END_FADE).convert("RGB")
 
 
+if "--marks" in opts:   # when each mark comes in the cut (output seconds), to line the music up
+    def to_out(t):
+        for (o1, s1), (o2, s2) in zip(TMAP, TMAP[1:]):
+            if t <= s2:
+                return o1 + (o2 - o1) * (t - s1) / max(1e-9, s2 - s1)
+        return TMAP[-1][0]
+    print(" ".join(f"{k}={to_out(v):.2f}" for k, v in sorted(M.items(), key=lambda kv: kv[1])), f"end_card={APP_LEN + END_FADE:.2f}", f"total={TOTAL:.2f}")
+    sys.exit(0)
+
 if "--moving" in opts:   # output-time spans where the camera moves (or the end card fades): the GIF thins these
     spans, on = [], None
     o = 0.0
@@ -282,7 +311,7 @@ if "--still" in opts:
 
 n = int(round(TOTAL * FPS))
 print("app", round(APP_LEN, 2), "total", round(TOTAL, 2), "frames", n, flush=True)
-ff = subprocess.Popen(["/opt/homebrew/bin/ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
+ff = subprocess.Popen([os.environ.get("FF", "ffmpeg"), "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                        "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "8", "-pix_fmt", "yuv444p",
                        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", out], stdin=subprocess.PIPE)
 for j in range(n):

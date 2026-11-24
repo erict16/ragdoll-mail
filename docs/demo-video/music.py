@@ -2,7 +2,8 @@
 Cut to the video: bars 1-2 pluck riff alone (the app, the terminal opens) · 3-5 hats, claps and a rising bass while
 the agent types · bar 6 (10 s) the drop as the draft lands in the app: four-on-the-floor kick, synth bass,
 lead riff · 9-11 send, undo, send later · 12-15 search, the riff an octave up · bar 16 (30 s) the end card:
-a big hit that rings out.
+a big hit that rings out. make.sh plays bars 6-9 twice, so the cut of the current story (the draft saved, read in the app,
+sent by the agent, found in Sent) gets 38 s: the drop as the draft is saved, the hit with the end card.
 Build with the code-composer skill: sh <skill>/engine/build.sh docs/demo-video/music.py, then
 ffmpeg -i <skill>/engine/song.wav -c:a aac -b:a 160k docs/demo-video/music.m4a"""
 import os, sys

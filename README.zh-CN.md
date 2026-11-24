@@ -19,7 +19,7 @@
   <a href="README.md"><b>English</b></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：AI 助手在终端里用 ragdoll 命令写好回复，草稿在软件里打开，撤销发送后改成明天发，最后边打字边搜到邮件"></p>
+<p align="center"><img src="docs/demo.gif" width="860" alt="Ragdoll Mail 在 Mac 上：AI 助手在终端里用 ragdoll 命令把回复存进草稿箱，你在软件里看过，说可以，AI 就发出去，在“已发送”里能看到，最后边打字边搜到邮件"></p>
 
 ## Ragdoll Mail 是什么？
 
