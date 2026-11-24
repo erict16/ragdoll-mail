@@ -301,9 +301,11 @@ function leave(node, ms = 150) {
 }
 
 // toasts sit at the foot of the reading pane, centered in it; on a narrow window, centered in the window
+// toasts sit over the reading pane; app-wide ones (the update, #76) in the middle of the window
 function placeToasts() {
   const box = $("#toasts"), r = $("#reader")?.getBoundingClientRect();
-  box.style.left = r && r.width >= 360 && r.left > 0 ? r.left + r.width / 2 + "px" : "";
+  const mid = $(".toast.center:not(.out)", box);
+  box.style.left = !mid && r && r.width >= 360 && r.left > 0 ? r.left + r.width / 2 + "px" : "";
 }
 addEventListener("resize", () => placeToasts());
 function toast(text, opts = {}) {
@@ -311,7 +313,7 @@ function toast(text, opts = {}) {
   placeToasts();
   // a toast with an id takes the place of the one before it (text size steps, for one)
   if (opts.id) for (const old of $$(`.toast[data-id="${opts.id}"]`, box)) old.replaceWith();
-  const node = el("div", { "data-id": opts.id, class: "toast" + (opts.error ? " err" : ""), role: "status" },
+  const node = el("div", { "data-id": opts.id, class: "toast" + (opts.error ? " err" : "") + (opts.center ? " center" : ""), role: "status" },
     opts.error ? el("span", { class: "toast-ic", html: icon("triangle-alert") }) : null,
     el("span", { class: "toast-text" }, text));
   let done = false;
@@ -326,6 +328,7 @@ function toast(text, opts = {}) {
     if (!REDUCED.matches) bar.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], { duration: barMs, easing: "linear", fill: "forwards" });
   }
   box.append(node);
+  if (opts.center) placeToasts();
   if (ms) setTimeout(close, ms);
   return { close, node, set: (s) => { node.querySelector(".toast-text").textContent = s; } };
 }
@@ -4177,10 +4180,11 @@ function drawProblem() {
 }
 // Homebrew, winget and a clone update from a terminal; the app from the download page updates
 // itself: download, then Restart (#76). Any other copy opens the download page.
+const updFail = (e) => toast(e?.message || String(e), { id: "upd", center: true, error: true });
 function offerUpdate(up) {
-  if (up.command) toast(t("run_cmd", up.command), { ms: 10000, action: { label: t("copy"), run: () => copyText(up.command) } });
+  if (up.command) toast(t("run_cmd", up.command), { id: "upd", center: true, ms: 10000, action: { label: t("copy"), run: () => copyText(up.command) } });
   else if (up.install) installUpdate();
-  else api("open_url", { url: up.url }).catch(fail);
+  else api("open_url", { url: up.url }).catch(updFail);
 }
 async function installUpdate() {
   const u = S.update;
@@ -4192,10 +4196,10 @@ async function installUpdate() {
   try {
     const r = await api("install_update");
     S.update = r.update;
-    toast(t("upd_ready", "v" + u.version), { id: "upd", ms: 0, action: { label: t("upd_restart_btn"), run: restartUpdate } });
+    toast(t("upd_ready", "v" + u.version), { id: "upd", center: true, ms: 0, action: { label: t("upd_restart_btn"), run: restartUpdate } });
   } catch (e) {
     if (S.update) delete S.update.step;
-    fail(e);
+    updFail(e);
   } finally {
     clearInterval(timer);
     drawUpdate();
@@ -4206,25 +4210,25 @@ async function restartUpdate() {
     await api("restart_update");
     if (S.update) S.update.step = "restarting";
     drawUpdate();
-  } catch (e) { fail(e); }
+  } catch (e) { updFail(e); }
 }
 // after a restart for an update: say once how it went
 function updateNote(n) {
   if (!n || S.updNote) return;
   S.updNote = true;
   api("update_note_seen").catch(() => {});
-  if (n.ok) toast(t("upd_done", "v" + n.to), { id: "upd", ms: 6000 });
-  else toast(t("upd_failed", "v" + n.to, "v" + n.from) + (n.error ? " " + tr(n.error) : ""), { id: "upd", error: true, ms: 15000 });
+  if (n.ok) toast(t("upd_done", "v" + n.to), { id: "upd", center: true, ms: 6000 });
+  else toast(t("upd_failed", "v" + n.to, "v" + n.from) + (n.error ? " " + tr(n.error) : ""), { id: "upd", center: true, error: true, ms: 15000 });
 }
 $("#update").addEventListener("click", () => { if (S.update) offerUpdate(S.update); });
 async function checkUpdates() {
-  toast(t("upd_checking"), { id: "upd" });
+  toast(t("upd_checking"), { id: "upd", center: true });
   let r;
-  try { r = await api("check_update"); } catch (e) { for (const n of $$('.toast[data-id="upd"]', $("#toasts"))) n.replaceWith(); return fail(e); }
+  try { r = await api("check_update"); } catch (e) { for (const n of $$('.toast[data-id="upd"]', $("#toasts"))) n.replaceWith(); return updFail(e); }
   S.update = r.update;
   renderNav();
-  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t(r.update.install ? "upd_install" : "upd_get"), run: () => offerUpdate(r.update) } });
-  else toast(t("upd_latest", "v" + r.version), { id: "upd" });
+  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", center: true, ms: 10000, action: { label: t(r.update.install ? "upd_install" : "upd_get"), run: () => offerUpdate(r.update) } });
+  else toast(t("upd_latest", "v" + r.version), { id: "upd", center: true });
 }
 
 // ---------------------------------------------------------------- start
