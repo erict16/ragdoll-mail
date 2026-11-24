@@ -95,8 +95,8 @@ EN = {
          "with us."),
         ("check", "Free and open source", "No ads, no subscription. MIT license, so anyone can check what it does."),
     ],
-    "quote": "Spark started charging, and I wanted a free alternative to it. Himalaya was too slow to search my mail. "
-             "So I built Ragdoll Mail.",
+    "quote": "Mail apps with a command line were either hard to use or charged $20+ a month for it. I wanted one "
+             "that's fast, easy and open source. So I built Ragdoll Mail.",
     "sign": "Eric Tan, who reads his own mail in it every day",
 
     "q_h2": "Questions",
@@ -176,7 +176,7 @@ ZH = dict(EN, **{
         ("lock", "邮件只在你手里", "软件只和你自己的邮件服务器打交道，中间没有别家的云，也不用注册账号。"),
         ("check", "免费，开源", "没有广告，不用订阅。代码按 MIT 许可开源，谁都可以查它做了什么。"),
     ],
-    "quote": "Spark 开始收费了，我想要一个免费的 Spark 平替。Himalaya 搜邮件又太慢。所以我自己做了 Ragdoll Mail。",
+    "quote": "能用命令行的邮件软件，要么难用，要么每月收 20 多美元。我想要一个又快又好用、代码开源的，所以自己做了 Ragdoll Mail。",
     "sign": "Eric Tan，每天都用它收发自己的邮件",
 
     "q_h2": "常见问题",
