@@ -6324,11 +6324,9 @@ def run_window(url, home):
         w.events.shown += lambda: window_theme(dark, "#191919" if dark else "#FFFFFF",
                                                "#E8E8E6" if dark else "#191919")
     # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, so give it the Mac one.
-    # Windows gets none: WinForms takes only an .ico there and stops the app at start on a .png
-    # (pywebview 6.2); without one the window uses the .exe's own icon.
     icon = os.path.join(STATIC, "logo-mac.png" if sys.platform == "darwin" else "logo.png")
     webview.start(private_mode=False, storage_path=os.path.join(home, "webview"),
-                  icon=icon if os.path.exists(icon) and sys.platform != "win32" else None)
+                  icon=icon if os.path.exists(icon) else None)
 
 
 def main(argv=None):
