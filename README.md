@@ -57,6 +57,8 @@ You sign in with the mailbox you already have. Nothing moves and nothing changes
 
 The first time, the app reads your mailbox. For a big mailbox this takes a few minutes. You can read and write mail while it works.
 
+**Updates.** When a new version is out, **Update** shows at the foot of the sidebar. Click it, then **Restart**. The app downloads the new version, checks it arrived whole, and swaps itself. If the new version does not start, the old one comes back. The version before stays in the `previous` folder in your data folder. Homebrew installs update with `brew upgrade --cask ragdoll-mail`, and winget installs with `winget upgrade erict16.RagdollMail`.
+
 > **Which password?** Many mailboxes want a special password for mail apps, not the one you use on the website. Tencent Exmail calls it 客户端专用密码. QQ Mail and 163 call it 授权码. Gmail, iCloud and Fastmail call it an app password. You make it in the settings of your mailbox's website.
 
 ## What it can do
