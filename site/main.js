@@ -15,8 +15,6 @@
       const [mac, w] = [$("[data-os=mac]", cta), $("[data-os=win]", cta)];
       if (mac && w) { mac.classList.remove("primary"); w.classList.add("primary"); cta.prepend(w); }
     });
-    const top = $(".top [data-dl]"), w = $("[data-os=win]");
-    if (top && w) top.href = w.href;
   }
 
   // ---- GitHub stars beside the GitHub link (kept for an hour so the API is asked rarely)
