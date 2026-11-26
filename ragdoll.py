@@ -2414,12 +2414,51 @@ def parse_people(s):
     return out
 
 
+_WRAP_TAG = re.compile(r"(?is)\s+|<!doctype[^>]*>|</?html\b[^>]*>|<meta\b[^>]*>|<base\b[^>]*>")
+_BODY_OPEN = re.compile(r"(?is)<body\b[^>]*>")
+_BODY_CLOSE = re.compile(r"(?is)</body>")
+
+
+def _skip_wrapper(html, pos):
+    """Advance past outer document wrapper tokens (whitespace, comments, doctype, html, head, meta, title, base)."""
+    low, n = html.lower(), len(html)
+    while pos < n:
+        if low.startswith("<!--", pos):
+            end = low.find("-->", pos + 4)
+            if end < 0:
+                break
+            pos = end + 3
+            continue
+        if low.startswith("<head", pos) and (pos + 5 == n or not low[pos + 5].isalnum()):
+            end = low.find("</head>", pos + 5)
+            if end < 0:
+                break
+            pos = end + 7
+            continue
+        if low.startswith("<title", pos) and (pos + 6 == n or not low[pos + 6].isalnum()):
+            end = low.find("</title>", pos + 6)
+            if end < 0:
+                break
+            pos = end + 8
+            continue
+        mo = _WRAP_TAG.match(html, pos)
+        if not mo or mo.end() == pos:
+            break
+        pos = mo.end()
+    return pos
+
+
 def unwrap_body(html):
     """Strip an outer <html>/<head>/<body> document wrapper without wiping prose around literal/nested <body> tags."""
-    mo = re.match(r"(?is)^(?:\s|<!doctype[^>]*>|<!--.*?-->|</?html\b[^>]*>|<head\b.*?</head>|<meta\b[^>]*>|<title\b.*?</title>|<base\b[^>]*>)*<body\b[^>]*>", html)
-    if mo:
-        html = html[mo.end():]
-        html = re.sub(r"(?is)</body>(?:\s|<!--.*?-->|</html>)*$", "", html)
+    pos = _skip_wrapper(html, 0)
+    open_mo = _BODY_OPEN.match(html, pos)
+    if open_mo:
+        html = html[open_mo.end():]
+        close_mo = None
+        for m in _BODY_CLOSE.finditer(html):
+            close_mo = m
+        if close_mo and _skip_wrapper(html, close_mo.end()) == len(html):
+            html = html[:close_mo.start()]
     return re.sub(r"(?is)</?body\b[^>]*>", "", html)
 
 
