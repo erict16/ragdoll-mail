@@ -3635,12 +3635,12 @@ async function openSettings(opts) {
   let s, tplList = [];
   try { s = await api("settings"); } catch (e) { return fail(e); }
   try { tplList = (await api("templates")).templates || []; } catch { tplList = []; }
+  const sigs = (s.signatures || []).map((x) => ({ ...x }));
+  const tpls = tplList.map((x) => ({ ...x }));
   const v = {
     ...s, password: "", theme: S.theme,
-    signatures: (s.signatures || []).map((x) => ({ ...x })),
     aliases_text: (s.aliases || []).join("\n"),
     reply_to: s.reply_to || "",
-    templates: tplList.map((x) => ({ ...x })),
   };
   let tab = opts.tab || "account", sigOn = 0, tplOn = 0;
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
@@ -3663,9 +3663,9 @@ async function openSettings(opts) {
   let sigEd = null;
   const grab = () => {
     for (const inp of $$("input[data-k], textarea[data-k]", body)) v[inp.dataset.k] = inp.value;
-    const cur = v.signatures[sigOn];
+    const cur = sigs[sigOn];
     if (sigEd && cur) { cur.html = sigEd.innerHTML; cur.name = $("input[data-sig-name]", body)?.value.trim() || ""; }
-    const ct = v.templates[tplOn];
+    const ct = tpls[tplOn];
     if (ct && $("input[data-tpl-name]", body)) {
       ct.name = $("input[data-tpl-name]", body).value.trim();
       ct.subject = $("input[data-tpl-subj]", body)?.value || "";
@@ -3711,7 +3711,7 @@ async function openSettings(opts) {
       f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
     } else if (tab === "templates") {
-      const list = v.templates;
+      const list = tpls;
       tplOn = Math.min(tplOn, Math.max(0, list.length - 1));
       const seg = el("div", { class: "seg sig-list" });
       list.forEach((x, k) => seg.append(el("button", { class: k === tplOn ? "on" : "", onclick: () => { grab(); tplOn = k; draw(); } }, x.name || `#${k + 1}`)));
@@ -3744,7 +3744,6 @@ async function openSettings(opts) {
         el("div", {}, del)));
     } else if (tab === "signature") {
       // a list of signatures, each with a name; one is the default for new mail, one for replies
-      const sigs = v.signatures;
       sigOn = Math.min(sigOn, Math.max(0, sigs.length - 1));
       const list = el("div", { class: "seg sig-list" });
       sigs.forEach((x, k) => list.append(el("button", { class: k === sigOn ? "on" : "", onclick: () => { grab(); sigOn = k; draw(); } }, sigName(x, k))));
@@ -3877,21 +3876,21 @@ async function openSettings(opts) {
     const aliases = (v.aliases_text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
     const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "reply_to"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""))
       || JSON.stringify(aliases) !== JSON.stringify(s.aliases || []);
-    const sigKey = (o) => JSON.stringify([(o.signatures || []).map(({ id, name, html }) => [id, name, html]), o.sig_new || "", o.sig_reply || ""]);
-    const sigChanged = sigKey(v) !== sigKey(s);
-    const tplChanged = JSON.stringify(v.templates || []) !== JSON.stringify(tplList || []);
+    const sigKey = (list, sn, sr) => JSON.stringify([(list || []).map(({ id, name, html }) => [id, name, html]), sn || "", sr || ""]);
+    const sigChanged = sigKey(sigs, v.sig_new, v.sig_reply) !== sigKey(s.signatures, s.sig_new, s.sig_reply);
+    const tplChanged = JSON.stringify(tpls || []) !== JSON.stringify(tplList || []);
     if (!changed && !sigChanged && !tplChanged) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
     try {
       if (tplChanged) {
-        tplList = (await api("save_templates", { templates: v.templates })).templates || [];
+        tplList = (await api("save_templates", { templates: tpls })).templates || [];
       }
       if (sigChanged) {
-        Object.assign(s, await api("save_signatures", { signatures: v.signatures, sig_new: v.sig_new, sig_reply: v.sig_reply }));
+        Object.assign(s, await api("save_signatures", { signatures: sigs, sig_new: v.sig_new, sig_reply: v.sig_reply }));
       }
       if (!changed) { closeLayer(); toast(t("saved")); return; }
-      const { signature, signatures, sig_new, sig_reply, templates, aliases_text, ...acct } = v;
+      const { signature, signatures, sig_new, sig_reply, aliases_text, ...acct } = v;
       const b = await api("save_settings", { ...acct, aliases, reply_to: v.reply_to || "", account: true, folders: v.folders });
       S.boot = { ...S.boot, ...b };
       closeLayer();

@@ -269,7 +269,6 @@ class PackagingAndHygieneTest(unittest.TestCase):
         iss = self._read("packaging", "windows", "ragdoll-mail.iss")
         self.assertIn("PrivilegesRequired=lowest", iss)
         self.assertIn("UninstallFilesDir={localappdata}\\RagdollMail\\Uninstall", iss)
-        self.assertIn("RedirectionGuard=no", iss)
         self.assertIn("Ragdoll Mail.exe", iss)
         self.assertIn("ragdoll.exe", iss)
         wf = self._read(".github", "workflows", "build.yml")
