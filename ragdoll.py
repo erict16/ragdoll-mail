@@ -1035,7 +1035,7 @@ def light_path(folder, uidv, uid):
 
 
 def cache_path(folder, uidv, uid):
-    key = hashlib.sha1(("%s|%s|%s" % (folder, uidv, uid)).encode()).hexdigest()
+    key = hashlib.sha256(("%s|%s|%s" % (folder, uidv, uid)).encode()).hexdigest()[:40]
     return os.path.join(CFG.home, "cache", key[:2], key + ".eml")
 
 

@@ -4217,16 +4217,18 @@ async function templateMenu(anchor) {
 function applyTemplate(tpl) {
   const vars = [...new Set([...((tpl.subject || "") + "\n" + (tpl.body || "")).matchAll(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g)].map((m) => m[1]))];
   const insert = (vals) => {
-    const fill = (s) => (s || "").replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (m, k) => (vals[k] != null && vals[k] !== "" ? vals[k] : m));
+    const fill = (s, asHtml = false) => (s || "").replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g,
+      (m, k) => (vals[k] != null && vals[k] !== "" ? (asHtml ? esc(vals[k]) : vals[k]) : m));
     const c = S.compose;
     if (!c) return;
     if (tpl.subject && !c.subject.trim()) {
-      c.subject = fill(tpl.subject);
+      c.subject = fill(tpl.subject, false);
       const inp = $(".compose .subject-input");
       if (inp) inp.value = c.subject;
     }
-    const body = fill(tpl.body || "");
-    const html = tpl.html ? cleanHTML(body) : body.split("\n").map((ln) => `<p>${esc(ln) || "<br>"}</p>`).join("");
+    const html = tpl.html
+      ? cleanHTML(fill(tpl.body || "", true))
+      : fill(tpl.body || "", false).split("\n").map((ln) => `<p>${esc(ln) || "<br>"}</p>`).join("");
     if (edFocus()) {
       document.execCommand("insertHTML", false, html);
       edChanged();
