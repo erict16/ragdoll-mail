@@ -57,14 +57,14 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib, itertools
-import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, threading, time, urllib.parse
+import json, mailbox, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, threading, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, getaddresses, make_msgid, parsedate_to_datetime
 import encodings.aliases, unicodedata
 
-__version__ = "0.11.1"
+__version__ = "0.12.0"
 FROZEN = bool(getattr(sys, "frozen", False))      # inside the built Ragdoll Mail app
 
 # Chinese mail clients label text GB2312 but use GBK characters (e.g. 喆 in 陈喆). Strict GB2312
@@ -94,6 +94,8 @@ DEFAULTS = {
     "signature": "",
     "signature_marks": [],
     "require_cc": [],
+    "aliases": [],
+    "reply_to": "",
     "body_bytes": 30000,
     "body_chars": 20000,
     "update_check": True,
@@ -269,33 +271,117 @@ def move_old_setup(path=None, home=None):
 CONFIG_ERROR = None     # {"path", "error"} when the settings file could not be read (#49)
 
 
-def load_config(path=None):
-    """The settings: config.json over the defaults. A file that can't be read (a stray comma after a
-    hand edit) must not stop the app from opening: the defaults are used, the file is left as it is,
-    and CONFIG_ERROR says what is wrong so the app can show it."""
-    global CONFIG_ERROR
+def account_slug(name):
+    s = re.sub(r"[^a-z0-9._-]+", "_", (name or "default").strip().lower()).strip("._-")
+    return s or "account"
+
+
+def _read_raw_config(path=None):
     path, over = move_old_setup(path or env("CONFIG"))
-    d = json.loads(json.dumps(DEFAULTS))
-    CONFIG_ERROR = None
+    raw, err = {}, None
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                user = json.load(f)
-            if not isinstance(user, dict):
+                raw = json.load(f)
+            if not isinstance(raw, dict):
                 raise ValueError("the settings are not a JSON object")
+        except (OSError, ValueError) as e:
+            err = {"path": path, "error": str(e)}
+            raw = {}
+    return path, over, raw, err
+
+
+def list_accounts(path=None):
+    """Configured accounts from config.json (multi-account 'accounts' list or legacy single account)."""
+    path, over, raw, _ = _read_raw_config(path)
+    base_dir = over.get("data_dir") or raw.get("data_dir") or DEFAULTS["data_dir"]
+    accs = raw.get("accounts")
+    if isinstance(accs, list) and any(isinstance(x, dict) for x in accs):
+        valid = [x for x in accs if isinstance(x, dict)]
+        want_def = (raw.get("default_account") or "").strip().lower()
+        def_idx = 0
+        if want_def:
+            for i, a in enumerate(valid):
+                keys = {(a.get("id") or "").strip().lower(), (a.get("label") or "").strip().lower(),
+                        (a.get("user") or "").strip().lower()}
+                if want_def in keys:
+                    def_idx = i
+                    break
+        out = []
+        for i, a in enumerate(valid):
+            u = (a.get("user") if isinstance(a.get("user"), str) else "").strip().lower()
+            aid = (a.get("id") or u or ("account-%d" % (i + 1))).strip()
+            label = (a.get("label") or a.get("name") or u or aid).strip()
+            dd = a.get("data_dir")
+            if not dd:
+                dd = base_dir if i == def_idx else os.path.join(base_dir, "accounts", account_slug(aid))
+            out.append({"id": aid, "label": label, "user": u, "name": a.get("name") or "",
+                        "data_dir": dd, "is_default": i == def_idx, "raw": a})
+        return out
+    u = (raw.get("user") if isinstance(raw.get("user"), str) else "").strip().lower()
+    if not u:
+        return []
+    return [{"id": u, "label": (raw.get("name") or u).strip(), "user": u, "name": raw.get("name") or "",
+             "data_dir": base_dir, "is_default": True, "raw": raw}]
+
+
+def load_config(path=None, account=None):
+    """The settings: config.json over the defaults. Supports single-account configs and multi-account
+    configs with an 'accounts' list (selected by account, $RAGDOLL_ACCOUNT, or 'default_account').
+    A file that can't be read must not stop the app from opening: defaults are used and CONFIG_ERROR says why."""
+    global CONFIG_ERROR
+    path, over, user, err = _read_raw_config(path)
+    d = json.loads(json.dumps(DEFAULTS))
+    CONFIG_ERROR = err
+    if not err and user:
+        try:
             for k, v in user.items():
                 if isinstance(d.get(k), dict) and not isinstance(v, dict):
                     raise ValueError("%r must be an object like {...}" % k)
-        except (OSError, ValueError) as e:      # json.JSONDecodeError is a ValueError
+        except ValueError as e:
             CONFIG_ERROR = {"path": path, "error": str(e)}
             user = {}
-        for k, v in user.items():
+    accs = list_accounts(path) if not CONFIG_ERROR and isinstance(user.get("accounts"), list) else []
+    want = (account or env("ACCOUNT") or "").strip().lower()
+    picked = None
+    if accs:
+        if want:
+            for a in accs:
+                if want in {a["id"].lower(), a["label"].lower(), a["user"].lower()}:
+                    picked = a
+                    break
+            if picked is None:
+                raise LookupError("unknown account %r (configured: %s)"
+                                  % (account or env("ACCOUNT"), ", ".join(a["id"] for a in accs)))
+        else:
+            picked = next((a for a in accs if a["is_default"]), accs[0])
+    elif want and user.get("user"):
+        u = str(user.get("user")).strip().lower()
+        if want not in {u, str(user.get("name") or "").strip().lower()}:
+            raise LookupError("unknown account %r (configured: %s)" % (account or env("ACCOUNT"), u))
+    for k, v in user.items():
+        if k in ("accounts", "default_account"):
+            continue
+        if isinstance(v, dict) and isinstance(d.get(k), dict):
+            d[k].update(v)
+        else:
+            d[k] = v
+    if picked:
+        for k, v in picked["raw"].items():
+            if k in ("id", "label"):
+                continue
             if isinstance(v, dict) and isinstance(d.get(k), dict):
                 d[k].update(v)
             else:
                 d[k] = v
+        d["data_dir"] = picked["data_dir"]
+        d["_account_id"] = picked["id"]
+        d["_account_label"] = picked["label"]
     d.update(over)
     d["user"] = (d.get("user") if isinstance(d.get("user"), str) else "").strip().lower()
+    d.setdefault("_account_id", d["user"] or "default")
+    d.setdefault("_account_label", d.get("name") or d["user"] or "default")
+    d["_config_path"] = path
     return Cfg(d)
 
 
@@ -1164,6 +1250,169 @@ def html_to_text(h):
     return text.replace("\x00", "  ").replace("\x01", " ")
 
 
+def _strip_ignored_html(h):
+    """Linearly remove <style>, <script>, <head> blocks and HTML comments without backtracking."""
+    s = h or ""
+    low = s.lower()
+    out, pos = [], 0
+    while pos < len(s):
+        nxt = s.find("<", pos)
+        if nxt < 0:
+            out.append(s[pos:])
+            break
+        out.append(s[pos:nxt])
+        if s.startswith("<!--", nxt):
+            end = s.find("-->", nxt + 4)
+            pos = (end + 3) if end >= 0 else len(s)
+            out.append(" ")
+            continue
+        matched = False
+        for tag in ("style", "script", "head"):
+            if low.startswith("<" + tag, nxt) and (nxt + 1 + len(tag) == len(s) or not low[nxt + 1 + len(tag)].isalnum()):
+                close = low.find("</" + tag, nxt + 1 + len(tag))
+                if close >= 0:
+                    gt = s.find(">", close + 2 + len(tag))
+                    pos = (gt + 1) if gt >= 0 else len(s)
+                else:
+                    pos = len(s)
+                out.append(" ")
+                matched = True
+                break
+        if not matched:
+            out.append("<")
+            pos = nxt + 1
+    return "".join(out)
+
+
+def html_to_markdown(h):
+    """Stdlib HTML-to-Markdown converter for agent & CLI reading: keeps headings, emphasis, links,
+    lists, code blocks, quotes, and simple tables cleanly without external dependencies."""
+    s = _strip_ignored_html(h)
+    out, lists, link_stack = [], [], []
+    in_pre, in_quote, row_cells = False, 0, None
+
+    def nl(n=1):
+        if not out:
+            return
+        cur = "".join(out[-3:])
+        have = len(cur) - len(cur.rstrip("\n"))
+        if have < n:
+            out.append("\n" * (n - have))
+
+    def prefix():
+        return ("> " * in_quote) if in_quote else ""
+
+    for mo in TOKEN_RE.finditer(s):
+        tok = mo.group()
+        tag = TAG_RE.fullmatch(tok) if tok.startswith("<") else None
+        if tag is None:
+            if tok.startswith("<") and len(tok) > 1 and (tok[1] in "!?/" or tok[1].isalpha()):
+                continue
+            text = htmlmod.unescape(tok).replace("\x00", "").replace("\x01", "")
+            if not in_pre:
+                if "\n" in text and not text.strip():
+                    continue
+                text = re.sub(r"[ \t\r\n]+", " ", text)
+            if link_stack:
+                link_stack[-1][1].append(text)
+            elif row_cells is not None:
+                if row_cells:
+                    row_cells[-1] += text
+            else:
+                if out and out[-1].endswith("\n") and in_quote:
+                    out.append(prefix())
+                out.append(text)
+            continue
+        close, name, rest = tag.group(1), tag.group(2).lower(), tag.group(3)
+        if name == "br":
+            if row_cells is not None and row_cells:
+                row_cells[-1] += " "
+            else:
+                out.append("\n" + prefix())
+        elif name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            if not close:
+                nl(2)
+                out.append(prefix() + "#" * int(name[1]) + " ")
+            else:
+                nl(2)
+        elif name in ("strong", "b"):
+            target = link_stack[-1][1] if link_stack else out
+            target.append("**")
+        elif name in ("em", "i"):
+            target = link_stack[-1][1] if link_stack else out
+            target.append("*")
+        elif name == "code" and not in_pre:
+            target = link_stack[-1][1] if link_stack else out
+            target.append("`")
+        elif name == "pre":
+            nl(2)
+            out.append("```\n")
+            in_pre = not close
+            if close:
+                nl(2)
+        elif name == "a":
+            if not close:
+                href_m = re.search(r"""(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", rest)
+                href = htmlmod.unescape((href_m.group(1) or href_m.group(2) or href_m.group(3) or "").strip()) if href_m else ""
+                link_stack.append([href, []])
+            elif link_stack:
+                href, parts = link_stack.pop()
+                label = "".join(parts).strip()
+                if href and href.lower().startswith(("http://", "https://", "mailto:")) and label and label != href:
+                    rendered = "[%s](%s)" % (label, href)
+                else:
+                    rendered = label or href
+                if link_stack:
+                    link_stack[-1][1].append(rendered)
+                elif row_cells is not None and row_cells:
+                    row_cells[-1] += rendered
+                else:
+                    out.append(rendered)
+        elif name == "blockquote":
+            nl(1)
+            in_quote = max(0, in_quote + (-1 if close else 1))
+            nl(1)
+        elif name == "hr":
+            nl(2)
+            out.append("---\n\n")
+        elif name in ("ul", "ol"):
+            nl(1)
+            if close:
+                if lists:
+                    lists.pop()
+                nl(2 if not lists else 1)
+            else:
+                start = re.search(r"""(?i)\bstart\s*=\s*["']?(-?\d{1,6})""", rest)
+                lists.append([name == "ol", int(start.group(1)) if start else 1])
+        elif name == "li":
+            if not close:
+                nl(1)
+                ordered, n = lists[-1] if lists else (False, 1)
+                if ordered and lists:
+                    lists[-1][1] += 1
+                indent = "  " * max(0, len(lists) - 1)
+                out.append(prefix() + indent + ("%d. " % n if ordered else "- "))
+            else:
+                nl(1)
+        elif name == "tr":
+            if not close:
+                row_cells = []
+            elif row_cells is not None:
+                if any(c.strip() for c in row_cells):
+                    nl(1)
+                    out.append("| " + " | ".join(re.sub(r"\s+", " ", c).strip() for c in row_cells) + " |\n")
+                row_cells = None
+        elif name in ("td", "th"):
+            if not close and row_cells is not None:
+                row_cells.append("")
+        elif name in ("p", "div"):
+            nl(2 if name == "p" else 1)
+    text = "".join(out)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
 def b64_cut(p):
     """The bytes of a base64 part whose end is missing, or None. The index reads only the start of a
     mail; when the cut leaves one base64 character too many, the email module gives the text back
@@ -1437,7 +1686,8 @@ SCHEMA = """
 create table if not exists msgs(id integer primary key, folder text, uidv integer, uid integer,
   msgid text, irt text, refs text, ts integer, frm text, to_ text, cc text, subject text,
   atts text, body text, seen int, flagged int, answered int, size int default 0,
-  has_body int default 0, fwd text default '', forwarded int default 0, unique(folder, uidv, uid));
+  has_body int default 0, fwd text default '', forwarded int default 0, is_list int default 0,
+  unique(folder, uidv, uid));
 create index if not exists msgs_ts on msgs(ts);
 create index if not exists msgs_msgid on msgs(msgid);
 create index if not exists msgs_irt on msgs(irt);
@@ -1479,6 +1729,9 @@ def db():
             if is_forward_subject(r["subject"]):
                 c.execute("update msgs set fwd=? where id=?", (r["irt"], r["id"]))
         mark_forwarded(c)
+        c.commit()
+    if "is_list" not in cols:      # newsletter / mailing-list flag (List-Unsubscribe / List-Id / Precedence)
+        c.execute("alter table msgs add column is_list int default 0")
         c.commit()
     c.execute("create index if not exists msgs_fwd on msgs(fwd)")
     if not c.execute("select 1 from meta where k='charset_fix'").fetchone():
@@ -1630,6 +1883,14 @@ def bs_names(blob):
         for o in names)]
 
 
+def is_list_mail(msg):
+    """True for newsletters and automated mailing lists (RFC 2369/2919/3834 headers)."""
+    if msg.get("List-Unsubscribe") or msg.get("List-Id"):
+        return True
+    prec = (msg.get("Precedence") or "").strip().lower()
+    return prec in ("bulk", "list", "junk")
+
+
 def header_row(seg):
     meta = seg_meta(seg)
     msg = to_msg(literal_after(seg, rb"BODY\[HEADER\]"))
@@ -1663,7 +1924,8 @@ def header_row(seg):
             "fwd": forward_source(msg),
             "refs": hdr(msg, "References"), "ts": ts, "frm": hdr(msg, "From"), "to_": hdr(msg, "To"),
             "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"), "atts": " | ".join(bs_names(bs)),
-            "size": int(size.group(1)) if size else 0, "flags": flags_of(meta)}
+            "size": int(size.group(1)) if size else 0, "flags": flags_of(meta),
+            "is_list": int(is_list_mail(msg))}
 
 
 def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=False):
@@ -1715,9 +1977,9 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=Fals
                 h = header_row(seg)
                 cur = c.execute(
                     "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,"
-                    "seen,flagged,answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0,?)",
+                    "seen,flagged,answered,size,has_body,fwd,is_list) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0,?,?)",
                     (folder, uidv, uid, h["msgid"], h["irt"], h["refs"], h["ts"], h["frm"], h["to_"], h["cc"],
-                     h["subject"], h["atts"], *h["flags"], h["size"], h["fwd"]))
+                     h["subject"], h["atts"], *h["flags"], h["size"], h["fwd"], h.get("is_list", 0)))
                 if cur.rowcount:
                     c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,'')",
                               (cur.lastrowid, h["subject"], h["frm"], h["to_"] + " " + h["cc"], h["atts"]))
@@ -1992,7 +2254,8 @@ def row_out(r, snippet=True):
          "to": r["to_"], "cc": r["cc"], "subject": r["subject"],
          "attachments": [x for x in (r["atts"] or "").split(" | ") if x],
          "unread": not r["seen"], "starred": bool(r["flagged"]), "answered": bool(r["answered"]),
-         "forwarded": bool(r["forwarded"]), "body_indexed": bool(r["has_body"])}
+         "forwarded": bool(r["forwarded"]), "body_indexed": bool(r["has_body"]),
+         "is_list": bool(r["is_list"]) if "is_list" in r.keys() else False}
     if snippet:
         d["snippet"] = re.sub(r"\s+", " ", new_text(r["body"] or ""))[:200]
     return d
@@ -2034,6 +2297,81 @@ def like_arg(t, cap=MAX_TERM):
     return "%" + re.sub(r"([\\%_])", r"\\\1", t[:cap]) + "%"
 
 
+def _split_search_tokens(text):
+    """Split a search string on whitespace while preserving quoted phrases (never raises on odd quotes)."""
+    toks, cur, quote = [], [], ""
+    for ch in (text or ""):
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                cur.append(ch)
+        elif ch in ('"', "'") and (not cur or cur[-1] in (":", "-")):
+            quote = ch
+        elif ch.isspace():
+            if cur:
+                toks.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        toks.append("".join(cur))
+    return toks
+
+
+def parse_search_query(text):
+    """Parse search operators shared between CLI and desktop app:
+    from:, to:, in:/folder:, since:/after:, until:/before:, filename:/file:,
+    is:unread, is:starred/flagged, is:people, is:newsletter(s)/list,
+    has:attachment/file, has:invite/calendar, and -term negation."""
+    spec = {"words": [], "from_": None, "to": None, "folder": None, "since": None, "until": None,
+            "filename": None, "unread": False, "starred": False, "att": False, "has_invite": False,
+            "people": False, "newsletters": False, "exclude": []}
+    tokens = _split_search_tokens(text) if isinstance(text, str) else list(text or [])
+    for tok in tokens:
+        t = (tok or "").strip()
+        if not t:
+            continue
+        low = t.lower()
+        if low.startswith("from:") and len(t) > 5:
+            spec["from_"] = t[5:]
+        elif low.startswith("to:") and len(t) > 3:
+            spec["to"] = t[3:]
+        elif low.startswith("in:") and len(t) > 3:
+            spec["folder"] = t[3:]
+        elif low.startswith("folder:") and len(t) > 7:
+            spec["folder"] = t[7:]
+        elif low.startswith("since:") and len(t) > 6:
+            spec["since"] = t[6:]
+        elif low.startswith("after:") and len(t) > 6:
+            spec["since"] = t[6:]
+        elif low.startswith("until:") and len(t) > 6:
+            spec["until"] = t[6:]
+        elif low.startswith("before:") and len(t) > 7:
+            spec["until"] = t[7:]
+        elif low.startswith("filename:") and len(t) > 9:
+            spec["filename"] = t[9:]
+        elif low.startswith("file:") and len(t) > 5:
+            spec["filename"] = t[5:]
+        elif low == "is:unread":
+            spec["unread"] = True
+        elif low in ("is:starred", "is:flagged"):
+            spec["starred"] = True
+        elif low == "is:people":
+            spec["people"] = True
+        elif low in ("is:newsletter", "is:newsletters", "is:list"):
+            spec["newsletters"] = True
+        elif low in ("has:attachment", "has:attachments", "has:file"):
+            spec["att"] = True
+        elif low in ("has:invite", "has:calendar"):
+            spec["has_invite"] = True
+        elif t.startswith("-") and len(t) > 1 and not t.startswith("--"):
+            spec["exclude"].append(t[1:])
+        else:
+            spec["words"].append(t)
+    return spec
+
+
 def add_filters(a, where, params):
     if getattr(a, "folder", None):
         where.append("m.folder=?")
@@ -2059,6 +2397,26 @@ def add_filters(a, where, params):
         where.append("m.flagged=1")
     if getattr(a, "att", False):
         where.append("m.atts!=''")
+    if getattr(a, "filename", None):
+        where.append("m.atts like ? escape '\\'")
+        params.append(like_arg(a.filename))
+    if getattr(a, "has_invite", False):
+        where.append("lower(m.atts) like '%.ics%'")
+    if getattr(a, "people", False):
+        where.append("coalesce(m.is_list, 0)=0")
+    elif getattr(a, "newsletters", False):
+        where.append("coalesce(m.is_list, 0)=1")
+    for neg in (getattr(a, "exclude", None) or [])[:MAX_TERMS]:
+        t = nfc((neg or "").replace("\x00", ""))[:MAX_TERM]
+        if not t:
+            continue
+        cols = ("subject", "frm", "to_", "cc", "atts", "body")
+        if t.isascii():
+            where.append("not (" + " or ".join("m.%s like ? escape '\\'" % k for k in cols) + ")")
+            params += [like_arg(t)] * len(cols)
+        else:
+            where.append("not (" + " or ".join("instr(lower(m.%s), lower(?)) > 0" % k for k in cols) + ")")
+            params += [t] * len(cols)
 
 
 def search_where(words, a):
@@ -2149,9 +2507,19 @@ def cmd_sync(a):
 
 
 def cmd_search(a):
-    words = [w for w in a.words if w.replace("\x00", "").strip()]
-    if not words and not any((a.folder, a.from_, a.to, a.since, a.until, a.unread, a.starred, a.att)):
-        die("give a word or a filter (--from, --to, --since, --until, --folder, --unread, --starred, --att)")
+    parsed = parse_search_query([w for w in a.words if w.replace("\x00", "").strip()])
+    words = parsed["words"]
+    for k in ("folder", "from_", "to", "since", "until", "filename"):
+        if not getattr(a, k, None) and parsed[k]:
+            setattr(a, k, parsed[k])
+    for k in ("unread", "starred", "att", "has_invite", "people", "newsletters"):
+        if parsed[k]:
+            setattr(a, k, True)
+    a.exclude = list(getattr(a, "exclude", None) or []) + parsed["exclude"]
+    if not words and not any((a.folder, a.from_, a.to, a.since, a.until, a.unread, a.starred, a.att,
+                              getattr(a, "filename", None), getattr(a, "has_invite", False),
+                              getattr(a, "people", False), getattr(a, "newsletters", False), a.exclude)):
+        die("give a word or a filter (--from, --to, --since, --until, --folder, --unread, --starred, --att, --people, --newsletters)")
     c = db() if a.no_sync else quick_sync(CFG.folder(a.folder) if a.folder else None)
     rows = search_rows(c, words, a)
     print_rows(rows, a.json, total=search_total(c, words, a) if len(rows) >= a.limit else None)
@@ -2248,6 +2616,26 @@ def thread_rows(c, row):
     return sorted(out.values(), key=lambda r: (r["ts"] or 0, r["id"]))
 
 
+def _extract_body_views(raw, only_new=False, as_md=False, max_chars=0):
+    msg = to_msg(raw)
+    plain, html = bodies(msg)
+    plain = plain_text(plain)
+    text = plain.strip() or html_to_text(html)
+    if only_new:
+        text = new_text(text)
+    md = ""
+    if as_md:
+        md = html_to_markdown(html) if html else text
+        if only_new:
+            md = new_text(md)
+    if max_chars and max_chars > 0:
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n...(truncated)"
+        if md and len(md) > max_chars:
+            md = md[:max_chars].rstrip() + "\n...(truncated)"
+    return msg, text, md
+
+
 def cmd_thread(a):
     c = db() if a.no_sync else quick_sync()
     folder, uid = parse_id(a.id)
@@ -2255,17 +2643,79 @@ def cmd_thread(a):
     if not row:
         die("%s is not in the index; run search again" % a.id)
     rows = thread_rows(c, row)
+    full = getattr(a, "full", False)
+    only_new = getattr(a, "new", False)
+    as_md = getattr(a, "markdown", False)
+    max_chars = getattr(a, "max_chars", 0) or 0
+    raws = {}
+    if full:
+        uncached = []
+        for r in rows:
+            raw = cache_get(cache_path(r["folder"], r["uidv"], r["uid"])) if r["folder"] != CFG.folders.get("drafts") else None
+            if raw:
+                raws[(r["folder"], r["uid"])] = raw
+            else:
+                uncached.append(r)
+        if uncached and not a.no_sync and CFG.user and CFG.imap.get("host"):
+            with session() as m:
+                for r in uncached:
+                    raws[(r["folder"], r["uid"])] = mail_raw(r["folder"], r["uid"], m)
     if a.json:
-        print(json.dumps([row_out(r) for r in rows], ensure_ascii=False, indent=1))
+        out = []
+        for r in rows:
+            d = row_out(r)
+            if full:
+                raw = raws.get((r["folder"], r["uid"]))
+                if raw is not None:
+                    _, txt, md = _extract_body_views(raw, only_new=only_new, as_md=as_md, max_chars=max_chars)
+                else:
+                    txt = new_text(r["body"] or "") if only_new else (r["body"] or "")
+                    if max_chars and len(txt) > max_chars:
+                        txt = txt[:max_chars].rstrip() + "\n...(truncated)"
+                    md = txt if as_md else ""
+                d["text"] = txt
+                if as_md:
+                    d["markdown"] = md
+            out.append(d)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
         return
-    for r in rows:
+    for i, r in enumerate(rows):
         f = addrs(r["frm"])
         who = (f[0][0] or f[0][1]) if f else ""
+        if full and as_md:
+            if i:
+                print("\n---\n")
+            print("## %s\n\n- **ID:** %s\n- **From:** %s\n- **To:** %s\n- **Date:** %s"
+                  % (r["subject"] or "(no subject)", make_id(r["folder"], r["uid"]), r["frm"], r["to_"], local_time(r["ts"])))
+            if r["atts"]:
+                print("- **Attachments:** %s" % r["atts"])
+            print()
+            raw = raws.get((r["folder"], r["uid"]))
+            if raw is not None:
+                _, _, md = _extract_body_views(raw, only_new=only_new, as_md=True, max_chars=max_chars)
+                print(md)
+            else:
+                txt = new_text(r["body"] or "") if only_new else (r["body"] or "")
+                print(txt[:max_chars] if max_chars and len(txt) > max_chars else txt)
+            continue
         print("── %s  %s  %s  %s" % (make_id(r["folder"], r["uid"]), local_time(r["ts"]), who, r["subject"]))
         if r["atts"]:
             print("   [%s]" % r["atts"])
-        nt = new_text(r["body"] or "")
-        print("   " + (re.sub(r"\n+", "\n   ", nt[:600]) if r["has_body"] else "(body not indexed yet: read it)"))
+        if full:
+            raw = raws.get((r["folder"], r["uid"]))
+            if raw is not None:
+                _, txt, _ = _extract_body_views(raw, only_new=only_new, as_md=False, max_chars=max_chars)
+            else:
+                txt = new_text(r["body"] or "") if only_new else (r["body"] or "")
+                if max_chars and len(txt) > max_chars:
+                    txt = txt[:max_chars].rstrip() + "\n...(truncated)"
+            print()
+            print(txt)
+            if i < len(rows) - 1:
+                print()
+        else:
+            nt = new_text(r["body"] or "")
+            print("   " + (re.sub(r"\n+", "\n   ", nt[:600]) if r["has_body"] else "(body not indexed yet: read it)"))
 
 
 def cmd_read(a):
@@ -2275,6 +2725,10 @@ def cmd_read(a):
     plain, html = bodies(msg)
     plain = plain_text(plain)
     text = plain.strip() or html_to_text(html)
+    as_md = getattr(a, "markdown", False)
+    md = (html_to_markdown(html) if html else text) if as_md else ""
+    if as_md and a.new:
+        md = new_text(md)
     atts = [{"name": fname(p) or "(no name)", "kb": len(part_bytes(p)) // 1024,
              "inline": is_inline(p, body_refs(msg))} for p in attachments(msg, inline=True)]
     atts = [x for x in atts if not (x["inline"] and INLINE_ID.match(x["name"]))]
@@ -2288,8 +2742,22 @@ def cmd_read(a):
          "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"), "message_id": hdr(msg, "Message-ID"),
          "attachments": atts, "big_attachments": big_attachment_lines(html_to_text(html) or plain),
          "text": new_text(text) if a.new else text}
+    if as_md:
+        d["markdown"] = md
     if a.json:
         print(json.dumps(d, ensure_ascii=False, indent=1))
+        return
+    if as_md:
+        print("# %s\n" % (d["subject"] or "(no subject)"))
+        for k in ("from", "to", "cc", "date"):
+            if d[k]:
+                print("- **%s:** %s" % (k.capitalize(), d[k]))
+        for x in atts:
+            print("- **Attachment:** %s (%d KB)%s" % (x["name"], x["kb"], " inline" if x["inline"] else ""))
+        for ln in d["big_attachments"]:
+            print("- **Big attachment:** %s" % ln)
+        print()
+        print(md)
         return
     for k in ("from", "to", "cc", "date", "subject"):
         if d[k]:
@@ -2560,8 +3028,31 @@ def text_to_html(t):
     return "".join("<div>%s</div>" % (htmlmod.escape(x) or "<br>") for x in t.split("\n"))
 
 
+def resolve_from_addr(from_addr=None):
+    """Return formatted From header string for from_addr (or default CFG.user).
+    Validates that from_addr is either CFG.user or one of CFG.d['aliases']."""
+    default_from = formataddr((CFG.name, CFG.user)) if CFG.name else CFG.user
+    if not from_addr or not str(from_addr).strip():
+        return default_from
+    parsed = addrs(str(from_addr))
+    if not parsed:
+        die("invalid --from address: %r" % (from_addr,))
+    name, addr = parsed[0]
+    allowed = {CFG.user.lower()} | {a for _, a in addrs(", ".join(CFG.d.get("aliases") or []))}
+    if addr.lower() not in allowed:
+        die("alias %r is not in configured aliases (add it to 'aliases' in config.json)" % addr)
+    if not name:
+        for n, a in addrs(", ".join(CFG.d.get("aliases") or [])):
+            if a.lower() == addr.lower() and n:
+                name = n
+                break
+    name = name or CFG.name
+    return formataddr((one_line(name), one_line(addr))) if name else one_line(addr)
+
+
 def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), attach=(),
-                  signature_html="", high=False, font="", quote_html="", quote_src=None):
+                  signature_html="", high=False, font="", quote_html="", quote_src=None,
+                  from_addr=None, reply_to=None):
     """The draft as an EmailMessage. mode: None (new), 'reply' or 'forward'. font: the body's font as CSS
     (font-family:...;font-size:...): the signature is wrapped in it too, or Outlook shows it in Times.
     quote_html, quote_src: with no orig, a quote already made (quote_of an earlier draft) and the mail
@@ -2574,7 +3065,10 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
     elif quote_html:
         html += "<div><br></div>" + quote_html
     msg = EmailMessage()
-    msg["From"] = formataddr((CFG.name, CFG.user)) if CFG.name else CFG.user
+    msg["From"] = resolve_from_addr(from_addr)
+    rt = (reply_to if reply_to is not None else CFG.d.get("reply_to") or "").strip()
+    if rt:
+        msg["Reply-To"] = one_line(rt)
     if to:
         msg["To"] = fmt_addrs(to)
     if cc:
@@ -2583,7 +3077,8 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
         msg["Bcc"] = fmt_addrs(bcc)
     msg["Subject"] = one_line(subject)
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(domain=(CFG.user.split("@")[-1] or None))
+    from_email = (addrs(msg["From"])[0][1] if addrs(msg["From"]) else CFG.user)
+    msg["Message-ID"] = make_msgid(domain=(from_email.split("@")[-1] or None))
     if high:
         msg["X-Priority"] = "1"
         msg["Importance"] = "High"
@@ -2710,15 +3205,50 @@ def read_body_file(path):
         die("%s is not UTF-8 (PowerShell Set-Content writes ANSI): save it as UTF-8" % path)
 
 
+def _looks_like_html(s):
+    low = (s or "").lstrip().lower()
+    return any(low.startswith(t) for t in ("<!doctype", "<html", "<div", "<p", "<table", "<span", "<ul", "<ol", "<h1", "<h2", "<h3")) or "<br" in low or "</p>" in low or "</div>" in low
+
+
+def _parse_vars(items):
+    out = {}
+    for item in items or []:
+        if "=" not in item:
+            die("--var must look like key=value, got %r" % item)
+        k, v = item.split("=", 1)
+        out[k.strip()] = v
+    return out
+
+
 def cmd_draft(a):
-    if not (a.body or a.text):
-        die("give --body FILE.html or --text")
+    tpl = None
+    if getattr(a, "template", None):
+        want = a.template.strip().lower()
+        tpl = next((t for t in load_templates() if t["name"].strip().lower() == want), None)
+        if not tpl:
+            die("template %r not found (see `ragdoll templates`)" % a.template)
+    use_stdin = getattr(a, "stdin", False) or a.body == "-"
+    if not (a.body or a.text or use_stdin or tpl):
+        die("give --body FILE.html, --text, --stdin, or --template NAME")
     for f in a.attach or []:
         if not os.path.isfile(f):
             die("attachment not found: %s" % f)
     if a.replace:
         drafts_only(a.replace, "--replace")      # never expunge a mail in Inbox or Sent by mistake
-    body = read_body_file(a.body) if a.body else text_to_html(a.text)
+    vars_dict = _parse_vars(getattr(a, "var", None))
+    if use_stdin:
+        raw_in = sys.stdin.read()
+        raw_in = render_template(raw_in, vars_dict) if vars_dict else raw_in
+        body = raw_in if _looks_like_html(raw_in) else text_to_html(raw_in)
+    elif a.body:
+        raw_in = read_body_file(a.body)
+        body = render_template(raw_in, vars_dict) if vars_dict else raw_in
+    elif a.text:
+        raw_in = render_template(a.text, vars_dict) if vars_dict else a.text
+        body = text_to_html(raw_in)
+    else:
+        raw_in = render_template(tpl.get("body", ""), vars_dict)
+        body = raw_in if tpl.get("html") else text_to_html(raw_in)
     sig = ""
     if not a.no_sig and CFG.signature:
         p = os.path.expanduser(CFG.signature)
@@ -2729,6 +3259,7 @@ def cmd_draft(a):
             sig = text_to_html(CFG.signature)
         else:
             die("signature file not found: %s" % CFG.signature)
+    tpl_subj = render_template(tpl.get("subject", ""), vars_dict) if tpl else ""
     with session() as m:
         orig, mode = None, None
         src = a.reply or a.forward
@@ -2740,13 +3271,14 @@ def cmd_draft(a):
         drop = set(remove)          # an address named in --to/--cc is meant, the owner's own included
         if mode == "reply":
             to, cc = reply_recipients(orig, a.all, CFG.user, parse_people(a.to), parse_people(a.cc), remove)
-            subject = a.subject or reply_subject(hdr(orig, "Subject"))
+            subject = a.subject or tpl_subj or reply_subject(hdr(orig, "Subject"))
         else:
             to, cc = clean_recipients(parse_people(a.to), parse_people(a.cc), drop)
-            subject = a.subject or (forward_subject(hdr(orig, "Subject")) if mode == "forward" else "")
+            subject = a.subject or tpl_subj or (forward_subject(hdr(orig, "Subject")) if mode == "forward" else "")
         if not subject:
             die("give --subject")
-        msg = build_message(body, to, cc, subject, orig, mode, parse_people(a.bcc), a.attach or [], sig, a.high)
+        msg = build_message(body, to, cc, subject, orig, mode, parse_people(a.bcc), a.attach or [], sig, a.high,
+                            from_addr=getattr(a, "from_addr", None), reply_to=getattr(a, "reply_to", None))
         new_uid = append_draft(m, msg.as_bytes(policy=OUT_POLICY))
         if a.replace:
             f2, u2 = drafts_only(a.replace, "--replace")
@@ -3122,7 +3654,13 @@ def send_draft(folder, uid, wait=3):
             raise                               # a wrong password stays wrong
         except (OSError, smtplib.SMTPException) as e:
             raise SendLater(e) from e
-        refused = smtp_send(s, CFG.user, rcpts, out)
+        env_from = CFG.user
+        hdr_from = addrs(hdr(msg, "From"))
+        if hdr_from:
+            allowed = {CFG.user.lower()} | {a for _, a in addrs(", ".join(CFG.d.get("aliases") or []))}
+            if hdr_from[0][1].lower() in allowed:
+                env_from = hdr_from[0][1].lower()
+        refused = smtp_send(s, env_from, rcpts, out)
     finally:
         try:
             s.quit()
@@ -3240,6 +3778,17 @@ def cmd_mark(a):
                if not c.execute("select 1 from msgs where folder=? and uid=?", (f, u)).fetchone()]
     if missing:
         die("no such mail in the index: %s (moved or deleted? run search again)" % ", ".join(missing[:10]))
+    words = {("seen", 1): "read", ("seen", 0): "unread", ("flagged", 1): "starred", ("flagged", 0): "not starred"}
+    action_text = " and ".join(words[(col, on)] for col, _, on in todo)
+    n = sum(len(u) for u in by_folder.values())
+    if getattr(a, "dry_run", False):
+        plan = {"dry_run": True, "action": "mark", "flags": [words[(col, on)] for col, _, on in todo],
+                "count": n, "ids": ids}
+        if getattr(a, "json", False):
+            print(json.dumps(plan, ensure_ascii=False, indent=1))
+        else:
+            print("dry-run: would mark %d mail%s %s (%s)" % (n, "" if n == 1 else "s", action_text, ", ".join(ids[:10])))
+        return
     with session() as m:
         for f, uids in by_folder.items():
             select(m, f, readonly=False)
@@ -3249,13 +3798,11 @@ def cmd_mark(a):
                     typ, data = m.uid("STORE", batch, "+FLAGS.SILENT" if on else "-FLAGS.SILENT", "(%s)" % flag)
                     if typ != "OK":
                         die("the server refused: %s" % data)
-    n = sum(len(u) for u in by_folder.values())
     for f, uids in by_folder.items():
         for col, flag, on in todo:
             c.executemany("update msgs set %s=? where folder=? and uid=?" % col, [(on, f, u) for u in uids])
     c.commit()
-    words = {("seen", 1): "read", ("seen", 0): "unread", ("flagged", 1): "starred", ("flagged", 0): "not starred"}
-    print("marked %d mail%s %s" % (n, "" if n == 1 else "s", " and ".join(words[(col, on)] for col, _, on in todo)))
+    print("marked %d mail%s %s" % (n, "" if n == 1 else "s", action_text))
 
 
 def move_dest(m, name):
@@ -3286,6 +3833,20 @@ def cmd_move(a):
     if (to or "").strip().lower() == "trash" or to == CFG.folders.get("trash"):
         die("to the trash: ragdoll trash <ids> --yes (only after the owner approved the list)")
     ids, by_folder = ids_by_folder(a)
+    if getattr(a, "dry_run", False):
+        dest_guess = CFG.folder(to) if to else ""
+        if not dest_guess:
+            die("say where to: --to FOLDER (see `ragdoll folders`)")
+        by_copy = {f: sorted(set(u)) for f, u in by_folder.items() if f != dest_guess}
+        total = sum(len(u) for u in by_copy.values())
+        plan = {"dry_run": True, "action": a.cmd, "to": dest_guess, "count": total,
+                "by_folder": {CFG.short(f): len(u) for f, u in by_copy.items()}, "ids": ids}
+        if getattr(a, "json", False):
+            print(json.dumps(plan, ensure_ascii=False, indent=1))
+        else:
+            print("dry-run: would move %d mail%s to %s (%s)" % (total, "" if total == 1 else "s", dest_guess,
+                                                                 plan["by_folder"]))
+        return
     moved_by = {}
     with session() as m:
         dest = move_dest(m, to)
@@ -3315,6 +3876,18 @@ def cmd_move(a):
 def cmd_trash(a):
     """Move mails to the trash folder (recoverable from there)."""
     ids, by_folder = ids_by_folder(a)
+    if getattr(a, "dry_run", False):
+        trash = CFG.folders["trash"]
+        by_copy = {f: sorted(set(u)) for f, u in by_folder.items() if f != trash}
+        total = sum(len(u) for u in by_copy.values())
+        plan = {"dry_run": True, "action": "trash", "to": trash, "count": total,
+                "by_folder": {CFG.short(f): len(u) for f, u in by_copy.items()}, "ids": ids}
+        if getattr(a, "json", False):
+            print(json.dumps(plan, ensure_ascii=False, indent=1))
+        else:
+            print("dry-run: would move %d mail%s to %s (%s)" % (total, "" if total == 1 else "s", trash,
+                                                                 plan["by_folder"]))
+        return
     if not a.yes:
         print("would move %d mails to %s: %s" % (len(ids), CFG.folders["trash"],
                                                  {CFG.short(f): len(u) for f, u in by_folder.items()}))
@@ -3999,12 +4572,308 @@ def cmd_schedule(a):
 
 
 
+# ---- reusable templates (#117)
+
+TPL_VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+
+
+def templates_path():
+    return os.path.join(CFG.home, "templates.json")
+
+
+def load_templates():
+    try:
+        with open(templates_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, list):
+            return []
+        return [{"name": str(x["name"]).strip(), "subject": str(x.get("subject") or ""),
+                 "body": str(x.get("body") or ""), "html": bool(x.get("html", False))}
+                for x in d if isinstance(x, dict) and str(x.get("name") or "").strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def save_templates(items):
+    os.makedirs(CFG.home, exist_ok=True)
+    clean = [{"name": str(x["name"]).strip(), "subject": str(x.get("subject") or ""),
+              "body": str(x.get("body") or ""), "html": bool(x.get("html", False))}
+             for x in (items or []) if isinstance(x, dict) and str(x.get("name") or "").strip()]
+    tmp = "%s.%d.%d.tmp" % (templates_path(), os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    atomic_replace(tmp, templates_path())
+    return clean
+
+
+def render_template(text, vars_dict=None):
+    """Replace {{var}} placeholders with values from vars_dict; leave unknown ones untouched."""
+    if not vars_dict:
+        return text or ""
+    return TPL_VAR_RE.sub(lambda m: str(vars_dict[m.group(1)]) if m.group(1) in vars_dict else m.group(0), text or "")
+
+
+def cmd_templates(a):
+    if a.add:
+        if not (a.body or a.text):
+            die("give --body FILE or --text for the template body")
+        body_raw = read_body_file(a.body) if a.body else a.text
+        is_html = bool(a.body and _looks_like_html(body_raw))
+        with file_lock("templates", True):
+            items = [x for x in load_templates() if x["name"].lower() != a.add.strip().lower()]
+            items.append({"name": a.add.strip(), "subject": a.subject or "", "body": body_raw, "html": is_html})
+            save_templates(items)
+        print(json.dumps({"saved": a.add.strip()}, ensure_ascii=False) if a.json else "saved template %r" % a.add.strip())
+        return
+    if a.delete:
+        with file_lock("templates", True):
+            cur = load_templates()
+            keep = [x for x in cur if x["name"].lower() != a.delete.strip().lower()]
+            if len(keep) == len(cur):
+                die("template %r not found" % a.delete)
+            save_templates(keep)
+        print(json.dumps({"deleted": a.delete.strip()}, ensure_ascii=False) if a.json else "deleted template %r" % a.delete.strip())
+        return
+    items = load_templates()
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=1))
+        return
+    if not items:
+        print("(no templates)")
+        return
+    for x in items:
+        preview = re.sub(r"\s+", " ", html_to_text(x["body"]) if x["html"] else x["body"])[:60]
+        print("%-20s  %-30s  %s" % (x["name"][:20], (x["subject"] or "(no subject)")[:30], preview))
+
+
+# ---- reminders & local snooze (#122)
+
+def remind_path():
+    return os.path.join(CFG.home, "reminders.json")
+
+
+def remind_read():
+    try:
+        with open(remind_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return [x for x in d if isinstance(x, dict) and x.get("id") and isinstance(x.get("at"), (int, float))]
+    except (OSError, ValueError):
+        return []
+
+
+def remind_write(items):
+    os.makedirs(CFG.home, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (remind_path(), os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=1)
+    atomic_replace(tmp, remind_path())
+
+
+def cmd_remind(a):
+    if a.list or not a.id:
+        items = sorted(remind_read(), key=lambda x: x["at"])
+        out = [{"id": x["id"], "at": local_time(x["at"]), "ts": int(x["at"]),
+                "kind": x.get("kind", "followup"), "subject": x.get("subject", ""),
+                "from": x.get("from", "")} for x in items]
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=1))
+        else:
+            for x in out:
+                print("%s  %-9s %-12s %s" % (x["at"], x["kind"], x["id"], x["subject"]))
+            if not out:
+                print("(no reminders)")
+        return
+    folder, uid = parse_id(a.id)
+    if a.cancel:
+        with file_lock("remind", True):
+            cur = remind_read()
+            keep = [x for x in cur if x["id"] != a.id]
+            if len(keep) == len(cur):
+                die("no reminder set for %s" % a.id)
+            remind_write(keep)
+        print(json.dumps({"id": a.id, "reminded": False}) if a.json else "cancelled reminder for %s" % a.id)
+        return
+    if not a.at:
+        die("give --at WHEN (e.g. '2026-11-22 09:00', '09:00', or '+2h')")
+    try:
+        when = parse_when(a.at)
+    except ValueError as e:
+        die(str(e))
+    at = int(when.timestamp())
+    if at < time.time() - 60:
+        die("that time has already passed")
+    c = db()
+    r = c.execute("select subject, frm, msgid from msgs where folder=? and uid=? order by uidv desc limit 1",
+                  (folder, uid)).fetchone()
+    kind = "followup" if a.if_no_reply else "snooze"
+    entry = {"id": a.id, "at": at, "kind": kind, "subject": r["subject"] if r else "",
+             "from": r["frm"] if r else "", "msgid": r["msgid"] if r else "",
+             "orig_folder": folder, "created": int(time.time())}
+    with file_lock("remind", True):
+        items = [x for x in remind_read() if x["id"] != a.id] + [entry]
+        remind_write(items)
+    res = {"id": a.id, "at": local_time(at), "kind": kind, "subject": entry["subject"]}
+    print(json.dumps(res, ensure_ascii=False, indent=1) if a.json else "reminder (%s) set for %s at %s" % (kind, a.id, res["at"]))
+
+
+# ---- thread muting (#124)
+
+def muted_path():
+    return os.path.join(CFG.home, "muted.json")
+
+
+def muted_read():
+    try:
+        with open(muted_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return [x for x in d if isinstance(x, dict) and (x.get("msgids") or x.get("bare_subject"))]
+    except (OSError, ValueError):
+        return []
+
+
+def muted_write(items):
+    os.makedirs(CFG.home, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (muted_path(), os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=1)
+    atomic_replace(tmp, muted_path())
+
+
+def is_thread_muted(muted_items, msgid="", irt="", refs="", subject=""):
+    if not muted_items:
+        return False
+    mids = {x for x in [msgid, irt] + re.findall(r"<[^<>]+>", (refs or "") + " " + (irt or "")) if x}
+    bs = bare_subject(subject or "").lower()
+    for item in muted_items:
+        if mids and mids & set(item.get("msgids") or []):
+            return True
+        item_bs = (item.get("bare_subject") or "").lower()
+        if bs and item_bs and bs == item_bs:
+            return True
+    return False
+
+
+def cmd_mute(a):
+    if a.list or not a.id:
+        items = muted_read()
+        if a.json:
+            print(json.dumps(items, ensure_ascii=False, indent=1))
+        else:
+            for x in items:
+                print("%-14s %s" % (x.get("id", ""), x.get("subject", "")))
+            if not items:
+                print("(no muted threads)")
+        return
+    folder, uid = parse_id(a.id)
+    c = db()
+    row = c.execute("select * from msgs where folder=? and uid=? order by uidv desc limit 1", (folder, uid)).fetchone()
+    rows = thread_rows(c, row) if row else []
+    mids = sorted({x for r in rows for x in ([r["msgid"], r["irt"]] + re.findall(r"<[^<>]+>", (r["refs"] or "") + " " + (r["irt"] or ""))) if x})
+    bs = bare_subject(row["subject"]) if row else ""
+    subj = row["subject"] if row else ""
+    with file_lock("muted", True):
+        cur = muted_read()
+        if a.unmute:
+            keep = [x for x in cur if x.get("id") != a.id and not (bs and (x.get("bare_subject") or "").lower() == bs.lower())
+                    and not (mids and set(mids) & set(x.get("msgids") or []))]
+            if len(keep) == len(cur):
+                die("%s is not muted" % a.id)
+            muted_write(keep)
+            out = {"id": a.id, "muted": False}
+            print(json.dumps(out) if a.json else "unmuted %s" % a.id)
+            return
+        keep = [x for x in cur if x.get("id") != a.id and not (bs and (x.get("bare_subject") or "").lower() == bs.lower())]
+        keep.append({"id": a.id, "msgids": mids, "bare_subject": bs, "subject": subj, "at": int(time.time())})
+        muted_write(keep)
+    out = {"id": a.id, "muted": True, "subject": subj}
+    print(json.dumps(out, ensure_ascii=False) if a.json else "muted thread %s (%s)" % (a.id, subj))
+
+
+# ---- accounts & export (#115, #123)
+
+def cmd_accounts(a):
+    accs = list_accounts()
+    out = [{"id": x["id"], "label": x["label"], "user": x["user"], "data_dir": x["data_dir"],
+            "default": x["is_default"], "active": x["id"] == CFG.d.get("_account_id")} for x in accs]
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+        return
+    if not out:
+        print("(no accounts configured)")
+        return
+    for x in out:
+        mark = "*" if x["active"] else " "
+        print("%s %-20s %-30s %s" % (mark, x["id"][:20], x["user"][:30], x["data_dir"]))
+
+
+def cmd_export(a):
+    if not (a.out or a.mbox):
+        die("give --out DIR (for .eml files) or --mbox FILE (for an mbox archive)")
+    ids, by_folder = ids_by_folder(a)
+    c = db()
+    raws = []
+    uncached = []
+    for f, uids in by_folder.items():
+        for u in uids:
+            row = c.execute("select uidv from msgs where folder=? and uid=? order by uidv desc limit 1", (f, u)).fetchone()
+            raw = cache_get(cache_path(f, row["uidv"], u)) if row and f != CFG.folders.get("drafts") else None
+            if raw:
+                raws.append((f, u, raw))
+            else:
+                uncached.append((f, u))
+    if uncached:
+        with session() as m:
+            for f, u in uncached:
+                raws.append((f, u, mail_raw(f, u, m)))
+    written = []
+    if a.mbox:
+        parent = os.path.dirname(os.path.abspath(a.mbox))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        mb = mailbox.mbox(a.mbox)
+        try:
+            mb.lock()
+            for _, _, raw in raws:
+                mb.add(mailbox.mboxMessage(raw))
+            mb.flush()
+        finally:
+            with contextlib.suppress(Exception):
+                mb.unlock()
+            mb.close()
+        written.append(a.mbox)
+    if a.out:
+        os.makedirs(a.out, exist_ok=True)
+        for f, u, raw in raws:
+            msg = to_msg(raw)
+            subj = safe_name((hdr(msg, "Subject") or "mail")[:60])
+            base = safe_name("%s_%d_%s.eml" % (CFG.short(f), u, subj))
+            dest = os.path.join(a.out, base)
+            n = 2
+            while os.path.exists(dest):
+                stem, ext = os.path.splitext(base)
+                dest = os.path.join(a.out, "%s_%d%s" % (stem, n, ext))
+                n += 1
+            with open(dest, "wb") as fh:
+                fh.write(raw)
+            written.append(dest)
+    res = {"exported": len(raws), "files": written}
+    if a.json:
+        print(json.dumps(res, ensure_ascii=False, indent=1))
+    else:
+        print("exported %d mail%s to %s" % (len(raws), "" if len(raws) == 1 else "s", a.mbox or a.out))
+
+
 def parser():
     ap = argparse.ArgumentParser(prog="ragdoll", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version="ragdoll " + __version__)
+    ap.add_argument("-a", "--account", help="account id, label, or email address (for multi-account configs)")
     sp = ap.add_subparsers(dest="cmd", required=True)
     sp.add_parser("status").set_defaults(fn=cmd_status)
+    p = sp.add_parser("accounts", help="list configured mailbox accounts")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_accounts)
     p = sp.add_parser("bodies", help=argparse.SUPPRESS)
     p.add_argument("--workers", type=int, default=3)
     p.set_defaults(fn=cmd_bodies)
@@ -4021,22 +4890,33 @@ def parser():
         p.add_argument("--to", help="part of a To or Cc name or address")
         p.add_argument("--until", help="up to and including this day")
         p.add_argument("--att", action="store_true", help="only mail with attachments")
+        p.add_argument("--filename", help="attachment filename substring")
+        p.add_argument("--has-invite", action="store_true", help="only mail with calendar invites (.ics)")
         p.add_argument("--starred", action="store_true")
         p.add_argument("--folder", help="a short name (inbox, sent, drafts, ...) or a folder name from `folders`")
         p.add_argument("--since")
         p.add_argument("--unread", action="store_true")
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--people", action="store_true", help="exclude newsletters and mailing lists")
+        g.add_argument("--newsletters", action="store_true", help="only newsletters and mailing lists")
+        p.add_argument("--exclude", action="append", help="exclude mails containing this term")
         p.add_argument("--limit", type=int, default=20)
         p.add_argument("--json", action="store_true")
         p.add_argument("--no-sync", action="store_true")
         p.set_defaults(fn=fn)
     p = sp.add_parser("thread")
     p.add_argument("id")
+    p.add_argument("--full", action="store_true", help="include full body of every message in the thread")
+    p.add_argument("--new", action="store_true", help="only new text above quoted history (with --full)")
+    p.add_argument("--markdown", action="store_true", help="render HTML bodies as clean Markdown (with --full)")
+    p.add_argument("--max-chars", type=int, default=0, help="truncate each message body to N characters (with --full)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-sync", action="store_true")
     p.set_defaults(fn=cmd_thread)
     p = sp.add_parser("read")
     p.add_argument("id")
     p.add_argument("--new", action="store_true", help="only the text above the quoted history")
+    p.add_argument("--markdown", action="store_true", help="render the message as clean Markdown")
     p.add_argument("--json", action="store_true")
     p.add_argument("--html")
     p.add_argument("--eml")
@@ -4052,13 +4932,18 @@ def parser():
     g.add_argument("--reply")
     g.add_argument("--forward")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--from", dest="from_addr", help="send-as alias address (must be listed in config aliases)")
+    p.add_argument("--reply-to", help="custom Reply-To address")
     p.add_argument("--to")
     p.add_argument("--cc")
     p.add_argument("--bcc")
     p.add_argument("--remove")
     p.add_argument("--subject")
-    p.add_argument("--body")
+    p.add_argument("--body", help="HTML file path, or '-' to read from stdin")
     p.add_argument("--text")
+    p.add_argument("--stdin", action="store_true", help="read draft body from stdin")
+    p.add_argument("--template", help="reusable template name (see `ragdoll templates`)")
+    p.add_argument("--var", action="append", help="template variable key=value (repeatable)")
     p.add_argument("--attach", action="append")
     p.add_argument("--no-sig", action="store_true")
     p.add_argument("--high", action="store_true")
@@ -4067,6 +4952,14 @@ def parser():
     p = sp.add_parser("drafts")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_drafts)
+    p = sp.add_parser("templates", help="list, add, or delete reusable email templates")
+    p.add_argument("--add", metavar="NAME", help="create or update a template")
+    p.add_argument("--subject", help="template subject (with --add)")
+    p.add_argument("--body", help="template body file (with --add)")
+    p.add_argument("--text", help="template plain text body (with --add)")
+    p.add_argument("--delete", metavar="NAME", help="delete a template")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_templates)
     p = sp.add_parser("check")
     p.add_argument("id")
     p.add_argument("--reply", action="store_true")
@@ -4085,6 +4978,8 @@ def parser():
     p = sp.add_parser("mark", help="read / unread, star / unstar")
     p.add_argument("ids", nargs="*")
     p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--dry-run", action="store_true", help="preview changes without touching the mailbox")
+    p.add_argument("--json", action="store_true")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--read", action="store_true")
     g.add_argument("--unread", action="store_true")
@@ -4095,17 +4990,30 @@ def parser():
     p = sp.add_parser("archive", help="move mails to the archive folder")
     p.add_argument("ids", nargs="*")
     p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--dry-run", action="store_true", help="preview changes without moving anything")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_move)
     p = sp.add_parser("move", help="move mails to another folder")
     p.add_argument("ids", nargs="*")
     p.add_argument("--to", help="a short name (inbox, archive, junk) or a folder name from `folders`")
     p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--dry-run", action="store_true", help="preview changes without moving anything")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_move)
     p = sp.add_parser("trash")
     p.add_argument("ids", nargs="*")
     p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--dry-run", action="store_true", help="preview changes without moving anything")
+    p.add_argument("--json", action="store_true")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(fn=cmd_trash)
+    p = sp.add_parser("export", help="export mails as .eml files or an mbox archive")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--from-file", help="one id per line")
+    p.add_argument("--out", help="directory to write .eml files into")
+    p.add_argument("--mbox", help="path to an mbox file to append mails into")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_export)
     p = sp.add_parser("delete-draft")
     p.add_argument("id")
     p.add_argument("--yes", action="store_true")
@@ -4121,6 +5029,20 @@ def parser():
     p.add_argument("--yes", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_schedule)
+    p = sp.add_parser("remind", help="snooze a mail or set a follow-up reminder")
+    p.add_argument("id", nargs="?")
+    p.add_argument("--at", help="2026-11-22 09:00, 09:00 or +2h")
+    p.add_argument("--if-no-reply", action="store_true", help="remind only if no reply arrives by --at")
+    p.add_argument("--cancel", action="store_true", help="cancel an existing reminder")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_remind)
+    p = sp.add_parser("mute", help="mute or unmute a thread so future replies stay out of Inbox")
+    p.add_argument("id", nargs="?")
+    p.add_argument("--unmute", action="store_true")
+    p.add_argument("--list", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_mute)
     sp.add_parser("app", help="open the desktop app (ragdoll app --help)", add_help=False)
     p = sp.add_parser("update", help="get the newest ragdoll from GitHub, test it, keep it")
     g = p.add_mutually_exclusive_group()
@@ -4133,6 +5055,7 @@ def parser():
 
 
 def main(argv=None):
+    global CFG
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["app"]:
         here = os.path.dirname(os.path.abspath(__file__))
@@ -4144,6 +5067,11 @@ def main(argv=None):
             die("the desktop app needs the full clone (ragdoll_app.py and app/ next to ragdoll.py)")
         return ragdoll_app.main(argv[1:])
     a = parser().parse_args(argv)
+    if getattr(a, "account", None):
+        try:
+            CFG = load_config(account=a.account)
+        except LookupError as e:
+            die(str(e))
     if a.cmd == "update":
         return a.fn(a)
     if a.cmd == "bodies":

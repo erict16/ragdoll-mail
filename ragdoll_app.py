@@ -25,6 +25,7 @@ import collections
 import queue
 import mimetypes
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -41,6 +42,7 @@ import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,7 +58,8 @@ __version__ = R.__version__
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(getattr(sys, "_MEIPASS", HERE), "app")
 FROZEN = bool(getattr(sys, "frozen", False))
-RELEASES_API = "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
+# RAGDOLL_RELEASES_API: a stand-in release for testing the in-app update on this computer
+RELEASES_API = os.environ.get("RAGDOLL_RELEASES_API") or "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
 APP_NAME = "Ragdoll Mail"   # what people see: window title, Dock, menu bar; the repo and files keep ragdoll-mail
 RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
 UPDATE_EVERY = 12 * 3600       # the app asks for a new release this often while it stays open (#76)
@@ -71,8 +74,309 @@ def brew_cask():
         return False
     return any(os.path.isdir(os.path.join(root, "Caskroom", "ragdoll-mail"))
                for root in ("/opt/homebrew", "/usr/local"))
+
+
+# ------------------------------------------------------------------ updating the app itself (#76)
+# The app from the download page (or per-user Windows installer) downloads the new release, checks
+# its size and SHA-256, and hands over to a small detached helper that waits for the app to quit
+# (actively terminating stuck copies after a short grace period, modelled on S2Arm's updater),
+# swaps the files, starts the new version, and rolls back automatically if the new copy exits early.
+# The previous version stays in <data_dir>/previous.
+
+UPDATE_ASSET = {"darwin": "ragdoll-mail-mac.dmg", "win32": "ragdoll-mail-windows.zip"}
+WINGET_UPGRADE = "winget upgrade erict16.RagdollMail"
+APP_EXE = "Ragdoll Mail.exe"
+APP_BUNDLE = "Ragdoll Mail.app"
+HELPER_WAIT = 15            # seconds the new version must keep running, or the old one comes back
+INSTALL_FAIL_MSG = "Can't download the update. Check your connection and try again."
+INSTALL_BAD_MSG = "The download is damaged. Try again later."
+INSTALL_BUSY_MSG = "Wait until the mail on its way has gone, then restart."
+INSTALL_MOVE_MSG = "Move Ragdoll Mail to your Applications folder first, then update."
+INSTALL_PLACE_MSG = "Ragdoll Mail can't replace itself in %s. Download the new version from the website."
+
+WIN_HELPER = r"""param([string]$Pids, [string]$Target, [string]$New, [string]$Backup, [string]$Result,
+      [string]$Start, [int]$Wait = 15)
+# Ragdoll Mail's update helper (#76): waits for the app to quit (with graceful-then-force cleanup
+# if a window hangs on exit), swaps in the new files and starts the new version. On any failure
+# the old files go back and the old version starts again.
+$ErrorActionPreference = 'Stop'
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+function Save-Why([string]$why) { try { Set-Content -LiteralPath ($Result + '.error') -Value $why -Encoding UTF8 } catch {} }
+foreach ($p in ($Pids -split ',')) {
+  if (-not $p) { continue }
+  $pidInt = [int]$p
+  try { Wait-Process -Id $pidInt -Timeout 15 -ErrorAction Stop } catch {}
+  if (Get-Process -Id $pidInt -ErrorAction SilentlyContinue) {
+    try { Stop-Process -Id $pidInt -Force -ErrorAction SilentlyContinue } catch {}
+    try { Wait-Process -Id $pidInt -Timeout 15 -ErrorAction Stop } catch {}
+  }
+  if (Get-Process -Id $pidInt -ErrorAction SilentlyContinue) { Save-Why 'Ragdoll Mail did not quit.'; exit 1 }
+}
+$moved = @()
+function Undo-Swap {
+  foreach ($m in $moved) {
+    try {
+      $t = Join-Path $Target $m
+      if (Test-Path -LiteralPath $t) { Remove-Item -LiteralPath $t -Force }
+      $b = Join-Path $Backup $m
+      if (Test-Path -LiteralPath $b) { Move-Item -LiteralPath $b -Destination $t -Force }
+    } catch {}
+  }
+}
+$exe = Join-Path $Target $Start
+try {
+  New-Item -ItemType Directory -Force -Path $Backup | Out-Null
+  foreach ($f in @(Get-ChildItem -LiteralPath $New -File)) {
+    $t = Join-Path $Target $f.Name
+    $ok = $false
+    for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+      try {
+        if (Test-Path -LiteralPath $t) { Move-Item -LiteralPath $t -Destination (Join-Path $Backup $f.Name) -Force }
+        $ok = $true
+      } catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $ok) { throw ('{0} is in use. Close it and update again.' -f $f.Name) }
+    $moved += $f.Name
+    Move-Item -LiteralPath $f.FullName -Destination $t -Force
+  }
+} catch {
+  Undo-Swap
+  Save-Why ([string]$_.Exception.Message)
+  Start-Process -FilePath $exe
+  exit 1
+}
+$p = Start-Process -FilePath $exe -PassThru
+if ($p.WaitForExit($Wait * 1000)) {
+  Start-Sleep -Seconds 1
+  Undo-Swap
+  Save-Why 'The new version did not start.'
+  Start-Process -FilePath $exe
+  exit 1
+}
+"""
+
+MAC_HELPER = r"""#!/bin/sh
+# Ragdoll Mail's update helper (#76): waits for the app to quit (with graceful-then-force cleanup),
+# swaps in the new app and opens it. On any failure the old app goes back and opens again.
+pids=$1 target=$2 new=$3 backup=$4 result=$5 wait=${6:-15} launch=${7:-open}
+export PYINSTALLER_RESET_ENVIRONMENT=1
+why() { printf '%s\n' "$1" > "$result.error"; }
+for p in $(echo "$pids" | tr ',' ' '); do
+  n=0
+  while kill -0 "$p" 2>/dev/null; do
+    n=$((n + 1))
+    if [ "$n" -eq 75 ]; then kill -TERM "$p" 2>/dev/null || true; fi
+    if [ "$n" -eq 100 ]; then kill -KILL "$p" 2>/dev/null || true; fi
+    if [ "$n" -gt 150 ]; then why "Ragdoll Mail did not quit."; exit 1; fi
+    sleep 0.2
+  done
+done
+rm -rf "$backup"
+mkdir -p "$(dirname "$backup")"
+if ! mv "$target" "$backup"; then why "Can't move the old app aside."; $launch "$target"; exit 1; fi
+if ! mv "$new" "$target"; then
+  rm -rf "$target"; mv "$backup" "$target"; why "Can't put the new app in place."; $launch "$target"; exit 1
+fi
+$launch "$target"
+sleep "$wait"
+if ! pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1; then
+  rm -rf "$target"; mv "$backup" "$target"; why "The new version did not start."; $launch "$target"; exit 1
+fi
+"""
+
+
+def winget_install():
+    """The Windows app was put in place by winget: it updates with winget."""
+    return sys.platform == "win32" and "/winget/packages/" in sys.executable.replace("\\", "/").lower()
+
+
+def app_target():
+    """What an update replaces: the .app bundle on a Mac, the folder with the .exe on Windows.
+    None when this copy does not update itself (not the built app, Homebrew, winget, Linux)."""
+    if not FROZEN or brew_cask() or winget_install():
+        return None
+    exe = os.path.abspath(sys.executable)
+    if sys.platform == "darwin":
+        app = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+        return app if app.endswith(".app") else None
+    if sys.platform == "win32":
+        return os.path.dirname(exe)
+    return None
+
+
+def install_blocker(target):
+    """Why this copy can't replace itself (words for the page), or None."""
+    if sys.platform == "darwin" and ("/AppTranslocation/" in target or target.startswith("/Volumes/")):
+        return INSTALL_MOVE_MSG
+    where = os.path.dirname(target) if sys.platform == "darwin" else target
+    try:            # os.access says yes on Windows to folders it won't let you write in
+        fd, probe = tempfile.mkstemp(prefix=".ragdoll-update-", dir=where)
+        os.close(fd)
+        os.remove(probe)
+    except OSError:
+        return INSTALL_PLACE_MSG % where
+    return None
+
+
+def pick_asset(release, platform=None):
+    """The release's file for this system: {url, size, digest} or None."""
+    name = UPDATE_ASSET.get(platform or sys.platform)
+    for x in release.get("assets") or []:
+        if name and x.get("name") == name and x.get("browser_download_url"):
+            return {"name": name, "url": x["browser_download_url"], "size": int(x.get("size") or 0),
+                    "digest": x.get("digest") or ""}
+    return None
+
+
+def download(asset, dest, progress=None):
+    """Download the asset to dest and check it all arrived: the size GitHub gives, the length the
+    server sent, and the SHA-256 when the release lists one. Raises ApiError."""
+    req = urllib.request.Request(asset["url"], headers={"User-Agent": "ragdoll-mail",
+                                                        "Accept": "application/octet-stream"})
+    h = hashlib.sha256()
+    got = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=R.tls_context()) as f, open(dest, "wb") as out:
+            length = int(f.headers.get("Content-Length") or 0)
+            total = asset["size"] or length
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                h.update(chunk)
+                got += len(chunk)
+                if progress:
+                    progress(got, total)
+    except (OSError, ValueError) as e:
+        fail(INSTALL_FAIL_MSG, str(e))
+    want = asset.get("digest") or ""
+    if (asset["size"] and got != asset["size"]) or (length and got != length):
+        fail(INSTALL_FAIL_MSG, "got %d bytes of %d" % (got, asset["size"] or length))
+    if want.startswith("sha256:") and h.hexdigest() != want.split(":", 1)[1].lower():
+        fail(INSTALL_BAD_MSG, "sha256 %s, the release says %s" % (h.hexdigest(), want))
+
+
+def stage_windows(zpath, new_dir):
+    """Unpack the Windows zip into new_dir: plain file names only, and the app must be in it."""
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            if z.testzip() is not None:
+                fail(INSTALL_BAD_MSG, "a file in the zip is damaged")
+            names = [i for i in z.infolist() if not i.is_dir()]
+            if APP_EXE not in [i.filename for i in names]:
+                fail(INSTALL_BAD_MSG, "%s is not in the zip" % APP_EXE)
+            for i in names:
+                if i.filename != os.path.basename(i.filename.replace("\\", "/")) or i.filename.startswith("."):
+                    fail(INSTALL_BAD_MSG, "unexpected file in the zip: %s" % i.filename)
+                with z.open(i) as src, open(os.path.join(new_dir, i.filename), "wb") as out:
+                    shutil.copyfileobj(src, out)
+    except (OSError, zipfile.BadZipFile) as e:
+        fail(INSTALL_BAD_MSG, str(e))
+    for n in os.listdir(new_dir):
+        if n.lower().endswith(".exe"):
+            with open(os.path.join(new_dir, n), "rb") as f:
+                if f.read(2) != b"MZ":
+                    fail(INSTALL_BAD_MSG, "%s is not a program" % n)
+
+
+def stage_mac(dmg, new_dir, version):
+    """Copy the app out of the .dmg into new_dir. hdiutil checks the image's own checksums as it
+    mounts it; the copy loses the download's quarantine, as the app is not signed by Apple."""
+    mnt = tempfile.mkdtemp(prefix="ragdoll-dmg-")
+    run = lambda *c: subprocess.run(c, capture_output=True, text=True, timeout=300)  # noqa: E731
+    try:
+        r = run("hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, dmg)
+        if r.returncode:
+            fail(INSTALL_BAD_MSG, (r.stderr or r.stdout).strip())
+        try:
+            src = os.path.join(mnt, APP_BUNDLE)
+            try:
+                with open(os.path.join(src, "Contents", "Info.plist"), "rb") as f:
+                    v = plistlib.load(f).get("CFBundleShortVersionString")
+            except (OSError, ValueError) as e:
+                fail(INSTALL_BAD_MSG, "no app in the image: %s" % e)
+            if v != version:
+                fail(INSTALL_BAD_MSG, "the image holds version %s, not %s" % (v, version))
+            r = run("ditto", src, os.path.join(new_dir, APP_BUNDLE))
+            if r.returncode:
+                fail(INSTALL_FAIL_MSG, (r.stderr or r.stdout).strip())
+        finally:
+            run("hdiutil", "detach", mnt, "-force")
+    finally:
+        with contextlib.suppress(OSError):
+            os.rmdir(mnt)
+    run("xattr", "-dr", "com.apple.quarantine", os.path.join(new_dir, APP_BUNDLE))
+
+
+def app_pids():
+    """This process and, in the one-file Windows build, the launcher that started it: both hold the .exe."""
+    pids = [os.getpid()]
+    if sys.platform == "win32" and FROZEN:
+        with contextlib.suppress(OSError):
+            pids.append(os.getppid())
+    return pids
+
+
+def start_helper(platform, work, target, version_from, version_to, wait=HELPER_WAIT, launch=None, pids=None):
+    """Write the helper and its result file, and start it detached. It waits for the app to quit."""
+    home = os.path.dirname(work)
+    result = os.path.join(home, "update-result.json")
+    with contextlib.suppress(OSError):
+        os.remove(result + ".error")
+    with open(result, "w", encoding="utf-8") as f:
+        json.dump({"from": version_from, "to": version_to, "at": int(time.time())}, f)
+    backup = os.path.join(home, "previous")
+    pids = ",".join(str(p) for p in (pids or app_pids()))
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    if platform == "win32":
+        script = os.path.join(work, "update-helper.ps1")
+        with open(script, "w", encoding="utf-8-sig") as f:
+            f.write(WIN_HELPER)
+        if os.path.isdir(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+               "-WindowStyle", "Hidden", "-File", script, "-Pids", pids, "-Target", target,
+               "-New", os.path.join(work, "new"), "-Backup", backup, "-Result", result,
+               "-Start", launch or APP_EXE, "-Wait", str(wait)]
+        flags = 0x08000000 | 0x00000200       # no window, its own process group
+        try:
+            return subprocess.Popen(cmd, env=env, creationflags=flags | 0x01000000, close_fds=True,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:                         # breakaway from the job is not allowed here
+            return subprocess.Popen(cmd, env=env, creationflags=flags, close_fds=True,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    script = os.path.join(work, "update-helper.sh")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(MAC_HELPER)
+    cmd = ["/bin/sh", script, pids, target, os.path.join(work, "new", APP_BUNDLE),
+           os.path.join(backup, APP_BUNDLE), result, str(wait)] + ([launch] if launch else [])
+    return subprocess.Popen(cmd, env=env, start_new_session=True, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def update_result(home, version):
+    """What the last update did, read once at start: {"to", "from", "ok", "error"} or None."""
+    path = os.path.join(home, "update-result.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            r = json.load(f)
+    except (OSError, ValueError):
+        return None
+    why = ""
+    with contextlib.suppress(OSError):
+        with open(path + ".error", encoding="utf-8-sig") as f:
+            why = f.read().strip()
+    for p in (path, path + ".error"):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+    if not isinstance(r, dict) or time.time() - (r.get("at") or 0) > 7 * 86400:
+        return None
+    ok = r.get("to") == version
+    return {"to": r.get("to"), "from": r.get("from"), "ok": ok,
+            "error": "" if ok else (why or "The new version did not start.")}
 FOLDER_KEYS = ("inbox", "drafts", "sent", "archive", "trash", "junk")
-LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled")      # the names the app's own lists go by
+LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled", "snoozed")      # the names the app's own lists go by
 VIEW_FLAGS = ("\\noselect", "\\nonexistent", "\\all", "\\flagged", "\\important")   # not a folder to show
 FOLDER_NAMES = {
     "sent": ("sent messages", "sent", "sent items", "sent mail", "[gmail]/sent mail", "已发送", "已发送邮件"),
@@ -1901,6 +2205,10 @@ class Backend:
         self.contacts = (0, {})
         self.update = None
         self.update_at = 0.0
+        self.update_asset = None                # the release file this copy would install (#76)
+        self.update_lock = threading.Lock()
+        self.update_staged = None               # (its folder, what it replaces) once downloaded
+        self.update_note = None                 # what the last update did, for the page to say once
         self.server_folders = None
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
@@ -1908,6 +2216,8 @@ class Backend:
         self.folder_status = {}                 # folder -> its STATUS when it was last synced (#39)
         self.news = []                          # new mail the page has yet to hear about
         self.news_n = 0
+        self.rem_due = []                       # due reminders / unsnoozed notices for the page
+        self.rem_n = 0
         self.asks = []                          # hand-offs from ragdoll (open this mail, a draft is ready)
         self.asks_n = 0
         self.news_mark = None
@@ -1956,6 +2266,7 @@ class Backend:
                 r = self.q("select v from meta where k='last_sync'")
                 self.sync["last"] = int(r[0]["v"]) if r else None
             threading.Thread(target=self.tidy_loop, daemon=True).start()
+            self.update_note = update_result(R.CFG.home, __version__)
             threading.Thread(target=self.update_loop, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -1985,7 +2296,7 @@ class Backend:
 
     # calls the page makes by itself, not because the user did something
     PASSIVE = frozenset(("status", "list", "boot", "prefs", "notice_state", "cli_state", "window_theme",
-                         "settings", "senders", "contacts"))
+                         "settings", "senders", "contacts", "templates", "accounts", "reminders", "muted"))
 
     def q(self, sql, params=()):
         with self.dblock:
@@ -2083,6 +2394,7 @@ class Backend:
                 "from": person(n, a), "to": people_json(r["to_"]), "cc": people_json(r["cc"]),
                 "subject": r["subject"] or "", "snippet": snippet(r["body"]), "unread": not r["seen"],
                 "flagged": bool(r["flagged"]), "answered": bool(r["answered"]), "forwarded": bool(r["forwarded"]),
+                "is_list": bool(r["is_list"]) if "is_list" in r.keys() else False,
                 "atts": [x for x in (r["atts"] or "").split(" | ") if x]}
 
     # ---- raw mail, with a disk cache
@@ -2386,7 +2698,8 @@ class Backend:
             self.bump()
 
     def note_new(self, c):
-        """Unread inbox mail that came in since the last pass becomes news. The first pass only sets the mark."""
+        """Unread inbox mail that came in since the last pass becomes news. The first pass only sets the mark.
+        Replies belonging to a muted thread are quietly archived and marked read."""
         inbox = R.CFG.folders.get("inbox") or "INBOX"
         top = c.execute("select coalesce(max(id),0) from msgs where folder=?", (inbox,)).fetchone()[0]
         mark, self.news_mark = self.news_mark, top
@@ -2396,6 +2709,22 @@ class Backend:
             return
         rows = [r for r in c.execute("select * from msgs where folder=? and id>? and seen=0 and ts>? order by id",
                                      (inbox, mark, now - 86400)).fetchall() if r["msgid"] not in self.moved_in]
+        if not rows:
+            return
+        muted = R.muted_read()
+        mute_ids, keep_rows = [], []
+        for r in rows:
+            if muted and R.is_thread_muted(muted, r["msgid"], r["irt"], r["refs"], r["subject"]):
+                mute_ids.append(R.make_id(r["folder"], r["uid"]))
+            else:
+                keep_rows.append(r)
+        if mute_ids:
+            def auto_mute(ids=mute_ids):
+                with contextlib.suppress(Exception):
+                    self.set_flag(ids, "seen", True, wait=False)
+                    self.api_move({"ids": ids, "to": "archive"})
+            threading.Thread(target=auto_mute, daemon=True).start()
+        rows = keep_rows
         if not rows:
             return
         fresh = []
@@ -2747,6 +3076,15 @@ class Backend:
                     up = {"version": v, "url": d.get("html_url") or RELEASES_PAGE}
                     if brew_cask():
                         up["command"] = BREW_UPGRADE
+                    elif winget_install():
+                        up["command"] = WINGET_UPGRADE
+                    asset = pick_asset(d)
+                    if asset and app_target():
+                        up["install"] = True
+                        self.update_asset = dict(asset, version=v)
+                    now = self.update or {}
+                    if now.get("version") == v and now.get("step"):
+                        up = now                # downloading or ready: keep its progress
                     self.update = up
                 elif v:
                     self.update = None
@@ -2795,6 +3133,60 @@ class Backend:
             return {"update": None, "version": __version__}
         return {"update": self.check_update(manual=True), "version": __version__}
 
+    def api_install_update(self, a):
+        """Update in the app (#76): download the new release and make it ready. Blocks until it is;
+        the page follows the progress in status. Nothing of the running app changes yet."""
+        target, asset = app_target(), self.update_asset
+        if self.demo or not target or not asset or not (self.update or {}).get("install"):
+            fail("This copy of Ragdoll Mail can't update itself. Download the new version from the website.")
+        why = install_blocker(target)
+        if why:
+            fail(why)
+        if not self.update_lock.acquire(blocking=False):
+            fail("The update is already downloading.")
+        up = self.update
+        try:
+            work = os.path.join(R.CFG.home, "update")
+            shutil.rmtree(work, ignore_errors=True)
+            os.makedirs(os.path.join(work, "new"))
+            up.update(step="downloading", done=0, total=asset["size"])
+            file = os.path.join(work, asset["name"])
+            download(asset, file, lambda got, total: up.update(done=got, total=total))
+            if sys.platform == "win32":
+                stage_windows(file, os.path.join(work, "new"))
+            else:
+                stage_mac(file, os.path.join(work, "new"), asset["version"])
+            with contextlib.suppress(OSError):
+                os.remove(file)
+            self.update_staged = (work, target)
+            up["step"] = "ready"
+        except BaseException:
+            for k in ("step", "done", "total"):
+                up.pop(k, None)
+            raise
+        finally:
+            self.update_lock.release()
+        return {"update": self.update}
+
+    def api_restart_update(self, a):
+        """The downloaded update goes in: the helper starts, and the app quits for it."""
+        up = self.update or {}
+        if up.get("step") != "ready":
+            fail("The update isn't ready yet.")
+        if any(self.send_state()):
+            fail(INSTALL_BUSY_MSG)
+        try:
+            start_helper(sys.platform, *self.update_staged, __version__, up["version"])
+        except OSError as e:
+            fail("Can't start the update. Ragdoll Mail is unchanged.", str(e))
+        up["step"] = "restarting"
+        threading.Thread(target=quit_app, daemon=True).start()
+        return {}
+
+    def api_update_note_seen(self, a):
+        self.update_note = None
+        return {}
+
     # ---- api: app state
 
     def config_problem(self):
@@ -2808,11 +3200,23 @@ class Backend:
                              retry_at=None)
         return {"path": e["path"], "error": e["error"]}
 
+    def accounts_list(self):
+        if self.demo:
+            return [{"id": R.CFG.user, "label": R.CFG.name or R.CFG.user, "user": R.CFG.user,
+                     "default": True, "active": True}]
+        accs = R.list_accounts(config_path())
+        cur_id = R.CFG.d.get("_account_id")
+        return [{"id": x["id"], "label": x["label"], "user": x["user"],
+                 "default": x["is_default"], "active": x["id"] == cur_id} for x in accs]
+
     def api_boot(self, a):
         return {"config_error": self.config_problem(), "configured": configured() or self.demo, "demo": self.demo, "user": R.CFG.user,
                 "name": R.CFG.name, "version": __version__, "platform": sys.platform,
                 "folders": self.folder_counts(), "theme": self.prefs().get("theme", "system"),
                 "prefs": self.prefs(), "news": self.news, "asks": self.asks,
+                "reminders_due": self.rem_due, "accounts": self.accounts_list(),
+                "active_account": R.CFG.d.get("_account_id"),
+                "aliases": list(R.CFG.d.get("aliases") or []), "reply_to": R.CFG.d.get("reply_to") or "",
                 "window": WINDOW.w is not None}
 
     def flag_folders(self):
@@ -2824,10 +3228,11 @@ class Backend:
         with self.dblock:
             key = (self.c.execute("pragma data_version").fetchone()[0], self.c.total_changes,
                    repr(self.found), repr(sorted(R.CFG.folders.items())))
-        try:
-            key += (os.path.getmtime(self.sched_path()),)
-        except OSError:
-            pass
+        for p in (self.sched_path(), R.remind_path()):
+            try:
+                key += (os.path.getmtime(p),)
+            except OSError:
+                key += (0,)
         if self.counts and self.counts[0] == key:
             return self.counts[1]
         out = self.count_folders()
@@ -2839,7 +3244,7 @@ class Backend:
 
     def count_folders(self):
         out = []
-        for k in ("inbox", "flagged", "drafts", "scheduled", "sent", "archive", "junk", "trash"):
+        for k in ("inbox", "flagged", "drafts", "scheduled", "snoozed", "sent", "archive", "junk", "trash"):
             if k == "flagged":
                 fs = self.flag_folders()
                 if fs:
@@ -2850,6 +3255,11 @@ class Backend:
                 continue
             if k == "scheduled":
                 n = len(self.scheduled_rows())
+                if n:
+                    out.append({"key": k, "total": n, "unread": 0})
+                continue
+            if k == "snoozed":
+                n = len(self.snoozed_rows())
                 if n:
                     out.append({"key": k, "total": n, "unread": 0})
                 continue
@@ -2872,7 +3282,8 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
+                "update_note": self.update_note, "news": self.news, "asks": self.asks,
+                "reminders_due": self.rem_due, "bodies": self.bodies, **self.status_fields()}
 
     def api_sync(self, a):
         if not self.demo:
@@ -2949,6 +3360,15 @@ class Backend:
             f = a.get(k)
             if isinstance(f, list) and len(f) <= most and all(isinstance(x, str) and 0 < len(x) <= 500 for x in f):
                 p[k] = f
+        ss = a.get("saved_searches")
+        if isinstance(ss, list) and len(ss) <= 50:
+            clean_ss = []
+            for x in ss:
+                if isinstance(x, dict) and isinstance(x.get("name"), str) and isinstance(x.get("q"), str):
+                    nm, qv = x["name"].strip()[:80], x["q"].strip()[:500]
+                    if nm and qv:
+                        clean_ss.append({"name": nm, "q": qv})
+            p["saved_searches"] = clean_ss
         os.makedirs(R.CFG.home, exist_ok=True)
         path = os.path.join(R.CFG.home, "app.json")
         tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
@@ -2969,12 +3389,14 @@ class Backend:
     # ---- api: lists and reading
 
     LIST = ("id, folder, uidv, uid, msgid, ts, frm, to_, cc, subject, atts, substr(body, 1, 3000) body, "
-            "seen, flagged, answered, forwarded, size")
+            "seen, flagged, answered, forwarded, size, is_list")
 
     def api_list(self, a):
         key = a.get("folder") or "inbox"
         if key == "scheduled":
             return {"rows": self.scheduled_rows(), "more": False}
+        if key == "snoozed":
+            return {"rows": self.snoozed_rows(), "more": False}
         limit = max(1, min(int_in(a, "limit", 100), 500))
         offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
         more, params = self.list_filter(a, key)
@@ -3012,6 +3434,10 @@ class Backend:
             where.append("flagged=1")
         if a.get("att"):
             where.append("atts!=''")
+        if a.get("kind") == "people":
+            where.append("coalesce(is_list, 0)=0")
+        elif a.get("kind") == "newsletters":
+            where.append("coalesce(is_list, 0)=1")
         who = text_in(a, "from").strip()
         if who:
             pat = R.like_arg(who)
@@ -3026,7 +3452,7 @@ class Backend:
     def api_senders(self, a):
         """The people most often seen in the newest mail of a list, for its filter."""
         key = a.get("folder") or "inbox"
-        if key == "scheduled":
+        if key in ("scheduled", "snoozed"):
             return {"people": []}
         fs = self.flag_folders() if key == "flagged" else [R.CFG.folders.get(key, key)]
         rows = self.q("select frm, to_ from msgs where folder in (%s)%s order by ts desc, uid desc limit 300"
@@ -3079,25 +3505,22 @@ class Backend:
         # one page at a time, as in a folder: the list asks for the next one when it is scrolled to the end
         limit = max(1, min(int_in(a, "limit", 200), 500))
         offset = max(0, min(int_in(a, "offset", 0), 10 ** 7))
-        ns = SimpleNamespace(limit=limit, offset=offset, folder=None, from_=None, to=None, since=None, until=None,
-                             unread=False, att=False)
-        words = []
-        for w in re.findall(r'(\w+:"[^"]*"|"[^"]*"|\S+)', text):
-            k, _, v = w.partition(":")
-            v = v.strip('"').replace("\x00", "")
-            if v and k.lower() in ("from", "to", "in", "folder"):
-                setattr(ns, {"from": "from_", "to": "to", "in": "folder", "folder": "folder"}[k.lower()], v)
-            elif w.lower() in ("is:unread", "has:attachment", "has:file"):
-                ns.unread = ns.unread or w.lower() == "is:unread"
-                ns.att = ns.att or w.lower() != "is:unread"
-            else:
-                w = w.strip('"').replace("\x00", "")
-                if w.strip():
-                    words.append(w)
-        if not words and not any((ns.folder, ns.from_, ns.to, ns.unread, ns.att)):
+        spec = R.parse_search_query(text)
+        ns = SimpleNamespace(limit=limit, offset=offset, folder=spec["folder"], from_=spec["from_"],
+                             to=spec["to"], since=spec["since"], until=spec["until"],
+                             filename=spec["filename"], unread=spec["unread"], starred=spec["starred"],
+                             att=spec["att"], has_invite=spec["has_invite"],
+                             people=spec["people"], newsletters=spec["newsletters"],
+                             exclude=spec["exclude"])
+        words = [w.replace("\x00", "") for w in spec["words"] if w.replace("\x00", "").strip()]
+        if not words and not any((ns.folder, ns.from_, ns.to, ns.since, ns.until, ns.filename,
+                                  ns.unread, ns.starred, ns.att, ns.has_invite, ns.people, ns.newsletters, ns.exclude)):
             return {"rows": [], "more": False}
-        with self.dblock:
-            rows = R.search_rows(self.c, words, ns)
+        try:
+            with self.dblock:
+                rows = R.search_rows(self.c, words, ns)
+        except SystemExit as e:
+            fail(str(e.code))
         more = len(rows) == limit
         if not ns.folder:
             skip = {R.CFG.folders.get("junk")}
@@ -3368,7 +3791,7 @@ class Backend:
         """Every unread mail of a list becomes read: the index now, the server in the background.
         {"folder": the list's key, as for api_list} -> {"count": how many were unread}."""
         key = text_in(a, "folder") or "inbox"
-        if key == "scheduled":
+        if key in ("scheduled", "snoozed"):
             return {"count": 0}
         fs = self.flag_folders() if key == "flagged" else [R.CFG.folders.get(key, key)]
         rows = self.q("select folder, uid from msgs where seen=0%s and folder in (%s)"
@@ -4280,9 +4703,11 @@ class Backend:
     def api_compose(self, a):
         mode = a.get("mode") or "new"
         sid, sig = self.sig_for(mode)
+        aliases = list(R.CFG.d.get("aliases") or [])
         out = {"mode": mode, "orig": None, "replace": None, "to": [], "cc": [], "bcc": [], "subject": "",
                "html": "", "atts": [], "quote": "", "signature": sig, "sig_id": sid, "use_signature": True,
-               "signatures": self.signatures()}
+               "signatures": self.signatures(), "aliases": aliases, "from_addr": "",
+               "reply_to": R.CFG.d.get("reply_to") or ""}
         if mode in ("reply", "replyall", "forward"):
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
@@ -4297,6 +4722,13 @@ class Backend:
                 out["to"] = [person(n, x) for n, x in to]
                 out["cc"] = [person(n, x) for n, x in cc]
                 out["subject"] = R.reply_subject(R.hdr(orig, "Subject"))
+                if aliases:
+                    orig_rcpts = {ad for _, ad in R.addrs(R.hdr(orig, "To")) + R.addrs(R.hdr(orig, "Cc"))}
+                    for al in aliases:
+                        parsed = R.addrs(al)
+                        if parsed and parsed[0][1] in orig_rcpts:
+                            out["from_addr"] = al
+                            break
         elif mode == "draft":
             out["replace"] = a["id"]
             self.editing[a["id"]] = time.time()     # a scheduled one waits while it is being changed
@@ -4418,7 +4850,9 @@ class Backend:
         images = images + sig_images
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
                               bcc, atts, sig, font=self.body_font(body),
-                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
+                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old,
+                              from_addr=a.get("from_addr") or None,
+                              reply_to=a.get("reply_to") if "reply_to" in a else None)
         if a.get("orig") and orig is None:
             # the original is gone: the threading the last save had is kept, so the reply stays in its thread
             mid = a.get("orig_mid") or self.orig_mids.get(a["orig"]) or ""
@@ -4490,7 +4924,7 @@ class Backend:
         if old and uid:
             self.sched_move(old, R.make_id(drafts, uid))   # still scheduled, now as the saved draft
         state = {k: a.get(k) for k in ("mode", "orig", "orig_mid", "to", "cc", "bcc", "subject", "html", "atts",
-                                       "use_signature", "irt", "refs", "fwd", "sig_id")}
+                                       "use_signature", "irt", "refs", "fwd", "sig_id", "from_addr", "reply_to")}
         with contextlib.suppress(OSError):
             os.makedirs(os.path.join(R.CFG.home, "compose"), exist_ok=True)
             with open(self.state_path(R.hdr(msg, "Message-ID")), "w", encoding="utf-8") as f:
@@ -4831,6 +5265,346 @@ class Backend:
                 self.send_due()
             except (Exception, SystemExit):     # noqa: BLE001 - the loop must outlive any one mail
                 traceback.print_exc(file=sys.stderr)
+            try:
+                self.process_reminders()
+            except (Exception, SystemExit):     # noqa: BLE001
+                traceback.print_exc(file=sys.stderr)
+
+    # ---- snooze, follow-up reminders (#122), thread mute (#124), templates (#117)
+
+    def snoozed_rows(self):
+        items = sorted(R.remind_read(), key=lambda x: x["at"])
+        out = []
+        for x in items:
+            row = None
+            with contextlib.suppress(ApiError):
+                row = self.row(x["id"])
+            if row is None and x.get("msgid"):
+                found = self.q("select * from msgs where msgid=? order by ts desc limit 1", (x["msgid"],))
+                row = found[0] if found else None
+            if row is not None:
+                r = self.row_json(row)
+            else:
+                f = R.addrs(x.get("from", ""))
+                n, ad = f[0] if f else ("", "")
+                r = {"id": x["id"], "folder": "snoozed", "ts": int(x.get("created") or x["at"]),
+                     "from": person(n, ad), "to": [], "cc": [], "subject": x.get("subject", ""),
+                     "snippet": "", "unread": False, "flagged": False, "answered": False,
+                     "forwarded": False, "is_list": False, "atts": []}
+            r["remind_at"] = int(x["at"])
+            r["remind_kind"] = x.get("kind", "snooze")
+            r["remind_id"] = x["id"]
+            out.append(r)
+        return out
+
+    def _find_mail_by_entry(self, x):
+        with contextlib.suppress(ApiError):
+            r = self.row(x["id"])
+            return R.make_id(r["folder"], r["uid"]), r
+        if x.get("msgid"):
+            found = self.q("select * from msgs where msgid=? order by ts desc limit 1", (x["msgid"],))
+            if found:
+                r = found[0]
+                return R.make_id(r["folder"], r["uid"]), r
+        return None, None
+
+    def process_reminders(self, now=None):
+        """Check due snoozes and follow-up reminders. Snoozes return to Inbox; follow-ups fire only
+        when no reply arrived in the thread since the reminder was created."""
+        now = time.time() if now is None else now
+        with R.file_lock("remind", True):
+            items = R.remind_read()
+            if not items:
+                return 0
+            due = [x for x in items if x["at"] <= now]
+            if not due:
+                return 0
+            keep = [x for x in items if x["at"] > now]
+            R.remind_write(keep)
+        fired = 0
+        inbox = R.CFG.folders.get("inbox") or "INBOX"
+        me = (R.CFG.user or "").lower()
+        for x in due:
+            mid_id, row = self._find_mail_by_entry(x)
+            kind = x.get("kind", "snooze")
+            if kind == "followup" and row is not None:
+                with self.dblock:
+                    trows = R.thread_rows(self.c, row)
+                created = int(x.get("created") or 0)
+                replied = any((r["ts"] or 0) > created and all(ad != me for _, ad in R.addrs(r["frm"]))
+                              for r in trows if r["id"] != row["id"])
+                if replied:
+                    continue
+            if kind == "snooze" and mid_id and row is not None and row["folder"] != inbox:
+                with contextlib.suppress(Exception):
+                    self.api_move({"ids": [mid_id], "to": "inbox"})
+                    mid_id, row = self._find_mail_by_entry(x)
+                if mid_id:
+                    with contextlib.suppress(Exception):
+                        self.set_flag([mid_id], "seen", False, wait=False)
+            self.rem_n += 1
+            note = {"n": self.rem_n, "at": int(now), "id": mid_id or x["id"], "kind": kind,
+                    "subject": x.get("subject") or (row["subject"] if row else "")}
+            self.rem_due = (self.rem_due + [note])[-20:]
+            fired += 1
+            if not self.demo and self.prefs().get("notify", True) and now - self.focus_at > 12:
+                title = "Follow-up reminder" if kind == "followup" else "Snoozed mail is back"
+                threading.Thread(target=system_notice, args=(title, note["subject"][:200]), daemon=True).start()
+        if fired:
+            self.bump()
+            poke_page()
+        return fired
+
+    def api_snooze(self, a):
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
+        try:
+            at = int(a["at"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            fail("Pick a time.")
+        if at < time.time() - 60:
+            fail("That time has already passed.")
+        if at > time.time() + 5 * 366 * 86400:
+            fail("Pick a time within the next five years.")
+        r = self.row(i)
+        entry = {"id": i, "at": at, "kind": "snooze", "subject": r["subject"] or "",
+                 "from": r["frm"] or "", "msgid": r["msgid"] or "",
+                 "orig_folder": r["folder"], "created": int(time.time())}
+        archive_f = R.CFG.folders.get("archive") or "Archive"
+        if r["folder"] != archive_f:
+            self.api_move({"ids": [i], "to": "archive"})
+            if entry["msgid"]:
+                found = self.q("select folder, uid from msgs where msgid=? order by ts desc limit 1", (entry["msgid"],))
+                if found:
+                    entry["id"] = R.make_id(found[0]["folder"], found[0]["uid"])
+        with R.file_lock("remind", True):
+            items = [x for x in R.remind_read() if x["id"] != i and (not entry["msgid"] or x.get("msgid") != entry["msgid"])]
+            items.append(entry)
+            R.remind_write(items)
+        self.bump()
+        self.sched_wake.set()
+        return {"id": entry["id"], "at": at, "kind": "snooze"}
+
+    def api_remind(self, a):
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
+        try:
+            at = int(a["at"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            fail("Pick a time.")
+        if at < time.time() - 60:
+            fail("That time has already passed.")
+        kind = "followup" if a.get("kind") == "followup" else "snooze"
+        r = self.row(i)
+        entry = {"id": i, "at": at, "kind": kind, "subject": r["subject"] or "",
+                 "from": r["frm"] or "", "msgid": r["msgid"] or "",
+                 "orig_folder": r["folder"], "created": int(time.time())}
+        with R.file_lock("remind", True):
+            items = [x for x in R.remind_read() if x["id"] != i] + [entry]
+            R.remind_write(items)
+        self.bump()
+        self.sched_wake.set()
+        return {"id": i, "at": at, "kind": kind}
+
+    def api_reminders(self, a):
+        return {"reminders": sorted(R.remind_read(), key=lambda x: x["at"])}
+
+    def api_cancel_reminder(self, a):
+        i = text_in(a, "id")
+        restore = bool(a.get("restore", False))
+        removed = None
+        with R.file_lock("remind", True):
+            cur = R.remind_read()
+            keep = []
+            for x in cur:
+                if x["id"] == i or (x.get("msgid") and x["msgid"] == a.get("msgid")):
+                    removed = x
+                else:
+                    keep.append(x)
+            R.remind_write(keep)
+        if restore and removed and removed.get("kind") == "snooze":
+            mid_id, row = self._find_mail_by_entry(removed)
+            inbox = R.CFG.folders.get("inbox") or "INBOX"
+            if mid_id and row is not None and row["folder"] != inbox:
+                with contextlib.suppress(Exception):
+                    self.api_move({"ids": [mid_id], "to": "inbox"})
+        self.bump()
+        return {"cancelled": removed is not None}
+
+    def api_mute(self, a):
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
+        r = self.row(i)
+        with self.dblock:
+            rows = R.thread_rows(self.c, r)
+        mids = sorted({x for row in rows for x in ([row["msgid"], row["irt"]]
+                       + re.findall(r"<[^<>]+>", (row["refs"] or "") + " " + (row["irt"] or ""))) if x})
+        bs = R.bare_subject(r["subject"])
+        subj = r["subject"] or ""
+        with R.file_lock("muted", True):
+            cur = [x for x in R.muted_read() if x.get("id") != i and not (bs and (x.get("bare_subject") or "").lower() == bs.lower())]
+            cur.append({"id": i, "msgids": mids, "bare_subject": bs, "subject": subj, "at": int(time.time())})
+            R.muted_write(cur)
+        inbox = R.CFG.folders.get("inbox") or "INBOX"
+        inbox_ids = [R.make_id(row["folder"], row["uid"]) for row in rows if row["folder"] == inbox]
+        undo = None
+        if inbox_ids:
+            self.set_flag(inbox_ids, "seen", True, wait=False)
+            res = self.api_move({"ids": inbox_ids, "to": "archive"})
+            undo = res.get("undo")
+        self.bump()
+        return {"id": i, "muted": True, "archived": len(inbox_ids), "undo": undo}
+
+    def api_unmute(self, a):
+        i = text_in(a, "id")
+        bs = text_in(a, "bare_subject")
+        if i and not bs:
+            with contextlib.suppress(ApiError):
+                bs = R.bare_subject(self.row(i)["subject"])
+        with R.file_lock("muted", True):
+            cur = R.muted_read()
+            keep = [x for x in cur if x.get("id") != i and not (bs and (x.get("bare_subject") or "").lower() == bs.lower())]
+            R.muted_write(keep)
+        self.bump()
+        return {"muted": False}
+
+    def api_muted(self, a):
+        return {"muted": R.muted_read()}
+
+    def api_templates(self, a):
+        return {"templates": R.load_templates()}
+
+    def api_save_templates(self, a):
+        raw = a.get("templates")
+        if not isinstance(raw, list) or len(raw) > 200:
+            fail("bad request")
+        with R.file_lock("templates", True):
+            saved = R.save_templates(raw)
+        self.bump()
+        return {"templates": saved}
+
+    # ---- multi-account management (#115)
+
+    def api_accounts(self, a):
+        return {"accounts": self.accounts_list(), "active": R.CFG.d.get("_account_id")}
+
+    def _reset_after_account_switch(self):
+        self.restart_sync(clear=False, redetect=False)
+        with self.dblock:
+            with contextlib.suppress(Exception):
+                self.c.close()
+            self.c = R.db()
+            self.data_v = self.c.execute("pragma data_version").fetchone()[0]
+        self.found, self.news, self.news_mark, self.counts, self.server_folders = [], [], None, None, None
+        self.rem_due = []
+        self.built.clear()
+        self.contacts = (0, {})
+        with self.marklock:
+            self.marks.clear()
+        with contextlib.suppress(Exception):
+            r = self.q("select v from meta where k='folders'")
+            self.found = [tuple(x) for x in json.loads(r[0]["v"])] if r else []
+        with contextlib.suppress(Exception):
+            r = self.q("select v from meta where k='last_sync'")
+            self.sync["last"] = int(r[0]["v"]) if r else None
+        self.clear_error()
+        self.start_sync()
+        self.bump()
+
+    def api_switch_account(self, a):
+        if self.demo:
+            fail("Switching accounts is not available in the demo.")
+        want = text_in(a, "id").strip()
+        if not want:
+            fail("bad request")
+        path = config_path()
+        with self.cfglock:
+            R.CFG = R.load_config(path, account=want)
+        self._reset_after_account_switch()
+        return self.api_boot({})
+
+    def api_add_account(self, a):
+        if self.demo:
+            fail("Adding accounts is not available in the demo.")
+        user = text_in(a, "user").strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", user):
+            fail("Enter a full email address.")
+        name = text_in(a, "name").strip()
+        ihost, iport = text_in(a, "imap_host").strip(), int_in(a, "imap_port", 993)
+        shost, sport = text_in(a, "smtp_host").strip(), int_in(a, "smtp_port", 465)
+        if not ihost or not shost:
+            fail("Enter the incoming and outgoing mail servers.")
+        path = config_path()
+        with self.cfglock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = json.load(f)
+                if not isinstance(raw, dict):
+                    raw = {}
+            except (OSError, ValueError):
+                raw = {}
+            accs = raw.get("accounts")
+            if not isinstance(accs, list) or not accs:
+                existing = {}
+                if raw.get("user"):
+                    for k in ("user", "name", "imap", "smtp", "folders", "sync_folders", "data_dir",
+                              "signature", "signatures", "signature_new", "signature_reply",
+                              "aliases", "reply_to", "password_env"):
+                        if k in raw:
+                            existing[k] = raw[k]
+                    existing["id"] = str(raw["user"]).strip().lower()
+                    existing["label"] = raw.get("name") or existing["id"]
+                accs = [existing] if existing else []
+            new_acc = {"id": user, "label": name or user, "user": user, "name": name,
+                       "imap": {"host": ihost, "port": iport}, "smtp": {"host": shost, "port": sport}}
+            if isinstance(a.get("folders"), dict) and a["folders"]:
+                fs = dict(R.DEFAULTS["folders"])
+                fs.update({k: v for k, v in a["folders"].items() if k in FOLDER_KEYS and isinstance(v, str) and v})
+                new_acc["folders"] = fs
+                new_acc["sync_folders"] = [fs["inbox"], fs["sent"], fs["drafts"]]
+            accs = [x for x in accs if isinstance(x, dict) and (x.get("user") or "").strip().lower() != user]
+            accs.append(new_acc)
+            raw["accounts"] = accs
+            if not raw.get("default_account"):
+                raw["default_account"] = accs[0].get("id") or accs[0].get("user")
+            if a.get("password"):
+                try:
+                    R.keychain_set(user, a["password"])
+                except OSError as e:
+                    fail("Could not save the password in the system keychain: %s" % e)
+            write_config(path, raw)
+            R.CFG = R.load_config(path, account=user)
+        self._reset_after_account_switch()
+        return self.api_boot({})
+
+    def api_remove_account(self, a):
+        if self.demo:
+            fail("Removing accounts is not available in the demo.")
+        want = text_in(a, "id").strip().lower()
+        path = config_path()
+        with self.cfglock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (OSError, ValueError):
+                fail("No settings file found.")
+            accs = raw.get("accounts")
+            if not isinstance(accs, list) or len(accs) <= 1:
+                fail("You can't remove the only account.")
+            keep = [x for x in accs if isinstance(x, dict)
+                    and want not in {(x.get("id") or "").lower(), (x.get("user") or "").lower()}]
+            if len(keep) == len(accs):
+                fail("Account not found.")
+            raw["accounts"] = keep
+            if (raw.get("default_account") or "").lower() == want:
+                raw["default_account"] = keep[0].get("id") or keep[0].get("user")
+            write_config(path, raw)
+            R.CFG = R.load_config(path)
+        self._reset_after_account_switch()
+        return self.api_boot({})
 
     def send_due(self, now=None):
         """Send every scheduled mail that is due, one at a time. A failure before anything left this
@@ -4944,6 +5718,7 @@ class Backend:
         return {"name": R.CFG.name, "user": R.CFG.user, "imap_host": R.CFG.imap.get("host", ""),
                 "imap_port": R.CFG.imap.get("port", 993), "smtp_host": R.CFG.smtp.get("host", ""),
                 "smtp_port": R.CFG.smtp.get("port", 465),
+                "aliases": list(R.CFG.d.get("aliases") or []), "reply_to": R.CFG.d.get("reply_to") or "",
                 "signature": self.signature(), **self.api_signatures({}), "has_password": self.has_password(),
                 "password_env": R.CFG.password_env if not self.demo and (
                     os.environ.get(R.CFG.password_env) or R._SHELL_ENV.get(R.CFG.password_env)) else "",
@@ -5026,30 +5801,58 @@ class Backend:
                 print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
                 self.made.add(keep)
                 raw = {}
+            active_id = R.CFG.d.get("_account_id")
+            target = raw
+            if isinstance(raw.get("accounts"), list) and raw["accounts"]:
+                hit = next((x for x in raw["accounts"] if isinstance(x, dict) and (
+                    (x.get("id") or "").lower() == (active_id or "").lower()
+                    or (x.get("user") or "").lower() == (R.CFG.user or "").lower())), None)
+                if hit is not None:
+                    target = hit
             user = (text_in(a, "user") or R.CFG.user or "").strip().lower()
             if a.get("account", True):
-                raw["user"] = user
-                raw["name"] = text_in(a, "name").strip()
-                raw["imap"] = {"host": text_in(a, "imap_host").strip(), "port": int_in(a, "imap_port", 993)}
-                raw["smtp"] = {"host": text_in(a, "smtp_host").strip(), "port": int_in(a, "smtp_port", 465)}
+                target["user"] = user
+                target["name"] = text_in(a, "name").strip()
+                target["imap"] = {"host": text_in(a, "imap_host").strip(), "port": int_in(a, "imap_port", 993)}
+                target["smtp"] = {"host": text_in(a, "smtp_host").strip(), "port": int_in(a, "smtp_port", 465)}
+            if "aliases" in a:
+                al_in = a.get("aliases")
+                if isinstance(al_in, str):
+                    al_in = [x.strip() for x in re.split(r"[\n,]+", al_in) if x.strip()]
+                if not isinstance(al_in, list) or len(al_in) > 30:
+                    fail("bad request")
+                clean_al = []
+                for item in al_in:
+                    s = str(item).strip()
+                    if not s:
+                        continue
+                    if not R.addrs(s):
+                        fail("Not an email address: %s" % s)
+                    clean_al.append(s)
+                target["aliases"] = clean_al
+            if "reply_to" in a:
+                rt = text_in(a, "reply_to").strip()
+                if rt and not R.addrs(rt):
+                    fail("Not an email address: %s" % rt)
+                target["reply_to"] = rt
             if a.get("folders") is not None:
                 if not isinstance(a["folders"], dict):
                     fail("bad request")
                 if a["folders"]:
-                    fs = dict(raw.get("folders") or {})
+                    fs = dict(target.get("folders") or {})
                     fs.update({k: v for k, v in a["folders"].items() if k in FOLDER_KEYS and isinstance(v, str) and v})
-                    raw["folders"] = fs
-                    raw["sync_folders"] = [fs.get("inbox", "INBOX"), fs.get("sent", R.CFG.folders["sent"]),
-                                           fs.get("drafts", R.CFG.folders["drafts"])]
+                    target["folders"] = fs
+                    target["sync_folders"] = [fs.get("inbox", "INBOX"), fs.get("sent", R.CFG.folders["sent"]),
+                                              fs.get("drafts", R.CFG.folders["drafts"])]
             if "signature" in a:
                 sig = text_in(a, "signature")
                 cur = os.path.expanduser(R.CFG.signature or "")
                 mine = os.path.join(os.path.dirname(path), "signature.html")
-                target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with open(target, "w", encoding="utf-8") as f:
+                target_sig = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
+                os.makedirs(os.path.dirname(target_sig), exist_ok=True)
+                with open(target_sig, "w", encoding="utf-8") as f:
                     f.write(sig)
-                raw["signature"] = target if sig.strip() else ""
+                target["signature"] = target_sig if sig.strip() else ""
             if a.get("password"):
                 try:
                     R.keychain_set(user, a["password"])
@@ -5057,7 +5860,7 @@ class Backend:
                     fail("Could not save the password in the system keychain: %s" % e)
             write_config(path, raw)
             old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
-            R.CFG = R.load_config(path)
+            R.CFG = R.load_config(path, account=active_id if isinstance(raw.get("accounts"), list) and raw["accounts"] else None)
             new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
         if new[3] != old[3]:
             with self.dblock:
@@ -5240,11 +6043,11 @@ def index_raw(c, folder, uidv, uid, raw, ts, seen, answered, flagged=0):
     c.execute("insert or ignore into state values(?,?)", (folder, uidv))
     cur = c.execute(
         "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,seen,flagged,"
-        "answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
+        "answered,size,has_body,fwd,is_list) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)",
         (folder, uidv, uid, R.hdr(msg, "Message-ID").strip(), R.hdr(msg, "In-Reply-To").strip(),
          R.hdr(msg, "References"), ts, R.hdr(msg, "From"), R.hdr(msg, "To"), R.hdr(msg, "Cc"),
          R.hdr(msg, "Subject"), " | ".join(names), body, seen, int(flagged), answered, len(raw),
-         R.forward_source(msg)))
+         R.forward_source(msg), int(R.is_list_mail(msg))))
     if cur.rowcount:
         c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,?)",
                   (cur.lastrowid, R.hdr(msg, "Subject"), R.hdr(msg, "From"),
@@ -5668,6 +6471,17 @@ WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False,
 def close_window():
     with contextlib.suppress(Exception):
         WINDOW.w.destroy()
+
+
+def quit_app():
+    """Quit for the update helper: close the window (or, without one, stop the server's wait)."""
+    time.sleep(0.3)                     # the page gets its answer first
+    WINDOW.quit_ok = True
+    if WINDOW.w is not None:
+        close_window()
+    else:
+        import _thread
+        _thread.interrupt_main()
 
 
 def page_call(js):
@@ -6135,8 +6949,8 @@ def run_window(url, home):
     elif sys.platform == "win32":
         w.events.shown += lambda: window_theme(dark, "#191919" if dark else "#FFFFFF",
                                                "#E8E8E6" if dark else "#191919")
-    # pywebview sets this as the Dock icon on macOS, over the bundle's .icns, so give it the Mac one.
-    icon = os.path.join(STATIC, "logo-mac.png" if sys.platform == "darwin" else "logo.png")
+    # pywebview sets this as the Dock icon on macOS; on Windows WinForms only accepts .ico (passing .png crashes).
+    icon = os.path.join(STATIC, "logo-mac.png" if sys.platform == "darwin" else "logo.ico" if sys.platform == "win32" else "logo.png")
     webview.start(private_mode=False, storage_path=os.path.join(home, "webview"),
                   icon=icon if os.path.exists(icon) else None)
 
