@@ -1,5 +1,5 @@
 PackageIdentifier: erict16.RagdollMail
-PackageVersion: 0.11.1
+PackageVersion: 0.11.2
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -9,7 +9,7 @@ NestedInstallerFiles:
     PortableCommandAlias: ragdoll
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/erict16/ragdoll-mail/releases/download/v0.11.1/ragdoll-mail-windows.zip
-    InstallerSha256: 3FEA64CAB106ABFE5684EE25C336FE08BA2847CFCB6A5E676C539CEBF3DF8DD2
+    InstallerUrl: https://github.com/erict16/ragdoll-mail/releases/download/v0.11.2/ragdoll-mail-windows.zip
+    InstallerSha256: D08930C3A015A6A1B1D21FCA0A6397987C4D73E16C3FAEA38875A78B002A924D
 ManifestType: installer
 ManifestVersion: 1.6.0

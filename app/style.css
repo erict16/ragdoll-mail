@@ -91,6 +91,15 @@ input, textarea, select { font: inherit; color: inherit; }
 .side { position: relative; min-height: 0; overflow: hidden; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; padding: 0 10px 10px; }
 .side-top { height: var(--head-h); flex: none; display: flex; align-items: center; margin: 0 -10px; padding: 0 10px 0 14px; }
 .native.mac:not(.fullscreen) .side-top { padding-left: 88px; }
+/* Windows without its title bar strip: Windows' own window buttons, top right, in its own symbol font */
+.win-ctl { position: fixed; top: 0; right: 0; z-index: 70; display: flex; height: 32px; }
+.win-btn { width: 46px; height: 100%; display: grid; place-items: center; color: var(--text); background: none; border-radius: 0;
+  font: 10px/1 "Segoe Fluent Icons", "Segoe MDL2 Assets"; transition: background-color .1s; }
+.win-btn:hover { background: var(--hover); }
+.win-btn:active { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.win-btn.close:hover { background: #c42b1c; color: #fff; }
+.win-btn.close:active { background: color-mix(in srgb, #c42b1c 85%, #000); color: #fff; }
+.frameless .toolbar { padding-right: max(146px, calc((100% - 820px) / 2 + 26px)); }
 .side-top .grow { align-self: stretch; }
 /* the sidebar's right edge: drag to make it wider or narrower, double-click for the default width */
 .side-grip { position: absolute; top: 0; bottom: 0; right: 0; width: 6px; cursor: col-resize; z-index: 3; }
@@ -173,37 +182,32 @@ input, textarea, select { font: inherit; color: inherit; }
 .search input { flex: 1; min-width: 0; border: 0; padding: 0; outline: 0; background: none; color: var(--text); height: 100%; font-size: 13px; }
 .search input::placeholder { color: var(--text-3); }
 kbd { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-width: 20px; height: 20px; flex: none; font: 11px/1 var(--font); color: var(--text-3); border: 1px solid var(--line-2); border-radius: 5px; padding: 0 5px; white-space: nowrap; }
-/* a problem with the mailbox (app.js drawProblem): a small card in the app's own card style floating at the foot
-   of the list, lined up with the rows (box 10px in, text 24px inside it, the sign centred in those 24px). It never
-   pushes the list: the list keeps its height as room at the bottom (.has-banner). Colour only on the sign:
-   amber when the person has to act, grey when it fixes itself. */
-.banner { position: absolute; left: 10px; right: 20px; bottom: 12px; z-index: 6; padding: 9px 6px 10px 0; border-radius: 10px;
-  display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center;
-  background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 6px 20px rgba(0,0,0,.08);
-  font-size: 12.5px; line-height: 1.4; }
-:root[data-theme="dark"] .banner { box-shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.35); }
+/* a sync problem: a quiet card at the foot of the sidebar, above the update button. Colour only on the sign:
+   amber when the person has to act, grey when it fixes itself. Short messages pop up at the foot of the window. */
+.banner { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 8px; margin: 0 0 8px; padding: 9px 6px 9px 10px;
+  border-radius: 8px; background: var(--raised); border: 1px solid var(--line); font-size: 12px; line-height: 1.4; }
 .banner.in { animation: banner-in .24s var(--ease); }
 .banner.out { animation: banner-out .18s ease-in forwards; pointer-events: none; }
-@keyframes banner-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
-@keyframes banner-out { to { opacity: 0; transform: translateY(6px); } }
-.banner-ic { display: grid; place-items: center; align-self: start; height: 18px; color: var(--text-2); }
-.banner-ic .i { width: 15px; height: 15px; }
+@keyframes banner-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes banner-out { to { opacity: 0; transform: translateY(4px); } }
+.banner-ic { grid-area: 1 / 1; display: grid; place-items: center; height: 17px; color: var(--text-2); }
+.banner-ic .i { width: 14px; height: 14px; }
 .banner.warn .banner-ic { color: var(--warn-text); }
 .banner.quiet .banner-ic { color: var(--text-3); }
-.banner-text { min-width: 0; user-select: text; display: flex; flex-direction: column; gap: 1px; }
+.banner-text { grid-area: 1 / 2; min-width: 0; user-select: text; display: flex; flex-direction: column; gap: 1px; }
 .banner-title b { font-weight: 600; color: var(--text); }
-.banner-meta { color: var(--text-3); font-variant-numeric: tabular-nums; }
-.banner-sub { color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
-.banner-acts { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
-.banner .btn { height: 26px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
-.banner .link-btn { font-size: 12px; color: var(--text); padding: 0 4px; white-space: nowrap; }
+.banner-sub { color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; }
+.banner-x { grid-area: 1 / 3; align-self: start; margin: -4px 0 0; color: var(--text-3); }
+.banner-acts { grid-area: 2 / 2 / 3 / 4; display: flex; align-items: center; gap: 6px; margin: 6px 6px 0 0; }
+.banner-meta { flex: 1; min-width: 0; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.banner .btn { height: 24px; padding: 0 10px; font-size: 12px; border-radius: 6px; }
+.banner .link-btn { font-size: 12px; color: var(--accent-ink); padding: 0; white-space: nowrap; text-decoration: none; }
+.banner .link-btn:hover { text-decoration: underline; }
 .banner .link-btn:disabled { opacity: .45; }
-.banner-x { align-self: start; margin: -3px 0 0 2px; color: var(--text-3); }
-.list-col.has-banner .rows { padding-bottom: calc(var(--banner-h, 64px) + 28px); }
 /* a problem is waiting: a small dot on the account button, seen also when the list is out of view */
-.account { position: relative; }
-.account.alert::after { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--warn-text); box-shadow: 0 0 0 2px var(--side); }
+.account, #here-btn { position: relative; }
+.account.alert::after, #here-btn.alert::after { content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%;
+  aspect-ratio: 1; box-sizing: border-box; background: var(--accent); box-shadow: 0 0 0 2px var(--side); }
 .link-btn { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 /* the scrollbar's 10px is always kept (overflow-y: scroll), so nothing shifts when a list grows past the window */
 .rows { flex: 1; overflow-y: scroll; outline: 0; padding: 2px 0 24px 10px; }
@@ -256,7 +260,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 .row.unread.has-a .mk-f { grid-row: 3; }
 .icon-btn.on { color: var(--text); }
 .icon-btn.on.fill svg { fill: currentColor; }      /* a starred star is solid; other "on" buttons keep their outline */
-.rows-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 72px 20px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }
+.rows-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 100%; box-sizing: border-box; padding: 20px 20px 60px; color: var(--text-3); text-align: center; animation: fade .25s ease-out; }
 .rows-empty .i.big { width: 28px; height: 28px; opacity: .7; }
 .rows-more { display: flex; justify-content: center; padding: 14px; color: var(--text-3); }
 
@@ -480,6 +484,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; box-si
 /* a segmented control: 2px padding + 1px border = 3px around the picked item, so its corners are 9 - 3 = 6px.
    The picked item is drawn by a thumb (app.js segmented) that slides to the next pick; until it is placed,
    the button itself carries the same look. The shadow is even all round, so the gap looks the same above and below. */
+/* the app icon picker (Settings, Appearance) */
+.icon-pick { display: flex; gap: 10px; }
+.icon-opt { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 96px; padding: 10px 6px 8px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--raised); color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, color .15s; }
+.icon-opt img { width: 56px; height: 56px; border-radius: 13px; -webkit-user-drag: none; }
+.icon-opt:hover { color: var(--text); }
+.icon-opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--text); font-weight: 600; }
 .seg { position: relative; display: inline-flex; padding: 2px; border-radius: 9px; background: var(--sunk); border: 1px solid var(--line); width: fit-content; }
 .seg button { position: relative; z-index: 1; height: 28px; padding: 0 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); transition: background-color .18s, color .18s, box-shadow .18s; }
 .seg button:not(.on):hover { color: var(--text); }

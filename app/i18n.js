@@ -1292,3 +1292,17 @@ const MORE_G_UPDATE = {
   "de": { upd_check: "Nach Updates suchen", upd_checking: "Suche nach Updates…", upd_latest: "Sie haben die neueste Version (%s).", upd_found: "Ragdoll Mail %s ist da.", upd_get: "Holen", run_cmd: "Im Terminal ausführen: %s", err_upd: "Updates können gerade nicht gesucht werden. Versuchen Sie es später erneut." },
 };
 for (const [k, v] of Object.entries(MORE_G_UPDATE)) Object.assign(LANGS[k], v);
+
+
+// the window buttons on Windows (the app draws its own title bar), and the app icon picker
+const MORE_H_WINDOW = {
+  "en": { win_min: "Minimize", win_max: "Maximize", win_restore: "Restore", win_close: "Close", app_icon: "App icon", icon_classic: "Classic", icon_painted: "Painted" },
+  "zh-Hans": { win_min: "最小化", win_max: "最大化", win_restore: "向下还原", win_close: "关闭", app_icon: "应用图标", icon_classic: "经典", icon_painted: "手绘" },
+  "zh-Hant": { win_min: "最小化", win_max: "最大化", win_restore: "還原", win_close: "關閉", app_icon: "應用程式圖示", icon_classic: "經典", icon_painted: "手繪" },
+  "ja": { win_min: "最小化", win_max: "最大化", win_restore: "元に戻す", win_close: "閉じる", app_icon: "アプリのアイコン", icon_classic: "クラシック", icon_painted: "手描き" },
+  "ko": { win_min: "최소화", win_max: "최대화", win_restore: "이전 크기로 복원", win_close: "닫기", app_icon: "앱 아이콘", icon_classic: "클래식", icon_painted: "손그림" },
+  "es": { win_min: "Minimizar", win_max: "Maximizar", win_restore: "Restaurar", win_close: "Cerrar", app_icon: "Icono de la app", icon_classic: "Clásico", icon_painted: "Pintado" },
+  "fr": { win_min: "Réduire", win_max: "Agrandir", win_restore: "Restaurer", win_close: "Fermer", app_icon: "Icône de l’app", icon_classic: "Classique", icon_painted: "Peint" },
+  "de": { win_min: "Minimieren", win_max: "Maximieren", win_restore: "Wiederherstellen", win_close: "Schließen", app_icon: "App-Symbol", icon_classic: "Klassisch", icon_painted: "Gemalt" },
+};
+for (const [k, v] of Object.entries(MORE_H_WINDOW)) Object.assign(LANGS[k], v);
