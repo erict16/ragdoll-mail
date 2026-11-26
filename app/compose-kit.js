@@ -131,13 +131,27 @@ export function styleDecls(style) {
 }
 const BAD_PROPS = new Set(["position", "z-index", "behavior", "-moz-binding", "-webkit-user-modify", "user-modify", "content", "inset"]);
 const BAD_VALUE = /expression\s*\(|javascript:|vbscript:|-moz-binding|@import/i;
+const SAFE_CSS_URL = /^\s*(https?:|data:image\/(png|jpe?g|gif|webp|bmp)[;,]|cid:)/i;
+// Every url(...) call in a CSS value must be complete and carry an allowed URL scheme.
+function urlsSafe(v) {
+  const hits = v.match(/url\s*\(/gi);
+  if (!hits) return true;
+  const re = /url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)/gi;
+  let n = 0, m;
+  while ((m = re.exec(v))) {
+    const arg = m[1] ?? m[2] ?? m[3] ?? "";
+    if (!SAFE_CSS_URL.test(arg)) return false;
+    n++;
+  }
+  return n === hits.length;
+}
 // an inline style that can't reach outside its box in the app's own window (no position: fixed over the
 // toolbar, no script urls). paste: light text and dark backgrounds from a dark theme are dropped too.
 export function cleanStyle(style, { paste = false } = {}) {
   const keep = [];
   for (const [p, v] of styleDecls(style)) {
     if (BAD_PROPS.has(p) || BAD_VALUE.test(v)) continue;
-    if (/url\s*\(/i.test(v) && !/url\s*\(\s*["']?\s*(https?:|data:image\/(png|jpe?g|gif|webp|bmp)[;,]|cid:)/i.test(v)) continue;
+    if (!urlsSafe(v)) continue;
     if (paste) {
       if (p === "color" && lightText(v)) continue;
       const back = p === "background" ? v.match(/^(#[0-9a-f]+|rgba?\([^)]*\)|[a-z]+)/i)?.[0] : v;

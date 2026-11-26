@@ -18,6 +18,7 @@ import hashlib
 import html as htmlmod
 import html.parser as htmlparser
 import imaplib
+import ipaddress
 import json
 import locale
 import collections
@@ -242,15 +243,26 @@ def people_json(v):
 
 def people_in(lst):
     """[{name, addr}] or ["a@b"] from the page -> [(name, addr)], checked."""
+    if lst is None:
+        return []
+    if not isinstance(lst, list):
+        fail("bad request")
     out = []
-    for x in lst or []:
-        n, a = (x.get("name", ""), x.get("addr", "")) if isinstance(x, dict) else ("", x)
-        a = (a or "").strip().lower()
+    for x in lst:
+        if isinstance(x, dict):
+            n, a = x.get("name", ""), x.get("addr", "")
+            if not isinstance(n, str) or not isinstance(a, str):
+                fail("bad request")
+        elif isinstance(x, str):
+            n, a = "", x
+        else:
+            fail("bad request")
+        a = a.strip().lower()
         if not a:
             continue
         if not re.fullmatch(r"[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+", a):
             fail("Not an email address: %s" % a)
-        out.append(((n or "").strip(), a))
+        out.append((n.strip(), a))
     return out
 
 
@@ -302,7 +314,7 @@ def data_uri(ctype, data):
 
 def cid_map(msg):
     out = {}
-    for p in msg.walk():
+    for p in R.leaf_parts(msg):
         if p.is_multipart() or not p.get("Content-ID"):
             continue
         ctype = R.image_type(p)
@@ -314,23 +326,30 @@ def cid_map(msg):
     return out
 
 
+def _strip_tag_events(mo):
+    return re.sub(r"""(?i)(?<=[\s/])on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", "", mo.group(0))
+
+
 def page_html(html, cids):
     """A mail's HTML made ready for the sandboxed frame: its styles kept, the document wrapper,
     scripts, refreshes, base and form targets removed, cid: images inlined."""
     styles = "".join(STYLE_RE.findall(re.search(r"(?is)<head\b.*?</head>", html).group(0))) \
         if re.search(r"(?is)<head\b.*?</head>", html) else ""
     html = re.sub(r"(?is)<head\b.*?</head>", "", html)
-    html = re.sub(r"(?is)^.*?<body[^>]*>|</body>.*$", "", html)
+    html = R.unwrap_body(html)
     html = re.sub(r"(?is)<!doctype[^>]*>|</?html\b[^>]*>|<base\b[^>]*>|<title\b.*?</title>", "", html)
-    html = re.sub(r"(?is)<(script|iframe|object|embed|frameset|applet)\b.*?(</\1>|$)", "", html)
+    html = re.sub(r"(?is)<embed\b[^>]*>", "", html)
+    html = re.sub(r"(?is)<(script|iframe|object|frameset|applet)\b.*?(</\1>|$)", "", html)
     html = re.sub(r"(?is)<meta\b[^>]*>|<link\b[^>]*>", "", html)
-    html = re.sub(r"(?i)\son\w+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", "", html)
+    html = re.sub(r"<[^>]+>", _strip_tag_events, html)
     html = re.sub(r"(?i)(href|src)\s*=\s*([\"']?)\s*javascript:[^\"'>\s]*", r"\1=\2#", html)
 
+    cids_low = {k.lower(): v for k, v in cids.items()}
+
     def cid(mo):
-        return cids.get(urllib.parse.unquote(mo.group(2)), "data:,") if mo.group(2) else mo.group(0)
-    html = re.sub(r"(?i)cid:(<?)([^\"'\s>)]+)", lambda mo: cids.get(urllib.parse.unquote(mo.group(2)).strip("<>"),
-                                                                  "data:,"), html)
+        k = urllib.parse.unquote(mo.group(2)).strip("<>")
+        return cids.get(k) or cids_low.get(k.lower(), "data:,")
+    html = re.sub(r"(?i)cid:(<?)([^\"'\s>)]+)", cid, html)
     return styles + html
 
 
@@ -362,6 +381,20 @@ def safe_url(v, attr):
     return bool(re.match(r"(https?:|mailto:|tel:|#)", s))
 
 
+SAFE_CSS_URL_RE = re.compile(r"(?i)^\s*(https?:|data:image/(png|jpe?g|gif|webp|bmp)[;,]|cid:)")
+CSS_URL_CALL_RE = re.compile(r"""(?i)url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s"']*))\s*\)""")
+
+
+def css_urls_safe(val):
+    hits = re.findall(r"(?i)url\s*\(", val)
+    if not hits:
+        return True
+    matched = list(CSS_URL_CALL_RE.finditer(val))
+    if len(matched) != len(hits):
+        return False
+    return all(SAFE_CSS_URL_RE.match(mo.group(1) or mo.group(2) or mo.group(3) or "") for mo in matched)
+
+
 def clean_style(style):
     out, cur, depth, quote = [], "", 0, ""
     for ch in (style or "") + ";":
@@ -381,8 +414,7 @@ def clean_style(style):
                 continue
             if re.search(r"(?i)expression\s*\(|javascript:|vbscript:|-moz-binding|@import", val):
                 continue
-            if re.search(r"(?i)url\s*\(", val) and not re.search(
-                    r"(?i)url\s*\(\s*[\"']?\s*(https?:|data:image/(png|jpe?g|gif|webp|bmp)[;,]|cid:)", val):
+            if not css_urls_safe(val):
                 continue
             out.append("%s: %s" % (prop, val))
         else:
@@ -496,7 +528,7 @@ def linkify(escaped):
 
 
 def plain_html(text):
-    text = (text or "").replace("\r\n", "\n").strip("\n")
+    text = R.plain_text((text or "").replace("\r\n", "\n")).strip("\n")
     at = R.quote_start(text)
     if at < 0:
         mo = re.search(r"(?m)^(>.*\n?){2,}\Z", text)
@@ -554,6 +586,38 @@ def disk_name(p):
         name += mimetypes.guess_extension(p.get_content_type()) or ""     # so the system knows which app
     return name
 
+
+
+def check_public_url(url, https_only=False):
+    """Ensure url points only to a public internet host (blocks loopback, private, link-local, metadata IPs)."""
+    p = urllib.parse.urlsplit(url or "")
+    scheme = p.scheme.lower()
+    if scheme not in (("https",) if https_only else ("https", "http")) or not p.hostname:
+        fail("Refused to contact a non-public unsubscribe address.")
+    host = p.hostname
+    try:
+        infos = socket.getaddrinfo(host, p.port or (443 if scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except OSError as e:
+        fail("The list did not answer: %s" % e)
+    if not infos:
+        fail("Refused to contact a non-public unsubscribe address.")
+    for info in infos:
+        addr = info[4][0].split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            fail("Refused to contact a non-public unsubscribe address.")
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            fail("Refused to contact a private or local unsubscribe address.")
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        check_public_url(target, https_only=True)
+        return super().redirect_request(req, fp, code, msg, headers, target)
 
 
 def list_unsub(msg):
@@ -808,10 +872,14 @@ class VTimezone(dt.tzinfo):
         """Seconds east of UTC at the wall-clock time d (naive)."""
         best = None
         for part in self.parts:
-            for y in (d.year - 1, d.year):
-                for on in self.onsets(part, y):
-                    if on <= d and (best is None or on > best[0]):
-                        best = (on, part)
+            for on in [part["start"]] + part["rdates"]:
+                if on <= d and (best is None or on > best[0]):
+                    best = (on, part)
+            if part["rule"]:
+                for y in (d.year - 1, d.year):
+                    for on in self.onsets(part, y):
+                        if on <= d and (best is None or on > best[0]):
+                            best = (on, part)
         if best is None:                    # before every onset: the earliest part's "from"
             first = min(self.parts, key=lambda p: p["start"])
             return first["from"], False
@@ -915,6 +983,15 @@ def ics_time(value, params, zones=None):
     return ics_when(value, params, zones or {})[:2]
 
 
+def safe_ts(d):
+    """Epoch seconds for a datetime without Windows pre-1970 OSError/OverflowError."""
+    try:
+        return int(d.timestamp())
+    except (OSError, OverflowError, ValueError):
+        aware = d.astimezone(dt.timezone.utc) if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+        return int((aware - dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)).total_seconds())
+
+
 def ics_when(value, params, zones):
     """-> (unix time, all day, {"iana", "offset", "label"} of the event's zone, or None when floating,
     or {"unknown": True}), (None, False, None) when it can't be read."""
@@ -924,24 +1001,24 @@ def ics_when(value, params, zones):
             d = dt.datetime.strptime(v, "%Y%m%d")
         except ValueError:
             return None, False, None
-        return int(d.timestamp()), True, None
+        return safe_ts(d), True, None
     d = ics_local(v)
     if d is None:
         return None, False, None
     if v.upper().endswith("Z"):
-        return int(d.replace(tzinfo=dt.timezone.utc).timestamp()), False, None     # UTC says nothing of the zone
+        return safe_ts(d.replace(tzinfo=dt.timezone.utc)), False, None     # UTC says nothing of the zone
     name = (params.get("TZID") or "").strip().strip('"')
     if not name:
-        return int(d.timestamp()), False, None          # floating: the same wall-clock time everywhere
+        return safe_ts(d), False, None          # floating: the same wall-clock time everywhere
     tz, iana = ics_zone(name, zones, d)
     if tz is None:
-        return int(d.timestamp()), False, {"unknown": True, "label": name}
+        return safe_ts(d), False, {"unknown": True, "label": name}
     try:
         aware = d.replace(tzinfo=tz)
         off = int(aware.utcoffset().total_seconds())
-        ts = int(aware.timestamp())
+        ts = safe_ts(aware)
     except Exception:       # noqa: BLE001 - a zone that can't answer for this date
-        return int(d.timestamp()), False, {"unknown": True, "label": name}
+        return safe_ts(d), False, {"unknown": True, "label": name}
     mm = re.match(r"\([^)]*\)\s*([^,]*)", name)
     label = (mm.group(1).strip() if mm and mm.group(1).strip() else "") or zone_city(iana) or name
     return ts, False, {"iana": iana, "offset": off, "label": label}
@@ -975,7 +1052,7 @@ def ics_charset_text(p):
 def ics_part(msg):
     """The mail's calendar part (an invitation), or None. The text/calendar part wins over an .ics file."""
     found = None
-    for p in msg.walk():
+    for p in R.leaf_parts(msg):
         if p.is_multipart() or p.get_content_type() == "message/rfc822":
             continue
         if p.get_content_type() == "text/calendar":
@@ -1034,8 +1111,8 @@ def rrule_info(v, tz, start_local):
         out["until_day"] = u
     elif ics_local(u):
         d = ics_local(u)
-        out["until"] = int((d.replace(tzinfo=dt.timezone.utc) if u.upper().endswith("Z") else
-                            d.replace(tzinfo=tz) if tz else d).timestamp())
+        out["until"] = safe_ts(d.replace(tzinfo=dt.timezone.utc) if u.upper().endswith("Z") else
+                               d.replace(tzinfo=tz) if tz else d)
     return out
 
 
@@ -1043,7 +1120,7 @@ def rrule_next(start, dur, tz, rr, now, exdates=()):
     """The first occurrence (as a naive local start) of a repeating event that has not ended by now, or None when
     the series is over. Covers DAILY, WEEKLY (BYDAY), MONTHLY (BYMONTHDAY or nth BYDAY) and YEARLY."""
     def ts(d):
-        return (d.replace(tzinfo=tz) if tz else d).timestamp()
+        return safe_ts(d.replace(tzinfo=tz) if tz else d)
     until = rr.get("until")
     until_day = rr.get("until_day")
     count = rr.get("count")
@@ -1051,25 +1128,32 @@ def rrule_next(start, dur, tz, rr, now, exdates=()):
     k = 0
     iv = rr["interval"]
     while k < 5000:
-        if rr["freq"] == "DAILY":
-            cands = [start + dt.timedelta(days=k * iv)]
-        elif rr["freq"] == "WEEKLY":
-            week0 = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * iv)
-            days = [WEEKDAYS.index(b[-2:]) for b in rr["byday"] if b[-2:] in WEEKDAYS] or [start.weekday()]
-            cands = [week0 + dt.timedelta(days=d) for d in sorted(set(days))]
-        elif rr["freq"] == "MONTHLY":
-            mi = start.month - 1 + k * iv
-            y, mo = start.year + mi // 12, mi % 12 + 1
-            days = []
-            for b in rr["byday"]:
-                m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b)
-                if m and m.group(1):
-                    days.append(nth_weekday(y, mo, WEEKDAYS.index(m.group(2)), int(m.group(1))))
-            days += [d for d in rr["bymonthday"] if d > 0] or ([] if days else [start.day])
-            cands = [start.replace(year=y, month=mo, day=d) for d in sorted(x for x in days if x) if _valid(y, mo, d)]
-        else:
-            y = start.year + k * iv
-            cands = [start.replace(year=y)] if _valid(y, start.month, start.day) else []
+        try:
+            if rr["freq"] == "DAILY":
+                cands = [start + dt.timedelta(days=k * iv)]
+            elif rr["freq"] == "WEEKLY":
+                week0 = start - dt.timedelta(days=start.weekday()) + dt.timedelta(weeks=k * iv)
+                days = [WEEKDAYS.index(b[-2:]) for b in rr["byday"] if b[-2:] in WEEKDAYS] or [start.weekday()]
+                cands = [week0 + dt.timedelta(days=d) for d in sorted(set(days))]
+            elif rr["freq"] == "MONTHLY":
+                mi = start.month - 1 + k * iv
+                y, mo = start.year + mi // 12, mi % 12 + 1
+                if y > dt.MAXYEAR:
+                    return None
+                days = []
+                for b in rr["byday"]:
+                    m = re.fullmatch(r"([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)", b)
+                    if m and m.group(1):
+                        days.append(nth_weekday(y, mo, WEEKDAYS.index(m.group(2)), int(m.group(1))))
+                days += [d for d in rr["bymonthday"] if d > 0] or ([] if days else [start.day])
+                cands = [start.replace(year=y, month=mo, day=d) for d in sorted(x for x in days if x) if _valid(y, mo, d)]
+            else:
+                y = start.year + k * iv
+                if y > dt.MAXYEAR:
+                    return None
+                cands = [start.replace(year=y)] if _valid(y, start.month, start.day) else []
+        except (OverflowError, ValueError):
+            return None
         for c in cands:
             if c < start:
                 continue
@@ -1105,13 +1189,17 @@ def pick_event(cal):
 def invite_of(msg):
     """What a meeting invitation (or a reply to one, a cancellation, a new time proposed) says, or None.
     {"title", "start", "end", "all_day", "where", "organizer", "method", "cancelled", "uid", ...}."""
+    try:
+        return _invite_of(msg)
+    except Exception:       # noqa: BLE001 - a broken calendar part must never prevent reading the mail
+        return None
+
+
+def _invite_of(msg):
     p = ics_part(msg)
     if p is None:
         return None
-    try:
-        cal = ics_parse(ics_charset_text(p))
-    except Exception:       # noqa: BLE001 - a broken calendar part is no invitation
-        return None
+    cal = ics_parse(ics_charset_text(p))
     vcal = next(ics_find(cal, "VCALENDAR"), cal)
     method = ((ics_prop(vcal, "METHOD") or ics_prop(cal, "METHOD") or ("", {}))[0].strip().upper()
               or (p.get_param("method") or "").upper())
@@ -1160,7 +1248,10 @@ def invite_of(msg):
         s = g("DTSTART")[0].strip()[:8]
         out["day0"] = s
         e = (g("DTEND")[0].strip()[:8] if re.fullmatch(r"\d{8}", g("DTEND")[0].strip()) else None)
-        last = (dt.datetime.strptime(e, "%Y%m%d") - dt.timedelta(days=1)) if e and e > s else dt.datetime.strptime(s, "%Y%m%d")
+        last = dt.datetime.strptime(s, "%Y%m%d")
+        if e and e > s:
+            with contextlib.suppress(ValueError):
+                last = dt.datetime.strptime(e, "%Y%m%d") - dt.timedelta(days=1)
         out["day1"] = last.strftime("%Y%m%d")
     rr = ics_prop(ev, "RRULE")
     if rr and not rid:
@@ -1180,7 +1271,7 @@ def invite_of(msg):
             dur = (end - start) if end else 0
             nxt = rrule_next(local, dur, tz, info, time.time(), exd)
             if nxt is not None and nxt != local:
-                ns = int((nxt.replace(tzinfo=tz) if tz else nxt).timestamp())
+                ns = safe_ts(nxt.replace(tzinfo=tz) if tz else nxt)
                 out["start"], out["end"] = ns, (ns + dur if end else None)
                 if all_day:
                     out["day0"] = nxt.strftime("%Y%m%d")
@@ -1845,6 +1936,8 @@ class Backend:
         self.marks = {}                         # (folder, uid, column) -> [value, how many on their way, when the last arrived]
         self.marklock = threading.Lock()
         self.preflock = threading.Lock()        # app.json: read, change, write as one step (#61)
+        self.cfglock = threading.Lock()         # config.json: read, change, write as one step
+        self.threadlock = threading.Lock()      # worker thread spawns
         self.badge_n = None                     # the unread count the Dock icon shows
         self.holding = {}                        # id -> a mail in its undo pause after Send (hold_send)
         self.sendlock = threading.Lock()
@@ -2088,9 +2181,10 @@ class Backend:
                 self.pre.appendleft(item)
         while len(self.pre) > 150:
             self.pre.pop()
-        if self.pre_thread is None or not self.pre_thread.is_alive():
-            self.pre_thread = threading.Thread(target=self.prefetch_loop, daemon=True)
-            self.pre_thread.start()
+        with self.threadlock:
+            if self.pre_thread is None or not self.pre_thread.is_alive():
+                self.pre_thread = threading.Thread(target=self.prefetch_loop, daemon=True)
+                self.pre_thread.start()
         self.pre_wake.set()
 
     def prefetch_loop(self):
@@ -2237,7 +2331,7 @@ class Backend:
         used in the last day stays: it may still be open in another app."""
         self.prune_cache(0, now=time.time() + 1, max_bytes=0)
         self.prune_open(time.time(), days=1, max_bytes=0)
-        with self.schedlock:
+        with self.dblock:
             self.built.clear()
         return {"bytes": self.downloaded_bytes()}
 
@@ -2323,12 +2417,13 @@ class Backend:
             threading.Thread(target=system_notice, args=(title, body[:200]), daemon=True).start()
 
     def start_sync(self):
-        if self.thread is None or not self.thread.is_alive():
-            self.thread = threading.Thread(target=self.sync_loop, daemon=True)
-            self.thread.start()
-        if self.watch_thread is None or not self.watch_thread.is_alive():
-            self.watch_thread = threading.Thread(target=self.watch_loop, daemon=True)
-            self.watch_thread.start()
+        with self.threadlock:
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self.sync_loop, daemon=True)
+                self.thread.start()
+            if self.watch_thread is None or not self.watch_thread.is_alive():
+                self.watch_thread = threading.Thread(target=self.watch_loop, daemon=True)
+                self.watch_thread.start()
         self.wake.set()
 
     # ---- the watchdog: a pass that hangs is cut off, so the sync never waits for good (#40)
@@ -2534,9 +2629,10 @@ class Backend:
     def start_bodies(self):
         if self.demo:
             return
-        if self.body_thread is None or not self.body_thread.is_alive():
-            self.body_thread = threading.Thread(target=self.bodies_loop, daemon=True)
-            self.body_thread.start()
+        with self.threadlock:
+            if self.body_thread is None or not self.body_thread.is_alive():
+                self.body_thread = threading.Thread(target=self.bodies_loop, daemon=True)
+                self.body_thread.start()
         self.body_wake.set()
 
     def bodies_loop(self):
@@ -2675,13 +2771,22 @@ class Backend:
         """Check again every 12 hours, and soon after a sleep: the wall clock jumps while the
         monotonic one in time.sleep does not."""
         self.check_update()
-        while True:
+        stopping = getattr(self, "stopping", None)
+        while not (stopping and stopping.is_set()):
             t0, m0 = time.time(), time.monotonic()
-            time.sleep(UPDATE_TICK)
+            if stopping is not None:
+                if stopping.wait(UPDATE_TICK):
+                    break
+            else:
+                time.sleep(UPDATE_TICK)
             woke = (time.time() - t0) - (time.monotonic() - m0) > 5 * 60
             if woke or time.time() - self.update_at >= UPDATE_EVERY:
                 if woke:
-                    time.sleep(30)      # the network comes back a little after the lid opens
+                    if stopping is not None:
+                        if stopping.wait(30):      # the network comes back a little after the lid opens
+                            break
+                    else:
+                        time.sleep(30)
                 self.check_update()
 
     def api_check_update(self, a):
@@ -2794,7 +2899,10 @@ class Backend:
 
     def change_prefs(self, a):
         p = self.prefs()
-        p.update({k: v for k, v in a.items() if k in ("theme", "sidebar")})
+        if a.get("theme") in ("system", "light", "dark"):
+            p["theme"] = a["theme"]
+        if isinstance(a.get("sidebar"), bool):
+            p["sidebar"] = a["sidebar"]
         # widths in pixels (the page puts them in its style): whole numbers in a sane range; 0 is the default width
         lw, sw = a.get("list_width"), a.get("side_width")
         if type(lw) is int and 200 <= lw <= 1200:
@@ -2976,21 +3084,24 @@ class Backend:
         words = []
         for w in re.findall(r'(\w+:"[^"]*"|"[^"]*"|\S+)', text):
             k, _, v = w.partition(":")
-            v = v.strip('"')
+            v = v.strip('"').replace("\x00", "")
             if v and k.lower() in ("from", "to", "in", "folder"):
                 setattr(ns, {"from": "from_", "to": "to", "in": "folder", "folder": "folder"}[k.lower()], v)
             elif w.lower() in ("is:unread", "has:attachment", "has:file"):
                 ns.unread = ns.unread or w.lower() == "is:unread"
                 ns.att = ns.att or w.lower() != "is:unread"
             else:
-                words.append(w.strip('"'))
+                w = w.strip('"').replace("\x00", "")
+                if w.strip():
+                    words.append(w)
         if not words and not any((ns.folder, ns.from_, ns.to, ns.unread, ns.att)):
             return {"rows": [], "more": False}
         with self.dblock:
             rows = R.search_rows(self.c, words, ns)
         more = len(rows) == limit
-        skip = {R.CFG.folders.get("junk")}
-        rows = [r for r in rows if r["folder"] not in skip]
+        if not ns.folder:
+            skip = {R.CFG.folders.get("junk")}
+            rows = [r for r in rows if r["folder"] not in skip]
         if not offset:
             self.prefetch(rows[:10])
         return {"rows": [self.row_json(r) for r in rows], "more": more}
@@ -3008,22 +3119,26 @@ class Backend:
         return {"subject": r["subject"] or "", "rows": [self.row_json(x) for x in rows], "id": a["id"]}
 
     def api_message(self, a):
-        i = a["id"]
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
+        r = None
         send = back = None
-        if a.get("mark", True):         # read the moment it is opened, not once a big mail is in
-            with contextlib.suppress(ApiError):
-                if not self.row(i)["seen"]:
-                    send, back = self.set_flag([i], "seen", True, wait=False, later=True)
+        with contextlib.suppress(ApiError):
+            r = self.row(i)
+            if a.get("mark", True) and not r["seen"]:         # read the moment it is opened, not once a big mail is in
+                send, back = self.set_flag([i], "seen", True, wait=False, later=True)
+        cache_key = (i, r["uidv"]) if r is not None else i
         try:
             with self.dblock:
-                out = None if self.demo else self.built.get(i)
+                out = None if self.demo else self.built.get(cache_key)
                 if out is not None:
-                    self.built.move_to_end(i)
+                    self.built.move_to_end(cache_key)
             if out is None:
                 out = self.build_message(i)
                 if not self.demo and len(out["html"]) < 1500000:
                     with self.dblock:
-                        self.built[i] = out
+                        self.built[cache_key] = out
                         while len(self.built) > 40:
                             self.built.popitem(last=False)
         except BaseException:
@@ -3104,9 +3219,10 @@ class Backend:
 
         def send():
             self.flag_q.put((go, done, end))
-            if self.flag_thread is None or not self.flag_thread.is_alive():
-                self.flag_thread = threading.Thread(target=self.flag_loop, daemon=True)
-                self.flag_thread.start()
+            with self.threadlock:
+                if self.flag_thread is None or not self.flag_thread.is_alive():
+                    self.flag_thread = threading.Thread(target=self.flag_loop, daemon=True)
+                    self.flag_thread.start()
 
         def back():
             self.settle(by, col, False)
@@ -3223,7 +3339,10 @@ class Backend:
                     self.flag_end(job, err)
 
     def api_mark(self, a):
-        self.set_flag(ids_in(a), a.get("flag", "seen"), bool(a.get("on", True)))
+        flag = a.get("flag", "seen")
+        if flag not in ("seen", "flagged"):
+            fail("bad request")
+        self.set_flag(ids_in(a), flag, bool(a.get("on", True)))
         return {}
 
     def api_notice_on(self, a):
@@ -3303,10 +3422,14 @@ class Backend:
                         R.CFG.folders["archive"] = dest
                 for f, uids in by.items():
                     todo = sorted(set(uids))
+                    already = len(moved.get(f, ()))
+                    rem = todo[already:]
+                    if not rem:
+                        continue
                     try:
-                        R.move_uids(m, f, todo, dest)
+                        R.move_uids(m, f, rem, dest)
                     except R.Refused as e:  # the mail moved before the server stopped leaves the list too (#58)
-                        moved[f] = todo[:e.done]
+                        moved[f] = todo[:already + e.done]
                         raise
                     moved[f] = todo
             moved = {}
@@ -3355,12 +3478,12 @@ class Backend:
         job = next((x for x in self.undo_moves if x["token"] == a.get("token")), None)
         if job is None:
             fail("That move can't be undone any more.")
-        self.undo_moves.remove(job)
         dest, back = job["dest"], {}
         for f, mid in job["items"]:
             back.setdefault(f, []).append(mid)
         moved = 0
         if self.demo:
+            self.undo_moves.remove(job)
             for f, mids in back.items():
                 for mid in mids:
                     for r in self.q("select * from msgs where folder=? and msgid=?", (dest, mid)):
@@ -3370,20 +3493,50 @@ class Backend:
                             self.demo_delete(R.make_id(dest, r["uid"]))
                             moved += 1
         else:
+            def verified_uids(m, mid, cand):
+                """Verify Message-ID on SEARCH hits so servers that ignore SEARCH HEADER (like Tencent Exmail)
+                never move unrelated mails out of Archive or Trash."""
+                if not cand:
+                    return []
+                check = cand[-100:]
+                typ, data = m.uid("FETCH", ",".join(map(str, check)), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+                if typ != "OK":
+                    return cand if len(cand) == 1 else []
+                segs = R.segments(data)
+                saw_hdr = False
+                matched = []
+                want = mid.strip().lower()
+                for seg in segs:
+                    raw = R.literal_after(seg, rb"BODY\[HEADER\.FIELDS \(MESSAGE-ID\)\]") or R.literal_after(seg, rb"BODY\[HEADER[^\]]*\]")
+                    if not raw:
+                        continue
+                    saw_hdr = True
+                    uid = R.seg_uid(seg)
+                    got = R.hdr(R.to_msg(raw), "Message-ID").strip().lower()
+                    if uid is not None and got == want:
+                        matched.append(uid)
+                if saw_hdr:
+                    return matched
+                return cand if len(cand) == 1 else []
+
             def go(m):
                 n = 0
                 for f, mids in back.items():
                     R.use(m, dest, write=True)
                     uids = []
                     for mid in mids:
-                        typ, data = m.uid("SEARCH", "HEADER", "Message-ID", '"%s"' % mid.replace('"', ""))
+                        safe_mid = mid.replace("\\", "\\\\").replace('"', '\\"')
+                        typ, data = m.uid("SEARCH", "HEADER", "Message-ID", '"%s"' % safe_mid)
                         if typ == "OK" and data and data[0]:
-                            uids += [int(x) for x in data[0].split()]
+                            cand = sorted({int(x) for x in data[0].split() if x.isdigit()})
+                            uids += verified_uids(m, mid, cand)
                     if uids:
                         R.move_uids(m, dest, sorted(set(uids)), f)
                         n += len(set(uids))
                 return n
             moved = self.imap(go)
+            with contextlib.suppress(ValueError):
+                self.undo_moves.remove(job)
             with self.dblock:
                 for mids in back.values():
                     for mid in mids:
@@ -3426,7 +3579,7 @@ class Backend:
         self.exec("insert or replace into meta values('folders', ?)", (json.dumps(found),))
 
     def free_name(self, name, label):
-        if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX":
+        if name.lower() in [n.lower() for n, _ in self.found] or name.upper() == "INBOX" or name.lower() in LIST_KEYS:
             fail("There is already a folder called %s." % label)
 
     def subtree(self, key, sep):
@@ -3450,6 +3603,7 @@ class Backend:
                     self.c.execute("update msgs set folder=? where folder=?", (to, f))
                     self.c.execute("update state set folder=? where folder=?", (to, f))
             self.c.commit()
+            self.built.clear()
         for f, to, uidv, uid in keep:
             cache_move((f, uidv, uid), (to, uidv, uid))
 
@@ -3468,6 +3622,10 @@ class Backend:
                 self.c.execute("delete from msgs where id=?", (r["id"],))
                 self.c.execute("delete from fts where rowid=?", (r["id"],))
             self.c.commit()
+            for r in rows:
+                mid_id = R.make_id(folder, r["uid"])
+                self.built.pop((mid_id, r["uidv"]), None)
+                self.built.pop(mid_id, None)
         for r in rows:
             self.demo_raw.pop((folder, r["uid"]), None)
             cache_drop((folder, r["uidv"], r["uid"]))
@@ -3763,17 +3921,20 @@ class Backend:
                 R.mark_downloaded(path)
                 self.made.add(path)
                 return path
-        tmp = path + ".part"
+        tmp = "%s.%d.%d.part" % (path, os.getpid(), threading.get_ident())
         with open(tmp, "wb") as f:      # the app that opens it never sees half a file
             f.write(data)
-        os.replace(tmp, path)
+        R.atomic_replace(tmp, path)
         R.mark_downloaded(path)
         self.made.add(path)
         return path
 
     def api_attachment(self, a):
-        parts, light = self.files_of(a["id"])
-        k = int(a["i"])
+        parts, light = self.files_of(text_in(a, "id"))
+        try:
+            k = int(a.get("i"))
+        except (TypeError, ValueError):
+            fail("bad request")
         name = a.get("name")
         # the page may show the light mail's list and this the whole mail's (or the other way): the name decides
         if name and not (0 <= k < len(parts) and (R.fname(parts[k]) or "attachment") == name):
@@ -3803,12 +3964,17 @@ class Backend:
             fail("This mail has no way to unsubscribe.")
         if u["one_click"]:
             if not self.demo:
+                check_public_url(u["url"], https_only=True)
                 req = urllib.request.Request(u["url"], data=b"List-Unsubscribe=One-Click", method="POST",
                                              headers={"Content-Type": "application/x-www-form-urlencoded",
                                                       "User-Agent": APP_NAME})
+                opener = urllib.request.build_opener(
+                    _SafeRedirect(), urllib.request.HTTPSHandler(context=R.tls_context()))
                 try:
-                    with urllib.request.urlopen(req, timeout=15, context=R.tls_context()) as r:
+                    with opener.open(req, timeout=15) as r:
                         r.read(4096)
+                except ApiError:
+                    raise
                 except Exception as e:
                     fail("The list did not answer: %s" % (getattr(e, "reason", None) or e))
             return {"done": True}
@@ -3839,10 +4005,10 @@ class Backend:
         if len(d) > 2000:          # the oldest meetings go first
             for k in sorted(d, key=lambda k: d[k].get("t", 0))[:len(d) - 2000]:
                 del d[k]
-        tmp = self.invites_path() + ".tmp"
+        tmp = "%s.%d.%d.tmp" % (self.invites_path(), os.getpid(), threading.get_ident())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False)
-        os.replace(tmp, self.invites_path())
+        R.atomic_replace(tmp, self.invites_path())
 
     @staticmethod
     def invite_key(v):
@@ -3921,7 +4087,9 @@ class Backend:
         status = (a.get("answer") or "").upper()
         if status not in RSVP_SUBJECT:
             fail("Can't answer this invitation: unknown answer.")
-        r = self.api_send({"id": a["draft"]})
+        r = self.api_send_wait({"id": a["draft"]}) if a.get("wait") else self.api_send({"id": a["draft"]})
+        if r.get("cancelled"):
+            return {"cancelled": True, "problems_after_sending": []}
         with self.INVITE_LOCK:
             d = self.invites_load()
             e = d.setdefault(self.invite_key(v), {})
@@ -4073,28 +4241,25 @@ class Backend:
             self.bump()
             return self.api_signatures({})
         path = config_path()
-        try:
-            with open(path, encoding="utf-8") as f:
-                raw = json.load(f)
-        except FileNotFoundError:
-            raw = {}
-        except ValueError:
-            fail("The settings file %s is broken; fix or remove it first." % path)
-        raw.update(keep)
-        html = next((x["html"] for x in sigs if x["id"] == new), "")
-        cur = os.path.expanduser(R.CFG.signature or "")
-        mine = os.path.join(os.path.dirname(path), "signature.html")
-        target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(html)
-        raw["signature"] = target if html.strip() else ""
-        tmp = "%s.%d.tmp" % (path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(raw, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-        R.CFG = R.load_config(path)
+        with self.cfglock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except FileNotFoundError:
+                raw = {}
+            except ValueError:
+                fail("The settings file %s is broken; fix or remove it first." % path)
+            raw.update(keep)
+            html = next((x["html"] for x in sigs if x["id"] == new), "")
+            cur = os.path.expanduser(R.CFG.signature or "")
+            mine = os.path.join(os.path.dirname(path), "signature.html")
+            target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(html)
+            raw["signature"] = target if html.strip() else ""
+            write_config(path, raw)
+            R.CFG = R.load_config(path)
         self.bump()
         return self.api_signatures({})
 
@@ -4137,7 +4302,7 @@ class Backend:
             self.editing[a["id"]] = time.time()     # a scheduled one waits while it is being changed
             msg = R.to_msg(self.raw(a["id"]))
             state = self.compose_state(R.hdr(msg, "Message-ID"))
-            if state:
+            if state and (state.get("subject") or "").strip() == R.hdr(msg, "Subject").strip():
                 out.update(state)
                 out["html"] = editor_html(state.get("html") or "")
                 out["replace"] = a["id"]
@@ -4150,7 +4315,13 @@ class Backend:
                             out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
                         else:       # the original is gone: the quote the draft already has
                             out["quote"] = page_html(R.quote_of(R.bodies(msg)[1]), cid_map(msg))
-                out["atts"] = [x for x in state.get("atts", []) if os.path.isfile(x["path"])]
+                want_atts = state.get("atts") or []
+                present = [x for x in want_atts if isinstance(x, dict) and isinstance(x.get("path"), str) and os.path.isfile(x["path"])]
+                if len(present) < len(want_atts):
+                    # local uploads/ files were cleaned or draft was moved from another computer: recover from IMAP draft
+                    out["atts"] = [self.keep_file(R.fname(p) or "attachment", R.part_bytes(p)) for p in file_parts(msg)]
+                else:
+                    out["atts"] = present
                 return out
             plain, html = R.bodies(msg)
             out.update({"to": people_json(R.hdr(msg, "To")), "cc": people_json(R.hdr(msg, "Cc")),
@@ -4242,7 +4413,9 @@ class Backend:
                 fail("An attachment is missing: %s" % x.get("name", ""))
             atts.append((p, mail_name(x.get("name") if isinstance(x.get("name"), str) else "") or os.path.basename(p)))
         body, images = data_images(a.get("html") or "")
-        sig = self.sig_for(mode, a.get("sig_id"))[1] if a.get("use_signature", True) else ""
+        sig_raw = self.sig_for(mode, a.get("sig_id"))[1] if a.get("use_signature", True) else ""
+        sig, sig_images = data_images(sig_raw)
+        images = images + sig_images
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
                               bcc, atts, sig, font=self.body_font(body),
                               quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
@@ -4378,10 +4551,13 @@ class Backend:
         except (TypeError, ValueError):
             fail("bad delay")
         with self.sendlock:
+            now = time.time()
+            for k in [k for k, v in self.holding.items() if v["state"] == "cancelled" and now - v.get("at", 0) > 600]:
+                del self.holding[k]
             job = self.holding.get(i)
             if job and job["state"] in ("held", "sending"):
                 return {"held": True, "at": job["at"]}
-            job = {"state": "held", "at": time.time() + delay, "done": threading.Event(), "result": None, "error": None}
+            job = {"state": "held", "at": now + delay, "done": threading.Event(), "result": None, "error": None}
             job["timer"] = threading.Timer(delay + self.SEND_GRACE, self.run_held, (i,))
             job["timer"].daemon = True
             self.holding[i] = job
@@ -4408,20 +4584,25 @@ class Backend:
 
     def api_send_cancel(self, a):
         """Undo: keep the held mail as a draft. cancelled is false when it had already started to go."""
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
         with self.sendlock:
-            job = self.holding.get(a["id"])
+            job = self.holding.get(i)
             if job is None or job["state"] in ("held", "cancelled"):
                 if job is not None:
                     job["timer"].cancel()
                     job["state"] = "cancelled"
+                    job["at"] = time.time()
                     job["done"].set()
-                    del self.holding[a["id"]]
                 return {"cancelled": True}
         return {"cancelled": False}
 
     def api_send_wait(self, a):
         """The pause is over: send the held mail now, or wait for the send already on its way."""
-        i = a["id"]
+        i = text_in(a, "id")
+        if not i:
+            fail("bad request")
         job = self.run_held(i)
         if job is None:
             return self.api_send({"id": i})
@@ -4520,10 +4701,10 @@ class Backend:
     def sched_save(self, items):
         with self.schedlock:
             os.makedirs(R.CFG.home, exist_ok=True)
-            tmp = "%s.%d.tmp" % (self.sched_path(), os.getpid())
+            tmp = "%s.%d.%d.tmp" % (self.sched_path(), os.getpid(), threading.get_ident())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(items, f, ensure_ascii=False)
-            os.replace(tmp, self.sched_path())
+            R.atomic_replace(tmp, self.sched_path())
 
     @contextlib.contextmanager
     def sched_edit(self):
@@ -4788,8 +4969,7 @@ class Backend:
         user = text_in(a, "user").strip().lower()
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", user):
             fail("Enter a full email address.")
-        pw = a.get("password") or (os.environ.get(R.CFG.password_env) if user == R.CFG.user else None) \
-            or R.keychain_get(user)
+        pw = a.get("password") or (R.find_password() if user == R.CFG.user else None) or R.keychain_get(user)
         if not pw:
             fail("Enter the password.")
         if self.demo:
@@ -4828,53 +5008,57 @@ class Backend:
         if self.demo:
             fail("Settings can't be changed in the demo.")
         path = config_path()
-        try:
-            with open(path, encoding="utf-8") as f:
-                raw = json.load(f)
-            if not isinstance(raw, dict):
-                raise ValueError("not a JSON object")
-        except FileNotFoundError:
-            raw = {}
-        except ValueError:
-            # a file that can't be read is not written over: a copy of it stays beside the new one (#49)
-            keep = "%s.broken-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+        with self.cfglock:
             try:
-                shutil.copy2(path, keep)
-            except OSError as e:
-                fail("The settings file %s can't be read, and no copy of it could be kept." % path, str(e))
-            print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
-            self.made.add(keep)
-            raw = {}
-        user = (a.get("user") or R.CFG.user or "").strip().lower()
-        if a.get("account", True):
-            raw["user"] = user
-            raw["name"] = (a.get("name") or "").strip()
-            raw["imap"] = {"host": (a.get("imap_host") or "").strip(), "port": int(a.get("imap_port") or 993)}
-            raw["smtp"] = {"host": (a.get("smtp_host") or "").strip(), "port": int(a.get("smtp_port") or 465)}
-        if a.get("folders"):
-            fs = dict(raw.get("folders") or {})
-            fs.update({k: v for k, v in a["folders"].items() if k in FOLDER_KEYS and v})
-            raw["folders"] = fs
-            raw["sync_folders"] = [fs.get("inbox", "INBOX"), fs.get("sent", R.CFG.folders["sent"]),
-                                   fs.get("drafts", R.CFG.folders["drafts"])]
-        if "signature" in a:
-            sig = a["signature"] or ""
-            cur = os.path.expanduser(R.CFG.signature or "")
-            mine = os.path.join(os.path.dirname(path), "signature.html")
-            target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(sig)
-            raw["signature"] = target if sig.strip() else ""
-        if a.get("password"):
-            try:
-                R.keychain_set(user, a["password"])
-            except OSError as e:
-                fail("Could not save the password in the system keychain: %s" % e)
-        write_config(path, raw)
-        old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
-        R.CFG = R.load_config(path)
-        new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
+                with open(path, encoding="utf-8") as f:
+                    raw = json.load(f)
+                if not isinstance(raw, dict):
+                    raise ValueError("not a JSON object")
+            except FileNotFoundError:
+                raw = {}
+            except ValueError:
+                # a file that can't be read is not written over: a copy of it stays beside the new one (#49)
+                keep = "%s.broken-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
+                try:
+                    shutil.copy2(path, keep)
+                except OSError as e:
+                    fail("The settings file %s can't be read, and no copy of it could be kept." % path, str(e))
+                print("the settings file could not be read; a copy is kept at %s" % keep, file=sys.stderr)
+                self.made.add(keep)
+                raw = {}
+            user = (text_in(a, "user") or R.CFG.user or "").strip().lower()
+            if a.get("account", True):
+                raw["user"] = user
+                raw["name"] = text_in(a, "name").strip()
+                raw["imap"] = {"host": text_in(a, "imap_host").strip(), "port": int_in(a, "imap_port", 993)}
+                raw["smtp"] = {"host": text_in(a, "smtp_host").strip(), "port": int_in(a, "smtp_port", 465)}
+            if a.get("folders") is not None:
+                if not isinstance(a["folders"], dict):
+                    fail("bad request")
+                if a["folders"]:
+                    fs = dict(raw.get("folders") or {})
+                    fs.update({k: v for k, v in a["folders"].items() if k in FOLDER_KEYS and isinstance(v, str) and v})
+                    raw["folders"] = fs
+                    raw["sync_folders"] = [fs.get("inbox", "INBOX"), fs.get("sent", R.CFG.folders["sent"]),
+                                           fs.get("drafts", R.CFG.folders["drafts"])]
+            if "signature" in a:
+                sig = text_in(a, "signature")
+                cur = os.path.expanduser(R.CFG.signature or "")
+                mine = os.path.join(os.path.dirname(path), "signature.html")
+                target = cur if cur and os.path.realpath(cur) == os.path.realpath(mine) else mine
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(sig)
+                raw["signature"] = target if sig.strip() else ""
+            if a.get("password"):
+                try:
+                    R.keychain_set(user, a["password"])
+                except OSError as e:
+                    fail("Could not save the password in the system keychain: %s" % e)
+            write_config(path, raw)
+            old = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
+            R.CFG = R.load_config(path)
+            new = (R.CFG.user, R.CFG.imap.get("host"), R.CFG.imap.get("port"), R.CFG.home)
         if new[3] != old[3]:
             with self.dblock:
                 self.c = R.db()
@@ -4925,20 +5109,21 @@ class Backend:
         """The special folders found on the server after a change of account or server, saved without
         a "Test connection" (which finds them itself): the old provider's names would fail (#59)."""
         path = config_path()
-        try:
-            with open(path, encoding="utf-8") as f:
-                raw = json.load(f)
-        except (OSError, ValueError):
-            return
-        if not isinstance(raw, dict):
-            return
-        folders = dict(R.DEFAULTS["folders"], **fs)
-        sync = [folders["inbox"], folders["sent"], folders["drafts"]]
-        if raw.get("folders") == folders and raw.get("sync_folders") == sync:
-            return
-        raw["folders"], raw["sync_folders"] = folders, sync
-        write_config(path, raw)
-        R.CFG = R.load_config(path)
+        with self.cfglock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (OSError, ValueError):
+                return
+            if not isinstance(raw, dict):
+                return
+            folders = dict(R.DEFAULTS["folders"], **fs)
+            sync = [folders["inbox"], folders["sent"], folders["drafts"]]
+            if raw.get("folders") == folders and raw.get("sync_folders") == sync:
+                return
+            raw["folders"], raw["sync_folders"] = folders, sync
+            write_config(path, raw)
+            R.CFG = R.load_config(path)
         self.bump()
 
     # ---- demo
@@ -5088,11 +5273,11 @@ def own_db(c):
 def write_config(path, raw):
     """config.json written whole or not at all: to a file beside it, then put in its place."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.tmp" % (path, os.getpid())
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
         f.write("\n")
-    os.replace(tmp, path)
+    R.atomic_replace(tmp, path)
 
 
 STATUS_RE = re.compile(rb"\b(MESSAGES|UIDNEXT|UNSEEN|UIDVALIDITY) (\d+)")
