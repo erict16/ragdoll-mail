@@ -1318,7 +1318,7 @@ async function loadMore() {
   S.loadingMore = true;
   const job = (async () => {
     try {
-      const r = await fetchRows(S.rows.length, PAGE);
+      const r = await fetchRows(S.rows.length + hidden.size, PAGE);
       if (seq !== listSeq) return;
       const have = new Set(S.rows.map((x) => x.id));
       const add = r.rows.filter((x) => !have.has(x.id) && !hidden.has(x.id));
@@ -2303,19 +2303,31 @@ function rsvpRow(m, card) {
     try { r = await api("rsvp", { id: m.id, answer: ans, note: note.value.trim(), subject: t("rsvp_subj_" + ans.toLowerCase()) }); }
     catch (e) { settle(b, html, true); return fail(e); }
     const wait = undoSeconds() * 1000;
-    let undone = false;
-    const tt = toast(t("rsvp_sending"), wait ? { action: { label: t("undo"), run: () => { undone = true; } }, ms: 0, bar: wait } : { ms: 0 });
-    for (let k = 0; k < wait / 100 && !undone; k++) await sleep(100);
-    if (undone) {
-      tt.close();
-      settle(b, html, false);
-      api("delete_draft", { id: r.draft }).catch(fail);
-      return;
+    if (wait) {
+      try { await api("send", { id: r.draft, delay: wait / 1000 }); }
+      catch (e) { settle(b, html, true); return fail(e); }
     }
-    tt.node.querySelector(".toast-act")?.remove();
-    tt.node.querySelector(".toast-bar")?.remove();
+    let undone = false, rush = false, finish;
+    const held = { undo: () => { undone = true; }, now: () => { rush = true; }, quiet: false, ok: false, done: new Promise((res) => { finish = res; }) };
+    HELD.set(r.draft, held);
+    const tt = toast(t("rsvp_sending"), wait ? { action: { label: t("undo"), run: held.undo }, ms: 0, bar: wait } : { ms: 0 });
+    const end = Date.now() + wait;
     try {
-      const res = await api("rsvp_send", { id: m.id, draft: r.draft, answer: ans });
+      while (wait && Date.now() < end && !undone && !rush) await sleep(100);
+      if (undone) {
+        const cr = wait ? await api("send_cancel", { id: r.draft }).catch(() => ({ cancelled: false })) : { cancelled: true };
+        if (cr.cancelled) {
+          tt.close();
+          settle(b, html, false);
+          api("delete_draft", { id: r.draft }).catch(fail);
+          return;
+        }
+      }
+      tt.node.querySelector(".toast-act")?.remove();
+      tt.node.querySelector(".toast-bar")?.remove();
+      const res = await api("rsvp_send", { id: m.id, draft: r.draft, answer: ans, wait: !!wait });
+      if (res.cancelled) { tt.close(); settle(b, html, false); return; }
+      held.ok = true;
       tt.close();
       const after = res.problems_after_sending || [];
       if (after.length) toast(after.map(tr).join(" "), { error: true, ms: 12000 });
@@ -2331,7 +2343,7 @@ function rsvpRow(m, card) {
       tt.close();
       settle(b, html, true);
       fail(e);
-    }
+    } finally { HELD.delete(r.draft); finish(); }
   };
   for (const [ans, ic, label, cls] of RSVP) {
     const b = el("button", { class: "btn rsvp-btn " + cls, html: icon(ic, "small") + `<span>${esc(t(label))}</span>` });
@@ -2593,14 +2605,27 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     } catch { /* old engine */ }
     for (const img of d.images) img.addEventListener("load", () => { shapeImg(img); fitColumn(d); fit(); });
     shapeImgs(d);
+    const safeDecode = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+    const parseMailto = (href) => {
+      const raw = href.slice(7), q = raw.indexOf("?");
+      const addr = safeDecode(q < 0 ? raw : raw.slice(0, q));
+      const p = new URLSearchParams(q < 0 ? "" : raw.slice(q + 1));
+      const people = (s) => (s || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean).map((a) => ({ name: "", addr: a }));
+      return { addr, to: people(addr), cc: people(p.get("cc")), bcc: people(p.get("bcc")), subject: p.get("subject") || "", body: p.get("body") || "" };
+    };
     d.addEventListener("click", (e) => {
       const a = e.target.closest?.("a[href]");
       if (!a) return;
       e.preventDefault();
       const href = a.getAttribute("href") || "";
       if (/^mailto:/i.test(href)) {
-        const addr = decodeURIComponent(href.slice(7).split("?")[0]);
-        openCompose({ mode: "new", to: addr.split(",").filter(Boolean).map((x) => ({ name: "", addr: x.trim().toLowerCase() })) });
+        const m = parseMailto(href);
+        const seed = { mode: "new", to: m.to };
+        if (m.cc.length) seed.cc = m.cc;
+        if (m.bcc.length) seed.bcc = m.bcc;
+        if (m.subject) seed.subject = m.subject;
+        if (m.body) seed.html = m.body.split(/\r?\n/).map((ln) => `<div>${esc(ln) || "<br>"}</div>`).join("");
+        openCompose(seed);
       } else if (/^https?:/i.test(href)) api("open_url", { url: a.href }).catch(fail);
     });
     // keys for reading stay in the mail (select its text, scroll it); the app's own keys still work from here
@@ -2612,7 +2637,7 @@ function mailFrame(html, { plain = false, remote = false, quote = false, sig = f
     });
     const linkOf = (e) => {
       const a = e.target.closest?.("a[href]"), href = a?.getAttribute("href") || "";
-      if (/^mailto:/i.test(href)) return { mail: decodeURIComponent(href.slice(7).split("?")[0]) };
+      if (/^mailto:/i.test(href)) return { mail: safeDecode(href.slice(7).split("?")[0]) };
       return /^https?:/i.test(href) ? { url: a.href } : null;
     };
     d.addEventListener("mouseover", (e) => { const l = linkOf(e); linkTip(frame, l ? l.url || l.mail : ""); });
@@ -3265,14 +3290,14 @@ async function leaveCompose() {
   }
   S.compose = null;
   renderToolbar();
-  if (S.folder === "drafts") loadList({ quiet: true });
+  if (S.folder === "drafts" || S.folder === "scheduled") loadList({ quiet: true });
   return true;
 }
 
 async function closeCompose() {
   if (!(await leaveCompose())) return;
   // a draft gets a new id each time it is saved: never reopen the old one
-  if (S.sel && S.folder !== "drafts" && S.rows.some((x) => x.id === S.sel && x.folder !== "drafts")) openThread(S.sel);
+  if (S.sel && S.folder !== "drafts" && S.folder !== "scheduled" && S.rows.some((x) => x.id === S.sel && x.folder !== "drafts")) openThread(S.sel);
   else { S.sel = null; syncSel(); showEmpty(); }
 }
 
@@ -3286,9 +3311,9 @@ async function discardCompose() {
   if (c.replace) {
     try { await api("delete_draft", { id: c.replace }); toast(t("draft_deleted")); } catch (e) { fail(e); }
     refreshCounts();
-    if (S.folder === "drafts") { S.sel = null; loadList({ quiet: true }); }
+    if (S.folder === "drafts" || S.folder === "scheduled") { S.sel = null; loadList({ quiet: true }); }
   }
-  if (S.sel && S.folder !== "drafts") openThread(S.sel); else showEmpty();
+  if (S.sel && S.folder !== "drafts" && S.folder !== "scheduled") openThread(S.sel); else showEmpty();
 }
 
 async function sendCompose(force = false, at = null) {
@@ -3512,7 +3537,7 @@ async function openSettings(opts) {
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
       if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", s.password_env)));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number", { "data-host": "smtp_port" }))));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
       const res = el("div");
       const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
@@ -3796,7 +3821,7 @@ function showSetup(boot = {}) {
     f.append(dis);
     if (open) {
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host", "text", { "data-host": "imap_host" }), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host", "text", { "data-host": "smtp_host" }), inp("smtp_port", "number"))));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host", "text", { "data-host": "smtp_host" }), inp("smtp_port", "number", { "data-host": "smtp_port" }))));
     }
     if (err) f.append(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
     const bad = boot.config_error;     // the settings file has a typo: say so, and where it is (#49)
@@ -4132,7 +4157,7 @@ function drawProblem() {
     ic = "triangle-alert";
     title = t("st_server"); sub = tr(st.error);
     acts = [el("button", { class: "btn", onclick: retryNow, disabled: busy }, t("st_retry")),
-      iconBtn("copy", t("st_details"), () => copyText(st.error), { cls: "tiny" })];
+      iconBtn("copy", t("st_details"), () => copyText(st.error_detail || st.error), { cls: "tiny" })];
   }
   if (st.retry_at || busy) prob.timer = setTimeout(drawProblem, 1000);
   // drawn again only when more than the countdown changed (a hovered button stays as it is)

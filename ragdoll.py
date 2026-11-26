@@ -57,7 +57,7 @@ Before 0.4.0 this program was called hmail. The first run after that moves ~/.co
 HMAIL_* environment variables still work.
 """
 import argparse, base64, contextlib, datetime as dt, email, email.header, hashlib, html as htmlmod, imaplib, itertools
-import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, time, urllib.parse
+import json, mimetypes, os, re, shlex, smtplib, sqlite3, ssl, subprocess, sys, threading, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.message import EmailMessage
@@ -521,8 +521,17 @@ def mutf7(s):
 
 
 def mutf7_decode(s):
-    return re.sub(r"&([^-]*)-", lambda x: "&" if not x.group(1) else base64.b64decode(
-        x.group(1).replace(",", "/") + "=" * (-len(x.group(1)) % 4)).decode("utf-16-be"), s)
+    def one(x):
+        if not x.group(1):
+            return "&"
+        try:
+            raw = base64.b64decode(x.group(1).replace(",", "/") + "=" * (-len(x.group(1)) % 4), validate=True)
+            if len(raw) % 2:
+                return x.group(0)
+            return raw.decode("utf-16-be")
+        except (ValueError, UnicodeDecodeError):
+            return x.group(0)
+    return re.sub(r"&([^-]*)-", one, s)
 
 
 def q(folder):
@@ -690,8 +699,23 @@ def literal_after(seg, pattern):
     return b""
 
 
+def seg_meta(seg):
+    """Protocol bytes of a FETCH segment only, skipping every literal payload (e.g. BODY[HEADER], BODY[])."""
+    out = []
+    skip = False
+    for p in seg:
+        if skip:
+            skip = False
+            continue
+        if isinstance(p, bytes):
+            out.append(p)
+            if re.search(rb"\{\d+\}$", p):
+                skip = True
+    return b" ".join(out)
+
+
 def seg_uid(seg):
-    mo = re.search(rb"UID (\d+)", b"".join(p for p in seg if isinstance(p, bytes))[:4000])
+    mo = re.search(rb"\bUID (\d+)", seg_meta(seg))
     return int(mo.group(1)) if mo else None
 
 
@@ -886,7 +910,7 @@ def light_mail(m, folder, uid):
     # left out: it would show blank. Bring in the ones the HTML refers to after all.
     maybe = [p for p in out if p[6] and p[5] <= SHOWN_MAX and (p[1] == "image" or p[1:3] == ("application", "octet-stream"))]
     if maybe:
-        refs = cid_refs(bodies(to_msg(raw))[1])
+        refs = {r.lower() for r in cid_refs(bodies(to_msg(raw))[1])}
         more = [p for p in maybe if p[6] in refs]
         if more:
             got.update(fetch_one(m, uid, "(UID %s)" % " ".join("BODY.PEEK[%s]" % p[0] for p in more)))
@@ -937,13 +961,27 @@ def cache_get(path):
         return None
 
 
+def atomic_replace(tmp, path):
+    """Replace path with tmp, retrying brief Windows sharing violations."""
+    for k in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if k == 9:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+                raise
+            time.sleep(0.02 * (k + 1))
+
+
 def cache_put(path, raw):
     with contextlib.suppress(OSError):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".%d.tmp" % os.getpid()
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
         with open(tmp, "wb") as f:
             f.write(raw)
-        os.replace(tmp, path)
+        atomic_replace(tmp, path)
 
 
 def mail_raw(folder, uid, m=None):
@@ -1037,7 +1075,8 @@ def fname(p):
                     n = v
                     break
     if not n and p.get_content_type() == "message/rfc822":
-        sub = p.get_payload(0) if p.is_multipart() else None
+        pl = p.get_payload() if p.is_multipart() else None
+        sub = pl[0] if isinstance(pl, list) and pl else None
         n = ((hdr(sub, "Subject") if sub is not None else "") or "attached mail")[:80] + ".eml"
     return nfc(fix_8bit(n)) if n else n
 
@@ -1045,7 +1084,8 @@ def fname(p):
 def part_bytes(p):
     """Bytes of a leaf part; an attached mail (message/rfc822) as its .eml."""
     if p.get_content_type() == "message/rfc822":
-        sub = p.get_payload(0) if p.is_multipart() else None
+        pl = p.get_payload() if p.is_multipart() else None
+        sub = pl[0] if isinstance(pl, list) and pl else None
         if sub is not None:
             return sub.as_bytes(policy=OUT_POLICY)
     return p.get_payload(decode=True) or b""
@@ -1285,7 +1325,8 @@ def is_inline(p, refs=None):
         return False
     if refs is None:
         return p.get_content_disposition() != "attachment" and bool(image_type(p))
-    return cid in refs and (bool(image_type(p)) or p.get_content_type() == "application/octet-stream")
+    return (cid in refs or cid.lower() in {r.lower() for r in refs}) and (
+        bool(image_type(p)) or p.get_content_type() == "application/octet-stream")
 
 
 def body_refs(msg):
@@ -1569,23 +1610,31 @@ def bs_names(blob):
             group[2].append(raw)
             continue
         group = None
-        found.append(decode_param(raw, extended))
-    names = []
+        found.append((key, decode_param(raw, extended)))
+    names, kinds = [], {}
     for v in found:
         if isinstance(v, list):
-            v = decode_param(b"".join(v[2]), v[1])
-        s = nfc(v.strip())
-        if not s or INLINE_ID.match(s) or s in names:
+            key, val = v[0], decode_param(b"".join(v[2]), v[1])
+        else:
+            key, val = v
+        s = nfc(val.strip())
+        if not s or INLINE_ID.match(s):
             continue
-        names.append(s)
-    return [n for n in names if not any(o != n and o.startswith(n) and len(n) >= 20 for o in names)]
+        kinds.setdefault(s, set()).add(key)
+        if s not in names:
+            names.append(s)
+    # Only drop a cut-off NAME prefix (Exmail truncates NAME at ~30 chars beside the full FILENAME);
+    # keep two real attachments whose names share a prefix (e.g. report.pdf and report.pdf.sig).
+    return [n for n in names if not any(
+        o != n and o.startswith(n) and len(n) >= 20 and b"filename" not in kinds[n] and b"filename" in kinds[o]
+        for o in names)]
 
 
 def header_row(seg):
-    blob = b"".join(seg)
+    meta = seg_meta(seg)
     msg = to_msg(literal_after(seg, rb"BODY\[HEADER\]"))
     ts = 0
-    idate = re.search(rb'INTERNALDATE "([^"]+)"', blob)
+    idate = re.search(rb'INTERNALDATE "([^"]+)"', meta)
     if idate:
         try:
             ts = int(time.mktime(imaplib.Internaldate2tuple(b'INTERNALDATE "' + idate.group(1) + b'"')))
@@ -1596,13 +1645,25 @@ def header_row(seg):
             ts = int(parsedate_to_datetime(hdr(msg, "Date")).timestamp())
         except Exception:
             ts = 0
-    size = re.search(rb"RFC822\.SIZE (\d+)", blob)
-    bs = blob.split(b"BODY[HEADER]")[0]
+    size = re.search(rb"RFC822\.SIZE (\d+)", meta)
+    # Keep BODYSTRUCTURE (and any filename literals inside it), drop BODY[HEADER]'s literal regardless of order
+    bs_parts, skip_hdr = [], False
+    for p in seg:
+        if skip_hdr:
+            skip_hdr = False
+            continue
+        if isinstance(p, bytes):
+            if re.search(rb"BODY\[HEADER\] \{\d+\}$", p):
+                bs_parts.append(re.sub(rb"BODY\[HEADER\] \{\d+\}$", b"", p))
+                skip_hdr = True
+            else:
+                bs_parts.append(p)
+    bs = b"".join(bs_parts)
     return {"msgid": hdr(msg, "Message-ID").strip(), "irt": hdr(msg, "In-Reply-To").strip(),
             "fwd": forward_source(msg),
             "refs": hdr(msg, "References"), "ts": ts, "frm": hdr(msg, "From"), "to_": hdr(msg, "To"),
             "cc": hdr(msg, "Cc"), "subject": hdr(msg, "Subject"), "atts": " | ".join(bs_names(bs)),
-            "size": int(size.group(1)) if size else 0, "flags": flags_of(blob)}
+            "size": int(size.group(1)) if size else 0, "flags": flags_of(meta)}
 
 
 def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=False):
@@ -1645,25 +1706,27 @@ def sync_headers(m, c, folder, full_flags=False, workers=1, held=None, deep=Fals
         ex = None
         results = (fetch_headers(folder, ch, m) for ch in chunks)
     done = 0
-    for segs in results:
-        for seg in segs:
-            uid = seg_uid(seg)
-            if uid is None or not literal_after(seg, rb"BODY\[HEADER\]"):
-                continue        # e.g. an unasked FLAGS update: storing it would leave an empty row
-            h = header_row(seg)
-            cur = c.execute(
-                "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,"
-                "seen,flagged,answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0,?)",
-                (folder, uidv, uid, h["msgid"], h["irt"], h["refs"], h["ts"], h["frm"], h["to_"], h["cc"],
-                 h["subject"], h["atts"], *h["flags"], h["size"], h["fwd"]))
-            if cur.rowcount:
-                c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,'')",
-                          (cur.lastrowid, h["subject"], h["frm"], h["to_"] + " " + h["cc"], h["atts"]))
-        c.commit()
-        done += len(segs)
-        print("  %s headers: %d/%d" % (folder, done, len(new)), file=sys.stderr)
-    if ex:
-        ex.shutdown()
+    try:
+        for segs in results:
+            for seg in segs:
+                uid = seg_uid(seg)
+                if uid is None or not literal_after(seg, rb"BODY\[HEADER\]"):
+                    continue        # e.g. an unasked FLAGS update: storing it would leave an empty row
+                h = header_row(seg)
+                cur = c.execute(
+                    "insert or ignore into msgs(folder,uidv,uid,msgid,irt,refs,ts,frm,to_,cc,subject,atts,body,"
+                    "seen,flagged,answered,size,has_body,fwd) values(?,?,?,?,?,?,?,?,?,?,?,?,'',?,?,?,?,0,?)",
+                    (folder, uidv, uid, h["msgid"], h["irt"], h["refs"], h["ts"], h["frm"], h["to_"], h["cc"],
+                     h["subject"], h["atts"], *h["flags"], h["size"], h["fwd"]))
+                if cur.rowcount:
+                    c.execute("insert into fts(rowid,subject,frm,to_,atts,body) values(?,?,?,?,?,'')",
+                              (cur.lastrowid, h["subject"], h["frm"], h["to_"] + " " + h["cc"], h["atts"]))
+            c.commit()
+            done += len(segs)
+            print("  %s headers: %d/%d" % (folder, done, len(new)), file=sys.stderr)
+    finally:
+        if ex:
+            ex.shutdown(wait=False, cancel_futures=True)
     if new:
         mark_forwarded(c)       # a new forward in Sent, or an original fetched again
         c.commit()
@@ -1693,20 +1756,23 @@ class Flags:
 
 
 def fetch_flags(m, uids, flags, extra=""):
-    """FLAGS of these UIDs (or of "1:*" with a modifier in extra) into the index."""
+    """FLAGS of these UIDs (or of "1:*" with a modifier in extra) into the index. Returns True if all OK."""
     sets = [uids] if isinstance(uids, str) else [",".join(map(str, uids[i:i + 500])) for i in range(0, len(uids), 500)]
+    ok = True
     for s in sets:
         if not s:
             continue
         asked = time.time()
         typ, data = m.uid("FETCH", s, "(UID FLAGS)" + extra)
         if typ != "OK":
+            ok = False
             continue            # e.g. a mail expunged a moment ago: the next pass asks again
         mine = flags.mine(asked)
         for seg in segments(data):
             uid = seg_uid(seg)
             if uid is not None:
-                flags.put(uid, mine, *flags_of(b"".join(seg)))
+                flags.put(uid, mine, *flags_of(seg_meta(seg)))
+    return ok
 
 
 SWEEP = 2000        # older mails whose flags are asked for on each pass, in turn, when CONDSTORE is missing
@@ -1743,14 +1809,15 @@ def deep_flags(m, c, folder, uidv, older, flags):
         r = c.execute("select v from meta where k=?", (key,)).fetchone()
         was = (r[0].split() + ["", ""])[:2] if r else ["", ""]
         now = highest_modseq(m, folder)
-        if now is not None:
-            if was[0] == str(uidv) and was[1].isdigit():
-                if int(was[1]) != now:
-                    fetch_flags(m, "1:*", flags, " (CHANGEDSINCE %d)" % int(was[1]))
+        if now is not None and now > 0:     # RFC 7162: 0 means NOMODSEQ (not supported on this mailbox)
+            if was[0] == str(uidv) and was[1].isdigit() and int(was[1]) > 0:
+                if int(was[1]) == now or fetch_flags(m, "1:*", flags, " (CHANGEDSINCE %d)" % int(was[1])):
+                    c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
+                    return
+                # CHANGEDSINCE failed: fall through to the non-CONDSTORE sweep without advancing modseq
+            else:
                 c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
-                return
-            c.execute("insert or replace into meta values(?, ?)", (key, "%d %d" % (uidv, now)))
-            # the first pass: everything once, the way below; from the next pass on only changes
+                # the first pass: everything once, the way below; from the next pass on only changes
     asked = time.time()
     unseen, flagged = search_set(m, "UNSEEN"), search_set(m, "FLAGGED")
     mine = flags.mine(asked)
@@ -1952,7 +2019,7 @@ def print_rows(rows, as_json, empty="(nothing found)", total=None):
                                             "*" if not r["seen"] else " ", "★" if r["flagged"] else " ",
                                             marks(r), who[:20], r["subject"],
                                           "  [%s]" % r["atts"] if r["atts"] else ""))
-    if not rows:
+    if not rows and not cut:
         print(empty)
     if cut:
         print(note)
@@ -1998,15 +2065,20 @@ def search_where(words, a):
     """(where clause, params) for the words and the filters in a."""
     where, params = [], []
     long_terms = []
-    for t in (nfc(w)[:MAX_TERM] for w in words[:MAX_TERMS]):
+    for t in (nfc(w.replace("\x00", ""))[:MAX_TERM] for w in words[:MAX_TERMS]):
         if not t:
             continue
         if len(t) >= 3:
             long_terms.append('"%s"' % t.replace('"', '""'))
-        elif re.search(r"[A-Za-z]", t):    # LIKE: case does not matter for these letters
+        elif t.isascii() and re.search(r"[A-Za-z]", t):    # LIKE: case does not matter for ASCII letters
             where.append("(" + " or ".join("m.%s like ? escape '\\'" % k
                                            for k in ("subject", "frm", "to_", "cc", "atts", "body")) + ")")
             params += [like_arg(t)] * 6
+        elif t.lower() != t.upper():        # short cased non-ASCII (e.g. German öl): SQLite LIKE is ASCII-only
+            forms = sorted({"".join(p) for p in itertools.product(*({ch.lower(), ch.upper()} for ch in t))})
+            cols = ("subject", "frm", "to_", "cc", "atts", "body")
+            where.append("(" + " or ".join("instr(m.%s, ?) > 0" % k for k in cols for _ in forms) + ")")
+            params += [v for _ in cols for v in forms]
         else:                               # a short Chinese word: a plain substring test, about half the time
             where.append("(" + " or ".join("instr(m.%s, ?) > 0" % k
                                            for k in ("subject", "frm", "to_", "cc", "atts", "body")) + ")")
@@ -2077,11 +2149,12 @@ def cmd_sync(a):
 
 
 def cmd_search(a):
-    if not a.words and not any((a.folder, a.from_, a.to, a.since, a.until, a.unread, a.starred, a.att)):
+    words = [w for w in a.words if w.replace("\x00", "").strip()]
+    if not words and not any((a.folder, a.from_, a.to, a.since, a.until, a.unread, a.starred, a.att)):
         die("give a word or a filter (--from, --to, --since, --until, --folder, --unread, --starred, --att)")
     c = db() if a.no_sync else quick_sync(CFG.folder(a.folder) if a.folder else None)
-    rows = search_rows(c, a.words, a)
-    print_rows(rows, a.json, total=search_total(c, a.words, a) if len(rows) >= a.limit else None)
+    rows = search_rows(c, words, a)
+    print_rows(rows, a.json, total=search_total(c, words, a) if len(rows) >= a.limit else None)
     if not a.json:
         missing = c.execute("select count(*) from msgs where has_body=0").fetchone()[0]
         if missing:
@@ -2200,6 +2273,7 @@ def cmd_read(a):
     raw = mail_raw(folder, uid)
     msg = to_msg(raw)
     plain, html = bodies(msg)
+    plain = plain_text(plain)
     text = plain.strip() or html_to_text(html)
     atts = [{"name": fname(p) or "(no name)", "kb": len(part_bytes(p)) // 1024,
              "inline": is_inline(p, body_refs(msg))} for p in attachments(msg, inline=True)]
@@ -2340,11 +2414,20 @@ def parse_people(s):
     return out
 
 
+def unwrap_body(html):
+    """Strip an outer <html>/<head>/<body> document wrapper without wiping prose around literal/nested <body> tags."""
+    mo = re.match(r"(?is)^(?:\s|<!doctype[^>]*>|<!--.*?-->|</?html\b[^>]*>|<head\b.*?</head>|<meta\b[^>]*>|<title\b.*?</title>|<base\b[^>]*>)*<body\b[^>]*>", html)
+    if mo:
+        html = html[mo.end():]
+        html = re.sub(r"(?is)</body>(?:\s|<!--.*?-->|</html>)*$", "", html)
+    return re.sub(r"(?is)</?body\b[^>]*>", "", html)
+
+
 def clean_quoted_html(html):
     """The original's HTML as a fragment: no <html>/<head>/<body>, and above all no <meta charset=gb2312>,
     which would make some readers decode our whole UTF-8 reply as GB2312."""
     html = re.sub(r"(?is)<head\b.*?</head>", "", html)
-    html = re.sub(r"(?is)^.*?<body[^>]*>|</body>.*$", "", html)
+    html = unwrap_body(html)
     html = re.sub(r"(?is)<!doctype[^>]*>|</?html\b[^>]*>|<meta\b[^>]*>|<base\b[^>]*>|<title\b.*?</title>", "", html)
     return html
 
@@ -2476,18 +2559,19 @@ def build_message(body_html, to, cc, subject, orig=None, mode=None, bcc=(), atta
     msg.set_content(html_to_text(html))
     msg.add_alternative(html, subtype="html")
     hpart = msg.get_body(("html",))
-    used = set(re.findall(r"(?i)cid:([^\"'\s>)]+)", html))
+    used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html)}
     src = orig if orig is not None else quote_src
     if src is not None:
         done = set()
-        for p in src.walk():
+        for p in leaf_parts(src):
             if p.is_multipart() or not p.get("Content-ID"):
                 continue
             cid = p.get("Content-ID").strip().strip("<>")
-            if cid in used and cid not in done and is_inline(p, used):
-                mt, st = image_type(p).split("/", 1)
+            if cid.lower() in used and cid.lower() not in done and is_inline(p, used):
+                ctype = image_type(p) or p.get_content_type() or "application/octet-stream"
+                mt, st = ctype.split("/", 1) if "/" in ctype else ("application", "octet-stream")
                 add_file(hpart, p.get_payload(decode=True) or b"", mt, st, fname(p), cid="<%s>" % cid)
-                done.add(cid)
+                done.add(cid.lower())
         if mode == "forward" and orig is not None:
             for p in attachments(orig):
                 if p.get_content_type() == "message/rfc822":     # keep an attached mail as a .eml file
@@ -2546,8 +2630,9 @@ def name_param(part, name):
 def append_draft(m, raw):
     select(m, CFG.folders["drafts"], readonly=False)
     before = set(uids_of(m))
-    typ, data = m.append(q(CFG.folders["drafts"]), "(\\Draft \\Seen)",
-                         imaplib.Time2Internaldate(time.time()), raw)
+    with patient(m):
+        typ, data = m.append(q(CFG.folders["drafts"]), "(\\Draft \\Seen)",
+                             imaplib.Time2Internaldate(time.time()), raw)
     if typ != "OK":
         die("the server did not save the draft: %s" % data)
     mo = re.search(rb"APPENDUID \d+ (\d+)", b" ".join(x for x in data if isinstance(x, bytes)))
@@ -2597,8 +2682,14 @@ def cmd_draft(a):
     body = read_body_file(a.body) if a.body else text_to_html(a.text)
     sig = ""
     if not a.no_sig and CFG.signature:
-        with open(os.path.expanduser(CFG.signature), encoding="utf-8") as f:
-            sig = f.read()
+        p = os.path.expanduser(CFG.signature)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                sig = f.read()
+        elif "\n" in CFG.signature or ("/" not in CFG.signature and "\\" not in CFG.signature):
+            sig = text_to_html(CFG.signature)
+        else:
+            die("signature file not found: %s" % CFG.signature)
     with session() as m:
         orig, mode = None, None
         src = a.reply or a.forward
@@ -2621,6 +2712,19 @@ def cmd_draft(a):
         if a.replace:
             f2, u2 = drafts_only(a.replace, "--replace")
             delete_uid(m, f2, u2)
+            forget_rows(db(), {f2: [u2]})
+            new_id = "%s:%d" % (CFG.short(CFG.folders["drafts"]), new_uid)
+            with file_lock("sched", True):
+                items = sched_read()
+                changed = False
+                for x in items:
+                    if x["id"] == a.replace:
+                        x["id"] = new_id
+                        for k in ("error", "tries", "retry_at", "note", "sending"):
+                            x.pop(k, None)
+                        changed = True
+                if changed:
+                    sched_write(items)
     os.makedirs(os.path.join(CFG.home, "drafts"), exist_ok=True)
     preview = os.path.join(CFG.home, "drafts", "%d.html" % new_uid)
     with open(preview, "w", encoding="utf-8") as f:
@@ -2660,20 +2764,25 @@ def table_problems(html, sig_at, blanks_ok):
             break
         t, body, pos = mo.group(0), new[mo.end():end], end + 5
         first = re.sub(r"<colgroup.*?</colgroup>", "", body, flags=re.I | re.S) if "</colgroup>" in body.lower() else body
-        ncols = sum(int(s or 1) for s in re.findall(r"<t[dh]\b(?:[^<>]*colspan=\"?(\d+))?[^<>]*>", first, re.I))
+        ncols = sum(int(s or 1) for s in re.findall(r"<t[dh]\b(?:[^<>]*colspan=[\"']?(\d+))?[^<>]*>", first, re.I))
         if ncols >= 3 and not re.search(r"(?<![-\w])width:\d+px", t.replace(" ", "")):
             problems.append("a %d-column table has no fixed pixel width" % ncols)
             break
     cells, pos, td_re = [], 0, re.compile(r"<td\b([^<>]*)>", re.I)
+    cell_tbc = 0
     while True:
         mo = td_re.search(new, pos)
         end = low.find("</td>", mo.end()) if mo else -1
         if end < 0:
             break
         if "colspan" not in mo.group(1):
-            cells.append(re.sub(r"<[^<>]+>|&nbsp;|\s", "", new[mo.end():end]).lower())
+            raw_cell = new[mo.end():end]
+            val = re.sub(r"<[^<>]+>|&nbsp;|\s", "", raw_cell).lower()
+            cells.append(val)
+            if val == "tbc":
+                cell_tbc += raw_cell.count("TBC")
         pos = end + 5
-    blanks = sum(c in ("", "-", "—", "–", "tbc", "?") for c in cells) + new.count("TBC")
+    blanks = sum(c in ("", "-", "—", "–", "tbc", "?") for c in cells) + max(0, new.count("TBC") - cell_tbc)
     if tables and blanks and not blanks_ok:
         problems.append("%d blank/—/TBC value(s) in the table; say which rows miss what, then use --blanks-ok"
                         % blanks)
@@ -2687,7 +2796,15 @@ def check_message(msg, reply, blanks_ok=False, required_cc=True, attach_ok=False
     reply = reply or bool(hdr(msg, "In-Reply-To").strip())
     marks = CFG.signature_marks
     sig_at = min([text.find(x) for x in marks if x in text] or [-1]) if marks else len(text)
-    quote_at = min([text.find(x) for x in QUOTE_MARKS if x in text] or [-1])
+    if html:
+        q_hits = [text.find(x) for x in (QUOTE_HEAD, "<blockquote", "发件人", "原始邮件", "wrote:", "Từ:") if x in text]
+        if quote_start(html_to_text(html)) >= 0:
+            for m in ("From:",):
+                if m in text:
+                    q_hits.append(text.find(m))
+        quote_at = min(q_hits) if q_hits else -1
+    else:
+        quote_at = quote_start(text)
     if marks:
         if sig_at < 0:
             problems.append("no signature")
@@ -2695,13 +2812,13 @@ def check_message(msg, reply, blanks_ok=False, required_cc=True, attach_ok=False
             problems.append("no signature in the new text (the one found is inside the quoted history)")
     if reply and (quote_at < 0 or (marks and quote_at < sig_at)):
         problems.append("no quoted history after the signature")
-    cids = {p.get("Content-ID").strip().strip("<>") for p in msg.walk() if p.get("Content-ID")}
-    refs = set(re.findall(r'''(?i)(?:src|background)\s*=\s*["']?cid:([^"'\s>]+)''', html))
+    cids = {p.get("Content-ID").strip().strip("<>").lower() for p in leaf_parts(msg) if p.get("Content-ID")}
+    refs = {x.lower() for x in re.findall(r'''(?i)(?:src|background)\s*=\s*["']?cid:([^"'\s>]+)''', html)}
     if refs - cids:
         problems.append("%d image(s) in the mail have no image part" % len(refs - cids))
-    to, cc = addrs(hdr(msg, "To")), addrs(hdr(msg, "Cc"))
+    to, cc, bcc = addrs(hdr(msg, "To")), addrs(hdr(msg, "Cc")), addrs(hdr(msg, "Bcc"))
     everyone = {x for _, x in to + cc}
-    if not to:
+    if not to and not bcc:
         problems.append("To is empty")
     if CFG.user in everyone:
         problems.append("the sender is also a recipient")
@@ -2815,7 +2932,14 @@ def cmd_send(a):
     if not a.yes:
         die("send needs --yes, given only after the owner approved this exact draft")
     folder, uid = drafts_only(a.id, "send")
-    print(json.dumps(send_draft(folder, uid), ensure_ascii=False, indent=1))
+    res = send_draft(folder, uid)
+    forget_rows(db(), {folder: [uid]})
+    with file_lock("sched", True):
+        items = sched_read()
+        keep = [x for x in items if x["id"] != a.id]
+        if len(keep) != len(items):
+            sched_write(keep)
+    print(json.dumps(res, ensure_ascii=False, indent=1))
 
 
 def smtp_open(host, port, timeout):
@@ -2976,7 +3100,8 @@ def send_draft(folder, uid, wait=3):
                     saved = True
                     break
             if not saved:
-                typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), keep)
+                with patient(m):
+                    typ, data = m.append(q(sent), "(\\Seen)", imaplib.Time2Internaldate(time.time()), keep)
                 if typ == "OK":
                     pass
                 elif b"saved by smtp" in b" ".join(x for x in data if isinstance(x, bytes)).lower():
@@ -3122,15 +3247,26 @@ def cmd_move(a):
     if (to or "").strip().lower() == "trash" or to == CFG.folders.get("trash"):
         die("to the trash: ragdoll trash <ids> --yes (only after the owner approved the list)")
     ids, by_folder = ids_by_folder(a)
+    moved_by = {}
     with session() as m:
         dest = move_dest(m, to)
         if dest == CFG.folders.get("trash"):
             die("to the trash: ragdoll trash <ids> --yes (only after the owner approved the list)")
         by_folder.pop(dest, None)
         total = 0
-        for f, uids in by_folder.items():
-            total += move_uids(m, f, sorted(uids), dest)
-    forget_rows(db(), by_folder)
+        try:
+            for f, uids in by_folder.items():
+                todo = sorted(set(uids))
+                try:
+                    total += move_uids(m, f, todo, dest)
+                    moved_by[f] = todo
+                except Refused as e:
+                    if e.done:
+                        moved_by[f] = todo[:e.done]
+                    raise
+        finally:
+            if moved_by:
+                forget_rows(db(), moved_by)
     print("moved %d mail%s to %s" % (total, "" if total == 1 else "s", dest))
     if total and dest not in CFG.sync_folders:
         print("(see them with: ragdoll list --folder %s)" % (CFG.short(dest) if " " not in CFG.short(dest)
@@ -3145,14 +3281,25 @@ def cmd_trash(a):
                                                  {CFG.short(f): len(u) for f, u in by_folder.items()}))
         print("rerun with --yes, only after the owner approved this list")
         return
-    total = 0
-    with session() as m:
-        for f, uids in by_folder.items():
-            if f == CFG.folders["trash"]:
-                continue
-            total += move_uids(m, f, sorted(set(uids)), CFG.folders["trash"])
-    forget_rows(db(), by_folder)
-    print("moved %d mails to %s" % (total, CFG.folders["trash"]))
+    trash = CFG.folders["trash"]
+    by_folder.pop(trash, None)
+    total, moved_by = 0, {}
+    if by_folder:
+        with session() as m:
+            try:
+                for f, uids in by_folder.items():
+                    todo = sorted(set(uids))
+                    try:
+                        total += move_uids(m, f, todo, trash)
+                        moved_by[f] = todo
+                    except Refused as e:
+                        if e.done:
+                            moved_by[f] = todo[:e.done]
+                        raise
+            finally:
+                if moved_by:
+                    forget_rows(db(), moved_by)
+    print("moved %d mails to %s" % (total, trash))
 
 
 def cmd_delete_draft(a):
@@ -3161,6 +3308,12 @@ def cmd_delete_draft(a):
     folder, uid = drafts_only(a.id, "delete-draft")
     with session() as m:
         delete_uid(m, folder, uid)
+    forget_rows(db(), {folder: [uid]})
+    with file_lock("sched", True):
+        items = sched_read()
+        keep = [x for x in items if x["id"] != a.id]
+        if len(keep) != len(items):
+            sched_write(keep)
     print("deleted %s" % a.id)
 
 
@@ -3211,10 +3364,10 @@ def update_state(new=None):
             return {}
     try:
         os.makedirs(CFG.home, exist_ok=True)
-        tmp = "%s.%d.tmp" % (path, os.getpid())
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(new, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)
+        atomic_replace(tmp, path)
     except OSError:
         pass
     return new
@@ -3355,7 +3508,7 @@ def update_gate(repo):
     code, dirty, _ = git(repo, "status", "--porcelain", "--untracked-files=no")
     if dirty:
         return "this clone has changed files (%s); commit or undo them first" % ", ".join(
-            x[3:] for x in dirty.splitlines()[:5])
+            re.sub(r"^[ MADRCU?!]{1,2}\s+", "", x) for x in dirty.splitlines()[:5])
     busy = busy_commands()
     if busy:
         return "another ragdoll command is running (%s); update when it is done" % ", ".join(busy)
@@ -3586,11 +3739,11 @@ def install_cli(home=None):
         out["kept"] = True              # somebody's own launcher (the README's, say): leave it alone
     elif old != body:
         os.makedirs(d, exist_ok=True)
-        tmp = path + ".tmp"
+        tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
         with open(tmp, "w", encoding="utf-8", newline="") as f:
             f.write(body)
         os.chmod(tmp, 0o755)
-        os.replace(tmp, path)
+        atomic_replace(tmp, path)
         out["made"] = True
     out["path_added"] = add_to_path(d, home)
     return out
@@ -3721,10 +3874,10 @@ def sched_read():
 
 def sched_write(items):
     os.makedirs(CFG.home, exist_ok=True)
-    tmp = "%s.%d.tmp" % (sched_path(), os.getpid())
+    tmp = "%s.%d.%d.tmp" % (sched_path(), os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False)
-    os.replace(tmp, sched_path())
+    atomic_replace(tmp, sched_path())
 
 
 def parse_when(s, now=None):
@@ -3762,7 +3915,7 @@ def cmd_schedule(a):
                 print("%s  %-12s %s%s" % (x["at"], x["id"], x["subject"], "  FAILED: " + x["error"] if x["error"] else ""))
             print("(nothing scheduled)" if not out else "")
         return
-    drafts_only(a.id, "schedule")
+    folder, uid = drafts_only(a.id, "schedule")
     if a.cancel:
         with file_lock("sched", True):      # the app changes the list too (ragdoll_app.sched_edit)
             items = sched_read()
@@ -3786,8 +3939,20 @@ def cmd_schedule(a):
         die("that time has already passed")
     if at > time.time() + 5 * 366 * 86400:
         die("pick a time within the next five years")
+    # Ensure the draft actually exists when an account is configured (locally indexed or on the server)
+    c = db()
+    if CFG.user and CFG.imap.get("host") and not c.execute(
+            "select 1 from msgs where folder=? and uid=?", (folder, uid)).fetchone():
+        with session() as m:
+            use(m, folder)
+            if not fetch_one(m, uid, "(UID)"):
+                die("no draft %s (already sent or deleted?)" % a.id)
     with file_lock("sched", True):
-        items = [x for x in sched_read() if x["id"] != a.id] + [{"id": a.id, "at": at}]
+        cur = sched_read()
+        if any(isinstance(x.get("sending"), dict) and pid_running(x["sending"].get("pid"))
+               for x in cur if x["id"] == a.id):
+            die("%s is going out right now" % a.id)
+        items = [x for x in cur if x["id"] != a.id] + [{"id": a.id, "at": at}]
         sched_write(items)
     print(json.dumps({"id": a.id, "at": local_time(at), "app_running": app_running(),
                       "note": "Ragdoll Mail sends it at that time while the app is open; if the app is "

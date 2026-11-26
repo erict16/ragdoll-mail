@@ -264,7 +264,7 @@ class ProblemNotice(DemoBackend):
         self.assertLess(html.index('id="rows"'), html.index('id="banner"'))      # over the list, not above it
         draw = js[js.index("function drawProblem("):js.index("// ---------------------------------------------------------------- start")]
         for k in ("st.retry_at", "st.last_sync", "problemKind(st)", "settingsAt(", '"password"',
-                  "copyText(st.error)", "prob.dismissed", '"alert"'):
+                  "copyText(st.error_detail || st.error)", "prob.dismissed", '"alert"'):
             self.assertIn(k, draw, k)
         self.assertNotIn("S.boot.demo", draw)
         css = read("app", "style.css")
