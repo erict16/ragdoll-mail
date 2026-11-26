@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 # Tag builds go straight to the GitHub release, so they use no artifact storage.
 # Manual runs keep the files as short-lived artifacts (1 day).
 
@@ -26,9 +30,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests
-      # once more on Windows as the app ships there: with the tzdata package (the tests above ran without it)
+      # verify timezone-sensitive tests on Windows with tzdata installed (as the shipped app bundles it)
       - if: runner.os == 'Windows'
-        run: pip install tzdata && python -m unittest discover -s tests
+        run: pip install tzdata && python -m unittest tests/test_group_f.py tests/test_audit_fixes.py
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -81,15 +85,26 @@ jobs:
       - run: pip install pywebview pyinstaller pillow tzdata   # Windows has no time zone database of its own (invites)
       - run: pyinstaller --noconfirm ragdoll-mail.spec
       - run: Compress-Archive -Path "dist/Ragdoll Mail.exe", "dist/ragdoll.exe" -DestinationPath ragdoll-mail-windows.zip
+      - name: Build Windows installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $ver = (python -c "import ragdoll; print(ragdoll.__version__)").Trim()
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$ver" packaging/windows/ragdoll-mail.iss
+          Copy-Item dist/ragdoll-mail-windows-setup.exe ragdoll-mail-windows-setup.exe
       - name: Add to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
-        run: gh release upload "$GITHUB_REF_NAME" ragdoll-mail-windows.zip --clobber -R "$GITHUB_REPOSITORY"
+        run: gh release upload "$GITHUB_REF_NAME" ragdoll-mail-windows.zip ragdoll-mail-windows-setup.exe --clobber -R "$GITHUB_REPOSITORY"
       - if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: ragdoll-mail-windows.zip
+          path: |
+            ragdoll-mail-windows.zip
+            ragdoll-mail-windows-setup.exe
           retention-days: 1
 
   # Off until PyPI trusted publishing is set up and the repo variable PYPI is "on"

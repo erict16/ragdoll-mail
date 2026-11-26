@@ -147,7 +147,7 @@ const S = {
   boot: null, folder: "inbox", rows: [], more: false, query: "", loadingMore: false,
   sel: null, thread: null, focus: null, compose: null, rev: 0, update: null, error: null,
   theme: "system", showImages: new Set(), syncing: false, sched: null, multi: new Set(), anchor: null,
-  filter: {}, newsN: 0,
+  filter: {}, newsN: 0, remN: 0,
 };
 let PREFS = {};
 const undoSeconds = () => (Number.isInteger(PREFS.undo) ? PREFS.undo : 5);
@@ -169,7 +169,7 @@ const fontLabel = (k) => FONT_NAMES[k] || t("system");
 const mailFont = () => fontStack(PREFS.font || "system");
 const mailSize = () => (FONT_SIZES.includes(PREFS.font_size) ? PREFS.font_size : 14);
 const savePref = (patch) => { Object.assign(PREFS, patch); api("prefs", patch).catch(() => {}); };
-const FOLDER_ICON = { inbox: "inbox", flagged: "star", drafts: "file", scheduled: "clock", sent: "send", archive: "archive", junk: "archive-x", trash: "trash-2" };
+const FOLDER_ICON = { inbox: "inbox", flagged: "star", drafts: "file", scheduled: "clock", snoozed: "alarm-clock", sent: "send", archive: "archive", junk: "archive-x", trash: "trash-2" };
 // the server's other folders keep their own names; only the built-in ones are translated
 const otherFolder = (key) => S.boot?.folders.find((f) => f.key === key && f.other);
 const folderName = (key) => otherFolder(key)?.label || (FOLDER_ICON[key] ? t(key) : key);
@@ -413,14 +413,16 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 
 let navSig = "", navKeys = null;
 function renderNav() {
+  drawUpdate();
   const nav = $("#nav");
   const own = ownFolders();
   const folders = [...S.boot.folders.filter((f) => !f.other), ...own];
-  for (const [key, at] of [["flagged", 1], ["scheduled", 3]]) {
+  for (const [key, at] of [["flagged", 1], ["scheduled", 3], ["snoozed", 4]]) {
     if (S.folder === key && !folders.some((f) => f.key === key)) folders.splice(Math.min(at, folders.length), 0, { key, total: 0, unread: 0 });
   }
+  const saved = Array.isArray(PREFS.saved_searches) ? PREFS.saved_searches : [];
   // most calls come from the 5 second check and change nothing: leave the page alone then
-  const sig = JSON.stringify([folders, S.folder, !!S.query, t("inbox"), S.boot.user, S.update?.version]);
+  const sig = JSON.stringify([folders, saved, S.folder, S.query, t("inbox"), S.boot.user, S.update?.version]);
   if (sig === navSig) return;
   navSig = sig;
   const was = navKeys;
@@ -436,7 +438,7 @@ function renderNav() {
   for (const [i, f] of folders.entries()) {
     if (f.other && !seenOther) nav.append(navSection());
     const kids = f.other && folders[i + 1]?.other && folders[i + 1].depth > (f.depth || 0);
-    const n = f.key === "inbox" || f.other ? f.unread : ["drafts", "scheduled", "flagged"].includes(f.key) ? f.total : 0;
+    const n = f.key === "inbox" || f.other ? f.unread : ["drafts", "scheduled", "snoozed", "flagged"].includes(f.key) ? f.total : 0;
     const name = f.other ? f.label : t(f.key);
     const b = el("button", { class: "nav-item" + (f.other ? " other" : "") + (f.key === S.folder && !S.query ? " on" : "") + (was && !was.has(f.key) && f.other ? " new" : ""),
       style: f.other && f.depth ? `--depth:${f.depth}` : null, "data-folder": f.key, "data-tip": f.other ? f.key : name, "data-rail": "", onclick: () => { sideOpen(false); openFolder(f.key); },
@@ -460,12 +462,40 @@ function renderNav() {
     }
     nav.append(b);
   }
+  if (saved.length) {
+    nav.append(el("div", { class: "nav-saved-sec" }, t("saved_searches")));
+    for (const ss of saved) {
+      const b = el("button", {
+        class: "nav-item saved" + (S.query === ss.q ? " on" : ""),
+        "data-tip": ss.q, "data-rail": "",
+        onclick: () => { sideOpen(false); applySearchQuery(ss.q); },
+        html: icon("bookmark") + `<span class="label" dir="auto">${esc(ss.name)}</span>` +
+          `<span class="nav-more" role="button" aria-label="${esc(t("delete_search"))}">${icon("x", "small")}</span>`,
+      });
+      $(".nav-more", b).addEventListener("click", (e) => { e.stopPropagation(); removeSavedSearch(ss.q); });
+      b.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        menu(atPoint(e), [{ icon: "trash-2", label: t("delete_search"), run: () => removeSavedSearch(ss.q) }]);
+      });
+      nav.append(b);
+    }
+  }
   applyFold();
   const who_ = S.boot.demo ? t("demo") : S.boot.user, acct = $("#account");
   acct.dataset.tip = who_; acct.setAttribute("aria-label", who_);
-  const up = $("#update");
-  up.hidden = !S.update;
-  if (S.update) up.innerHTML = icon("download") + `<span>${esc(t("update_to", "v" + S.update.version))}</span>`;
+}
+// the sidebar's update button: Update to v…, then the download's progress, then Restart (#76)
+function drawUpdate() {
+  const up = $("#update"), u = S.update;
+  up.hidden = !u;
+  if (!u) return;
+  const pct = u.total ? Math.min(99, Math.floor((100 * (u.done || 0)) / u.total)) + "%" : "";
+  const [ic, text] = u.step === "downloading" ? ["loader-circle", t("upd_downloading", pct)]
+    : u.step === "ready" ? ["refresh-cw", t("upd_restart")]
+    : u.step === "restarting" ? ["loader-circle", t("upd_restarting")]
+    : ["download", t("update_to", "v" + u.version)];
+  const html = icon(ic, ic === "loader-circle" ? "spin" : "") + `<span>${esc(text)}</span>`;
+  if (up.innerHTML !== html) up.innerHTML = html;
 }
 
 // the owner's own folders sit under a heading that folds them away; a folder with folders inside has
@@ -887,20 +917,36 @@ function moveFolderMenu(anchor, f) {
 // a sentence from the server about folders, in the chosen language
 MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
 MSGS.push([/^Can't check for updates right now\./, "err_upd"]);
+MSGS.push([/^Can't download the update\./, "err_upd_dl"], [/^The download is damaged\./, "err_upd_bad"],
+  [/^Wait until the mail on its way has gone/, "err_upd_busy"], [/^Move Ragdoll Mail to your Applications folder/, "err_upd_move"],
+  [/^Ragdoll Mail can't replace itself in (.*)\. Download/, "err_upd_place"], [/^This copy of Ragdoll Mail can't update itself\./, "err_upd_self"],
+  [/^The update is already downloading\./, "err_upd_dling"], [/^The update isn't ready yet\./, "err_upd_dling"],
+  [/^Can't start the update\./, "err_upd_start"], [/^The new version did not start\./, "err_upd_crash"], [/^(.*) is in use\. Close it and update again\./, "err_upd_inuse"]);
 MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
 const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
 function accountMenu() {
-  menu($("#account"), [
-    { note: S.boot.demo ? t("demo") : S.boot.user },
+  const items = [{ note: S.boot.demo ? t("demo") : S.boot.user }];
+  const accs = S.boot.accounts || [];
+  if (!S.boot.demo && accs.length > 1) {
+    for (const a of accs) {
+      items.push({ icon: "circle-user-round", label: a.label || a.user, on: !!a.active,
+        run: () => !a.active && switchAccount(a.id) });
+    }
+    items.push("-");
+  }
+  if (!S.boot.demo) items.push({ icon: "plus", label: t("add_account"), run: addAccountSheet });
+  items.push(
     { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
+    { icon: "command", label: t("cmd_palette"), key: MOD + "⇧P", run: openCommandPalette },
     { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
     { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
     { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
     { icon: "download", label: t("upd_check"), run: checkUpdates },
     "-",
     { note: t("version", S.boot.version) },
-  ], { above: true });
+  );
+  menu($("#account"), items, { above: true });
 }
 
 // ---- C1 pure: start (no page, no app state: tests/test_group_c1.py runs this part in node)
@@ -911,8 +957,10 @@ function searchTerms(q) {
   const out = [], seen = new Set();
   for (const w of String(q || "").match(/[\p{L}\p{N}_]+:"[^"]*"|"[^"]*"|\S+/gu) || []) {
     const i = w.indexOf(":"), k = i < 0 ? w : w.slice(0, i), v = i < 0 ? "" : strip(w.slice(i + 1));
-    if (v && ["from", "to", "in", "folder"].includes(k.toLowerCase())) continue;
-    if (["is:unread", "has:attachment", "has:file"].includes(w.toLowerCase())) continue;
+    if (v && ["from", "to", "in", "folder", "since", "after", "until", "before", "filename", "file"].includes(k.toLowerCase())) continue;
+    if (["is:unread", "is:starred", "is:flagged", "is:people", "is:newsletter", "is:newsletters", "is:list",
+      "has:attachment", "has:attachments", "has:file", "has:invite", "has:calendar"].includes(w.toLowerCase())) continue;
+    if (w.startsWith("-") && w.length > 1) continue;
     const term = strip(w).trim();
     if (term && !seen.has(term.toLowerCase())) { seen.add(term.toLowerCase()); out.push(term); }
   }
@@ -996,13 +1044,17 @@ function rowTemplate(r) {
     name = names.length ? t("to_x", names.slice(0, 3).join(", ") + (names.length > 3 ? " " + t("recipients_more", names.length - 3) : "")) : (r.folder === "drafts" ? t("draft") : "");
   } else name = who(r.from);
   const clip = r.atts.length ? icon("paperclip", "small") : "";
-  const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`) : esc(shortTime(r.ts));
+  const when = r.sched ? (r.sched_error ? `<span class="sched err">${icon("triangle-alert", "small")}${esc(laterTime(r.sched))}</span>` : `<span class="sched">${icon("clock", "small")}${esc(laterTime(r.sched))}</span>`)
+    : r.remind_at ? `<span class="sched">${icon("alarm-clock", "small")}${esc(laterTime(r.remind_at))}</span>`
+    : esc(shortTime(r.ts));
   const tag = (S.query || S.folder === "flagged") && r.folder !== "inbox" ? `<span class="tag">${esc(folderName(r.folder))}</span>` : "";
   const flag = r.flagged ? `<span class="flag-ic">${icon("star", "small")}</span>` : "";
   const done = (r.answered ? `<span class="mk mk-a">${icon("reply", "small")}</span>` : "") +
     (r.forwarded ? `<span class="mk mk-f">${icon("forward", "small")}</span>` : "");
   const acts = r.sched
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="unschedule" data-tip="${esc(t("dont_send"))}">${icon("calendar-x")}</button>`
+    : r.remind_at
+    ? `<button class="icon-btn tiny" tabindex="-1" data-act="unsnooze" data-tip="${esc(t("unsnooze"))}">${icon("x")}</button>`
     : (S.folder === "trash" || S.folder === "junk") && !S.query
     ? `<button class="icon-btn tiny" tabindex="-1" data-act="inbox" data-tip="${esc(backLabel(S.folder))}">${icon("inbox")}</button>`
     : `<button class="icon-btn tiny" tabindex="-1" data-act="archive" data-tip="${esc(t("archive_it"))}" data-key="E">${icon("archive")}</button>` +
@@ -1215,13 +1267,14 @@ function growRows(nodes) {
 
 const filterArgs = () => {
   const f = S.filter;
-  if (S.query || S.folder === "scheduled") return {};
-  return { unread: f.unread || undefined, att: f.att || undefined, from: f.from || undefined, starred: (f.starred && S.folder !== "flagged") || undefined };
+  if (S.query || S.folder === "scheduled" || S.folder === "snoozed") return {};
+  return { unread: f.unread || undefined, att: f.att || undefined, from: f.from || undefined,
+    starred: (f.starred && S.folder !== "flagged") || undefined, kind: f.kind || undefined };
 };
 const filterOn = () => Object.values(filterArgs()).some(Boolean);
 function syncFilterUI() {
   const b = $("#filter-btn");
-  b.disabled = !!S.query || S.folder === "scheduled";
+  b.disabled = !!S.query || S.folder === "scheduled" || S.folder === "snoozed";
   b.classList.toggle("on", filterOn());
   b.dataset.tip = t("filter");
   b.setAttribute("aria-label", t("filter"));
@@ -1245,6 +1298,11 @@ async function filterMenu() {
   const items = [{ icon: "mail", label: t("f_unread"), on: !!f.unread, run: () => setFilter({ unread: !f.unread }) }];
   if (folder !== "flagged") items.push({ icon: "star", label: t("flagged"), on: !!f.starred, run: () => setFilter({ starred: !f.starred }) });
   items.push({ icon: "paperclip", label: t("f_att"), on: !!f.att, run: () => setFilter({ att: !f.att }) });
+  if (!out) {
+    items.push("-",
+      { icon: "users", label: t("f_people"), on: f.kind === "people", run: () => setFilter({ kind: f.kind === "people" ? "" : "people" }) },
+      { icon: "newspaper", label: t("f_newsletters"), on: f.kind === "newsletters", run: () => setFilter({ kind: f.kind === "newsletters" ? "" : "newsletters" }) });
+  }
   if (people.length) items.push("-");
   for (const p of people) {
     const on = f.from === p.addr;
@@ -1531,6 +1589,7 @@ $("#rows").addEventListener("click", async (e) => {
   if (act) {
     e.stopPropagation();
     if (act.dataset.act === "unschedule") return dontSend(S.rows.find((x) => x.id === row.dataset.id));
+    if (act.dataset.act === "unsnooze") return cancelReminder(S.rows.find((x) => x.id === row.dataset.id));
     const id = row.dataset.id;
     return moveMail(S.multi.size > 1 && S.multi.has(id) ? [...S.multi] : [id], act.dataset.act);
   }
@@ -1549,6 +1608,7 @@ $("#rows").addEventListener("contextmenu", (e) => {
   if (!rows.length) return;
   const one = rows.length === 1 ? rows[0] : null;
   if (one?.sched) { menu(at, [{ icon: "calendar-x", label: t("dont_send"), run: () => dontSend(one) }]); return mark(); }
+  if (one?.remind_at) { menu(at, [{ icon: "x", label: t("unsnooze"), run: () => cancelReminder(one) }]); return mark(); }
   const items = [];
   if (one && one.folder !== "drafts") items.push(
     { icon: "reply", label: t("reply"), key: "R", run: () => openCompose({ mode: "reply", id }) },
@@ -1558,7 +1618,15 @@ $("#rows").addEventListener("contextmenu", (e) => {
   const back = rows.every((x) => x.folder === "trash") ? "trash" : rows.every((x) => x.folder === "junk") ? "junk" : null;
   items.push(
     { icon: anyUnread ? "mail-open" : "mail", label: anyUnread ? t("read") : t("unread"), key: "U", run: () => markMail(ids, "seen", anyUnread) },
-    { icon: allFlagged ? "star-off" : "star", label: allFlagged ? t("unflag") : t("flag"), key: "S", run: () => markMail(ids, "flagged", !allFlagged) }, "-",
+    { icon: allFlagged ? "star-off" : "star", label: allFlagged ? t("unflag") : t("flag"), key: "S", run: () => markMail(ids, "flagged", !allFlagged) });
+  if (one && one.folder !== "drafts" && !back) {
+    items.push("-",
+      one.folder === "sent"
+        ? { icon: "alarm-clock", label: t("remind_no_reply"), run: () => snoozeMenu(at, id, "followup") }
+        : { icon: "alarm-clock", label: t("snooze"), key: "H", run: () => snoozeMenu(at, id, "snooze") },
+      { icon: "bell-off", label: t("mute_thread"), key: "M", run: () => muteThread(id) });
+  }
+  items.push("-",
     back ? { icon: "inbox", label: backLabel(back), run: () => moveMail(ids, "inbox") }
       : { icon: "archive", label: t("archive_it"), key: "E", run: () => moveMail(ids, "archive") });
   if (back !== "trash") items.push({ icon: "trash-2", label: t("trash_it"), key: "#", run: () => moveMail(ids, "trash") });
@@ -1735,7 +1803,45 @@ function syncSearchUI() {
   if (dragFocus.held) return;         // a column is being dragged: the search stays as it is
   const v = $("#search").value;
   $("#search-clear").hidden = !v;
+  const saveB = $("#search-save");
+  if (saveB) {
+    saveB.hidden = !v.trim();
+    saveB.dataset.tip = t("save_search");
+    saveB.setAttribute("aria-label", t("save_search"));
+  }
   showSearch(!!v || document.activeElement === $("#search"));
+}
+function applySearchQuery(q) {
+  $("#search").value = q;
+  showSearch(true);
+  onSearch(true);
+}
+function saveCurrentSearch() {
+  const q = $("#search").value.trim();
+  if (!q) return;
+  const inp = el("input", { type: "text", value: q.slice(0, 40), maxlength: "80", spellcheck: "false" });
+  const go = () => {
+    const name = inp.value.trim();
+    if (!name) return;
+    const cur = (PREFS.saved_searches || []).filter((x) => x.q !== q);
+    cur.push({ name, q });
+    savePref({ saved_searches: cur.slice(-50) });
+    closeLayer();
+    renderNav();
+    toast(t("search_saved"));
+  };
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
+  sheet(el("div", {}, el("h2", {}, t("save_search")), el("div", { class: "form" },
+    el("label", {}, el("span", { class: "lab" }, t("name")), inp),
+    el("div", { class: "note" }, q)),
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")),
+      el("button", { class: "btn primary", onclick: go }, t("save")))));
+  requestAnimationFrame(() => { inp.focus(); inp.select(); });
+}
+function removeSavedSearch(q) {
+  const keep = (PREFS.saved_searches || []).filter((x) => x.q !== q);
+  savePref({ saved_searches: keep });
+  renderNav();
 }
 function openSearch() {
   showSearch(true);
@@ -1748,6 +1854,10 @@ $("#search-btn").addEventListener("click", openSearch);
 $("#search").placeholder = t("search");
 $("#search-clear").innerHTML = icon("x");
 $("#search-clear").addEventListener("click", () => { $("#search").value = ""; onSearch(true); $("#search").focus(); });
+if ($("#search-save")) {
+  $("#search-save").innerHTML = icon("bookmark");
+  $("#search-save").addEventListener("click", (e) => { e.preventDefault(); saveCurrentSearch(); });
+}
 // while an input method still has letters open ("bao jia" before it becomes 报价) nothing is searched;
 // the search runs when the words are picked
 $("#search").addEventListener("input", (e) => { if (e.isComposing) syncSearchUI(); else onSearch(); });
@@ -1811,6 +1921,7 @@ function renderToolbar() {
       iconBtn("calendar-clock", t("send_later"), (e) => laterMenu(e.currentTarget), { disabled: !!S.compose.busy }),
       el("span", { class: "sep" }),
       iconBtn("paperclip", t("attach"), () => pickFiles()),
+      iconBtn("file-text", t("tpl_insert"), (e) => templateMenu(e.currentTarget), { disabled: !!S.compose.busy }),
       iconBtn("baseline", t("formatting"), toggleFmtBar, { cls: fmtBarOn() ? "on" : "" }),
     );
     end.append(el("span", { class: "compose-status", id: "compose-status" }, S.compose.status || ""),
@@ -1854,7 +1965,11 @@ function renderToolbar() {
     iconBtn("folder-input", t("move_to"), (e) => moveMenu(e.currentTarget, [mv]), { key: "V", disabled: !has || !rm }),
     iconBtn(r && r.unread ? "mail-open" : "mail", r && r.unread ? t("read") : t("unread"), toggleUnread, { key: "U", disabled: !has, cls: r && r.unread ? "" : "unread-mark" }),
     iconBtn("star", r?.flagged ? t("unflag") : t("flag"), toggleFlag, { key: "S", disabled: !has, cls: r?.flagged ? "on fill" : "" }),
+    iconBtn("alarm-clock", rm?.folder === "sent" ? t("remind_no_reply") : t("snooze"),
+      (e) => snoozeMenu(e.currentTarget, mv, rm?.folder === "sent" ? "followup" : "snooze"),
+      { key: rm?.folder === "sent" ? "" : "H", disabled: !has || !rm || inTrash || inJunk }),
   );
+  if (has) end.append(iconBtn("printer", t("print_mail"), () => printThread(), { key: MOD + "P" }));
 }
 
 // "Mark as unread" carries a dot on the envelope's corner; "Mark as read" has none. When the button turns from one
@@ -1958,8 +2073,15 @@ async function sendNow(r) {
 function msgNode(r, expanded) {
   const node = el("div", { class: "msg" + (expanded ? "" : " collapsed"), "data-id": r.id });
   const head = el("div", { class: "msg-head" });
-  const whoBox = el("div", { class: "msg-who" },
-    el("div", { class: "msg-from", html: `<b>${esc(nameOf(r.from))}</b>` + (r.from.name ? `<span class="addr">&lt;${esc(r.from.addr)}&gt;</span>` : "") }));
+  const fromEl = el("div", { class: "msg-from" },
+    r.from?.addr
+      ? el("button", {
+        class: "sender-btn", "data-tip": t("filter_sender", r.from.addr),
+        onclick: (e) => { e.stopPropagation(); applySearchQuery("from:" + r.from.addr); },
+        html: `<b>${esc(nameOf(r.from))}</b>` + (r.from.name ? `<span class="addr">&lt;${esc(r.from.addr)}&gt;</span>` : ""),
+      })
+      : el("span", { html: `<b>${esc(nameOf(r.from))}</b>` }));
+  const whoBox = el("div", { class: "msg-who" }, fromEl);
   const to = [...r.to, ...r.cc];
   const toLine = el("div", { class: "msg-to" }, (t("to") + " ") + to.map(who).join(", "));
   const snip = el("div", { class: "msg-snip" }, r.snippet);
@@ -1969,7 +2091,8 @@ function msgNode(r, expanded) {
   const acts = () => el("div", { class: "msg-acts" },
     iconBtn("reply", t("reply"), () => openCompose({ mode: "reply", id: r.id }), { key: "R" }),
     iconBtn("reply-all", t("replyall"), () => openCompose({ mode: "replyall", id: r.id }), { key: "A" }),
-    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id: r.id }), { key: "F" }));
+    iconBtn("forward", t("forward"), () => openCompose({ mode: "forward", id: r.id }), { key: "F" }),
+    iconBtn("printer", t("print_mail"), () => printThread(r.id), { key: MOD + "P" }));
   head.append(el("div", { class: "avatar" }, initials(r.from)), whoBox, el("div", { class: "msg-date", title: longTime(r.ts), html: expanded ? openDate(r.ts) : esc(shortTime(r.ts)) }));
   if (expanded) head.append(acts());
   node.append(head);
@@ -2839,6 +2962,14 @@ function renderCompose() {
   const c = S.compose;
   renderToolbar();
   const box = el("div", { class: "compose" });
+  const aliases = c.aliases || [];
+  if (aliases.length) {
+    const primary = S.boot.name ? `${S.boot.name} <${S.boot.user}>` : S.boot.user;
+    const opts = [["", primary], ...aliases.map((a) => [a, a])];
+    box.append(el("div", { class: "from-field" },
+      el("span", { class: "label" }, t("from_addr")),
+      selectBox(opts, c.from_addr || "", (val) => { c.from_addr = val; touched(); })));
+  }
   box.append(addrField("to", t("to"), true));
   if (c.showCc) box.append(addrField("cc", t("cc")));
   if (c.showBcc) box.append(addrField("bcc", t("bcc")));
@@ -3227,6 +3358,7 @@ function composeState(opts = {}) {
     mode: c.mode, orig: c.orig, replace: c.replace, to: list("to"), cc: list("cc"), bcc: list("bcc"), subject: c.subject,
     html: wrapBody(c.html), atts: c.atts.filter((a) => !a.uploading).map(({ path, name, size }) => ({ path, name, size })),
     use_signature: c.use_signature, sig_id: c.sig_id, irt: c.irt, refs: c.refs, fwd: c.fwd,
+    from_addr: c.from_addr || "", reply_to: c.reply_to ?? undefined,
   };
 }
 
@@ -3500,17 +3632,25 @@ window.addEventListener("drop", (e) => { if (hasFiles(e)) e.preventDefault(); })
 // opts (all optional): tab, the page to open on; focus, the account field to put the cursor in
 async function openSettings(opts) {
   opts = opts && !(opts instanceof Event) ? opts : {};
-  let s;
+  let s, tplList = [];
   try { s = await api("settings"); } catch (e) { return fail(e); }
-  const v = { ...s, password: "", theme: S.theme, signatures: (s.signatures || []).map((x) => ({ ...x })) };
-  let tab = opts.tab || "account", sigOn = 0;
+  try { tplList = (await api("templates")).templates || []; } catch { tplList = []; }
+  const sigs = (s.signatures || []).map((x) => ({ ...x }));
+  const tpls = tplList.map((x) => ({ ...x }));
+  const v = {
+    ...s, password: "", theme: S.theme,
+    aliases_text: (s.aliases || []).join("\n"),
+    reply_to: s.reply_to || "",
+  };
+  let tab = opts.tab || "account", sigOn = 0, tplOn = 0;
   const nav = el("div", { class: "settings-nav" }, el("h3", {}, t("settings")));
   const body = el("div", { class: "settings-body" });
   const msg = el("span", { class: "grow" });
   const saveBtn = el("button", { class: "btn primary", onclick: save }, t("save"));
   const cancelBtn = el("button", { class: "btn", onclick: closeLayer }, t("cancel"));
   const foot = el("div", { class: "settings-foot" }, msg, cancelBtn, saveBtn);
-  const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"], ["sending", "type", "composing"],
+  const tabs = [["account", "circle-user-round", "account"], ["signature", "square-pen", "signature"],
+    ["templates", "file-text", "templates"], ["sending", "type", "composing"],
     ["notify", "bell", "notifications"], ["appearance", "sun", "appearance"], ["privacy", "shield", "privacy"], ["region", "languages", "region"],
     ...(s.demo ? [] : [["cli", "terminal", "cli"]])];
   const drawNav = () => {
@@ -3522,9 +3662,15 @@ async function openSettings(opts) {
   const relabelSheet = () => { saveBtn.textContent = t("save"); cancelBtn.textContent = t("cancel"); drawNav(); draw(); };
   let sigEd = null;
   const grab = () => {
-    for (const inp of $$("input[data-k]", body)) v[inp.dataset.k] = inp.value;
-    const cur = v.signatures[sigOn];
+    for (const inp of $$("input[data-k], textarea[data-k]", body)) v[inp.dataset.k] = inp.value;
+    const cur = sigs[sigOn];
     if (sigEd && cur) { cur.html = sigEd.innerHTML; cur.name = $("input[data-sig-name]", body)?.value.trim() || ""; }
+    const ct = tpls[tplOn];
+    if (ct && $("input[data-tpl-name]", body)) {
+      ct.name = $("input[data-tpl-name]", body).value.trim();
+      ct.subject = $("input[data-tpl-subj]", body)?.value || "";
+      ct.body = $("textarea[data-tpl-body]", body)?.value || "";
+    }
   };
   const draw = () => {
     body.replaceChildren();
@@ -3537,7 +3683,9 @@ async function openSettings(opts) {
         lab(t("password"), inp("password", "password", s.has_password ? "••••••••  " + t("pw_saved") : "")));
       if (s.password_env) f.append(el("div", { class: "msg-warn" }, t("pw_env", s.password_env)));
       f.append(lab(t("incoming"), el("div", { class: "two" }, inp("imap_host"), inp("imap_port", "number"))),
-        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))));
+        lab(t("outgoing"), el("div", { class: "two" }, inp("smtp_host"), inp("smtp_port", "number"))),
+        lab(t("reply_to"), inp("reply_to", "email", s.user || "")),
+        lab(t("aliases"), el("textarea", { "data-k": "aliases_text", placeholder: t("aliases_hint"), spellcheck: "false" }, v.aliases_text || "")));
       const res = el("div");
       const testBtn = el("button", { class: "btn", onclick: async () => {
         grab(); testBtn.disabled = true; res.replaceChildren(el("span", { class: "note" }, t("testing")));
@@ -3546,11 +3694,56 @@ async function openSettings(opts) {
         finally { testBtn.disabled = false; }
       } }, t("test"));
       f.append(el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, testBtn, res));
+      const accs = S.boot.accounts || [];
+      if (!s.demo && accs.length > 1) {
+        const list = el("div", { class: "stack" }, el("span", { class: "lab" }, t("switch_account")));
+        for (const a of accs) {
+          list.append(el("div", { class: "acct-row" },
+            el("div", { class: "grow" }, el("b", {}, a.label || a.user), el("span", {}, a.user)),
+            a.active ? el("span", { class: "note" }, t("on"))
+              : el("button", { class: "btn", onclick: () => { closeLayer(); switchAccount(a.id); } }, t("open")),
+            accs.length > 1 ? iconBtn("trash-2", t("remove_account"), async () => {
+              try { const b = await api("remove_account", { id: a.id }); closeLayer(); start(b); toast(t("saved")); } catch (e) { fail(e); }
+            }, { cls: "tiny" }) : null));
+        }
+        f.append(list);
+      }
       f.append(storageLine());
       body.append(el("h2", {}, t("account")), f);
+    } else if (tab === "templates") {
+      const list = tpls;
+      tplOn = Math.min(tplOn, Math.max(0, list.length - 1));
+      const seg = el("div", { class: "seg sig-list" });
+      list.forEach((x, k) => seg.append(el("button", { class: k === tplOn ? "on" : "", onclick: () => { grab(); tplOn = k; draw(); } }, x.name || `#${k + 1}`)));
+      const add = iconBtn("plus", t("tpl_add"), () => {
+        grab();
+        list.push({ name: `Template ${list.length + 1}`, subject: "", body: "", html: false });
+        tplOn = list.length - 1;
+        draw();
+        $("input[data-tpl-name]", body)?.focus();
+      }, { cls: "tiny" });
+      const head = el("div", { class: "sig-head" }, seg, add);
+      if (!list.length) {
+        body.append(el("h2", {}, t("templates")), el("div", { class: "form" }, head, el("div", { class: "note" }, t("tpl_none"))));
+        return;
+      }
+      const cur = list[tplOn];
+      const nameIn = el("input", { type: "text", "data-tpl-name": "", value: cur.name, maxlength: "60", spellcheck: "false" });
+      nameIn.addEventListener("input", () => { const b = seg.children[tplOn]; if (b) b.textContent = nameIn.value.trim() || `#${tplOn + 1}`; });
+      const subjIn = el("input", { type: "text", "data-tpl-subj": "", value: cur.subject || "", placeholder: t("subject") });
+      const bodyIn = el("textarea", { class: "tpl-body", "data-tpl-body": "", placeholder: "{{name}}..." }, cur.body || "");
+      const del = el("button", { class: "btn", onclick: () => {
+        list.splice(tplOn, 1);
+        tplOn = Math.max(0, tplOn - 1);
+        draw();
+      }, html: icon("trash-2", "small") + esc(t("tpl_delete")) });
+      body.append(el("h2", {}, t("templates")), el("div", { class: "form" }, head,
+        el("label", {}, el("span", { class: "lab" }, t("tpl_name")), nameIn),
+        el("label", {}, el("span", { class: "lab" }, t("subject")), subjIn),
+        el("label", {}, el("span", { class: "lab" }, t("tpl_body")), bodyIn),
+        el("div", {}, del)));
     } else if (tab === "signature") {
       // a list of signatures, each with a name; one is the default for new mail, one for replies
-      const sigs = v.signatures;
       sigOn = Math.min(sigOn, Math.max(0, sigs.length - 1));
       const list = el("div", { class: "seg sig-list" });
       sigs.forEach((x, k) => list.append(el("button", { class: k === sigOn ? "on" : "", onclick: () => { grab(); sigOn = k; draw(); } }, sigName(x, k))));
@@ -3680,19 +3873,25 @@ async function openSettings(opts) {
   };
   async function save() {
     grab();
-    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""));
-    const sigKey = (o) => JSON.stringify([(o.signatures || []).map(({ id, name, html }) => [id, name, html]), o.sig_new || "", o.sig_reply || ""]);
-    const sigChanged = sigKey(v) !== sigKey(s);
-    if (!changed && !sigChanged) return closeLayer();
+    const aliases = (v.aliases_text || "").split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const changed = ["name", "user", "password", "imap_host", "imap_port", "smtp_host", "smtp_port", "reply_to"].some((k) => String(v[k] ?? "") !== String(s[k] ?? ""))
+      || JSON.stringify(aliases) !== JSON.stringify(s.aliases || []);
+    const sigKey = (list, sn, sr) => JSON.stringify([(list || []).map(({ id, name, html }) => [id, name, html]), sn || "", sr || ""]);
+    const sigChanged = sigKey(sigs, v.sig_new, v.sig_reply) !== sigKey(s.signatures, s.sig_new, s.sig_reply);
+    const tplChanged = JSON.stringify(tpls || []) !== JSON.stringify(tplList || []);
+    if (!changed && !sigChanged && !tplChanged) return closeLayer();
     saveBtn.disabled = true;
     msg.replaceChildren();
     try {
-      if (sigChanged) {
-        Object.assign(s, await api("save_signatures", { signatures: v.signatures, sig_new: v.sig_new, sig_reply: v.sig_reply }));
-        if (!changed) { closeLayer(); toast(t("saved")); return; }
+      if (tplChanged) {
+        tplList = (await api("save_templates", { templates: tpls })).templates || [];
       }
-      const { signature, signatures, sig_new, sig_reply, ...acct } = v;
-      const b = await api("save_settings", { ...acct, account: true, folders: v.folders });
+      if (sigChanged) {
+        Object.assign(s, await api("save_signatures", { signatures: sigs, sig_new: v.sig_new, sig_reply: v.sig_reply }));
+      }
+      if (!changed) { closeLayer(); toast(t("saved")); return; }
+      const { signature, signatures, sig_new, sig_reply, aliases_text, ...acct } = v;
+      const b = await api("save_settings", { ...acct, aliases, reply_to: v.reply_to || "", account: true, folders: v.folders });
       S.boot = { ...S.boot, ...b };
       closeLayer();
       renderNav();
@@ -3873,8 +4072,8 @@ function stepTextSize(d) {
 
 function shortcutsSheet() {
   const groups = [
-    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "R", "sync_now"], [MOD + "Z", "undo"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
-    ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["U", "unread"], ["S", "flag"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
+    ["mailbox", [["J  K", "next_mail"], ["C", "compose"], ["/", "search"], [MOD + "⇧P", "cmd_palette"], [MOD + "R", "sync_now"], [MOD + "Z", "undo"], [MOD + "A", "select_all"], [MOD + "Click", "add_select"], ["⇧Click", "range_select"], ["Esc", "close_clear"]]],
+    ["reading", [["R", "reply"], ["A", "replyall"], ["F", "forward"], ["E", "archive_it"], ["#", "trash_it"], ["V", "move_to"], ["H", "snooze"], ["M", "mute_thread"], ["U", "unread"], ["S", "flag"], [MOD + "P", "print_mail"], [MOD + "+  " + MOD + "−", "text_size"], [MOD + "0", "actual_size"]]],
     ["writing", [[MOD + "↩", "send"], [MOD + "S", "save_draft"], [MOD + "B", "bold"], [MOD + "I", "italic"], [MOD + "U", "underline"], [MOD + "K", "link"], ["Esc", "close"]]],
   ];
   const grid = el("div", { class: "keys-grid" });
@@ -3889,6 +4088,327 @@ function shortcutsSheet() {
   sheet(el("div", {}, el("h2", {}, t("shortcuts")), grid)).classList.add("keys-sheet");
 }
 
+// ---- roadmap features (#115, #117, #119, #122, #124): snooze, mute, print, templates, command palette, accounts
+
+function snoozeMenu(anchor, id, kind = "snooze") {
+  if (!id) return;
+  const now = zparts(Date.now());
+  const at = (p, h) => zepoch(p.y, p.m, p.d, h, 0);
+  const run = async (ts) => {
+    try {
+      await api(kind === "followup" ? "remind" : "snooze", { id, at: ts, kind });
+      toast(t(kind === "followup" ? "reminder_set" : "snoozed_until", laterTime(ts)), { ms: 5000 });
+      refreshCounts();
+      if (kind === "snooze") loadList({ quiet: true });
+    } catch (e) { fail(e); }
+  };
+  const items = [];
+  const pick = (ic, label, ts, hint) => items.push({ icon: ic, label, hint, run: () => run(ts) });
+  const in2h = Math.floor(Date.now() / 1000) + 2 * 3600;
+  pick("clock", "+2h", in2h, fmt(in2h, HM));
+  if (now.h < 17) pick("sunset", t("this_evening"), at(now, 18), fmt(at(now, 18), HM));
+  const tom = addDays(now, 1);
+  pick("sunrise", t("tomorrow_morning"), at(tom, 8), fmt(at(tom, 8), HM));
+  const toMon = ((8 - now.wd) % 7) || 7;
+  if (toMon > 1) { const mon = addDays(now, toMon); pick("calendar", t("monday_morning"), at(mon, 8), fmt(at(mon, 8), { month: "short", day: "numeric", ...HM })); }
+  items.push("-", { icon: "calendar-clock", label: t("pick_time"), run: () => pickCustomTime(t(kind === "followup" ? "remind_no_reply" : "snooze"), run) });
+  menu(anchor || $("#tools"), items);
+}
+
+function pickCustomTime(title, onPick) {
+  const tom = addDays(zparts(Date.now()), 1);
+  const pad = (n) => String(n).padStart(2, "0");
+  const date = el("input", { type: "date", value: `${tom.y}-${pad(tom.m)}-${pad(tom.d)}` });
+  const time = el("input", { type: "time", value: "09:00", step: 300 });
+  const err = el("div");
+  const go = () => {
+    const [y, m, d] = date.value.split("-").map(Number), [h, mi] = time.value.split(":").map(Number);
+    const ts = y && h != null && !isNaN(mi) ? zepoch(y, m, d, h, mi) : 0;
+    if (!ts || ts * 1000 < Date.now() + 30e3) { err.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(t("pick_future")) })); return; }
+    closeLayer();
+    onPick(ts);
+  };
+  const box = sheet(el("div", { class: "pick-time" },
+    el("h2", { html: icon("alarm-clock") + esc(title) }),
+    el("div", { class: "form" },
+      el("div", { class: "two-even" }, el("label", {}, el("span", { class: "lab" }, t("date")), date), el("label", {}, el("span", { class: "lab" }, t("time")), time)), err),
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")), el("button", { class: "btn primary", onclick: go }, t("ok")))));
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
+  date.focus();
+}
+
+async function cancelReminder(r) {
+  if (!r) return;
+  try {
+    await api("cancel_reminder", { id: r.remind_id || r.id, restore: r.remind_kind === "snooze" });
+    toast(t("unsnooze"));
+    refreshCounts();
+    loadList({ quiet: true });
+  } catch (e) { fail(e); }
+}
+
+async function muteThread(id) {
+  if (!id) return;
+  try {
+    const r = await api("mute", { id });
+    toast(t("muted_done"), {
+      ms: 6000,
+      action: { label: t("undo"), run: async () => {
+        try {
+          await api("unmute", { id });
+          if (r.undo) await api("unmove", { token: r.undo });
+          toast(t("unmuted_done"));
+          refreshCounts();
+          loadList({ quiet: true });
+        } catch (e) { fail(e); }
+      } },
+    });
+    refreshCounts();
+    loadList({ quiet: true });
+  } catch (e) { fail(e); }
+}
+
+async function printThread(onlyId = null) {
+  if (!S.thread) return;
+  const rows = onlyId ? S.thread.rows.filter((r) => r.id === onlyId) : S.thread.rows;
+  if (!rows.length) return;
+  const parts = [];
+  for (const r of rows) {
+    const node = $(`.msg[data-id="${CSS.escape(r.id)}"]`);
+    let m = node?._msg;
+    if (!m) { try { m = await api("message", { id: r.id, mark: false }); } catch { continue; } }
+    const fromStr = m.from?.name ? `${m.from.name} <${m.from.addr}>` : (m.from?.addr || "");
+    const toStr = (m.to || []).map((p) => p.name ? `${p.name} <${p.addr}>` : p.addr).join(", ");
+    const ccStr = (m.cc || []).map((p) => p.name ? `${p.name} <${p.addr}>` : p.addr).join(", ");
+    parts.push(`<article class="p-msg"><div class="p-meta"><div><b>${esc(t("from_addr"))}:</b> ${esc(fromStr)}</div>` +
+      (toStr ? `<div><b>${esc(t("to"))}:</b> ${esc(toStr)}</div>` : "") +
+      (ccStr ? `<div><b>${esc(t("cc"))}:</b> ${esc(ccStr)}</div>` : "") +
+      `<div><b>${esc(t("date"))}:</b> ${esc(longTime(m.ts || r.ts))}</div></div>` +
+      `<div class="p-body">${m.html}</div></article>`);
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(S.thread.subject || "Ragdoll Mail")}</title>` +
+    `<style>body{font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#111;background:#fff;margin:20px;}` +
+    `h1{font-size:18px;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid #ddd;}article{margin-bottom:24px;page-break-inside:avoid;}` +
+    `.p-meta{font-size:12px;color:#444;margin-bottom:10px;padding:8px 10px;background:#f7f7f7;border-radius:6px;}img{max-width:100%;height:auto;}</style>` +
+    `</head><body><h1>${esc(S.thread.subject || t("no_subject"))}</h1>${parts.join("<hr style='border:0;border-top:1px solid #e5e5e5;margin:18px 0'>")}</body></html>`;
+  const iframe = el("iframe", { style: "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden" });
+  document.body.append(iframe);
+  iframe.onload = () => {
+    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); } catch (e) { fail(e); }
+    setTimeout(() => iframe.remove(), 2000);
+  };
+  iframe.srcdoc = html;
+}
+
+async function templateMenu(anchor) {
+  let list = [];
+  try { list = (await api("templates")).templates || []; } catch (e) { return fail(e); }
+  if (!list.length) {
+    return menu(anchor, [{ note: t("tpl_none") }, { icon: "settings", label: t("tpl_add"), run: () => openSettings({ tab: "templates" }) }]);
+  }
+  menu(anchor, [
+    ...list.map((tpl) => ({ icon: "file-text", label: tpl.name, hint: tpl.subject || "", run: () => applyTemplate(tpl) })),
+    "-",
+    { icon: "settings", label: t("templates"), run: () => openSettings({ tab: "templates" }) },
+  ]);
+}
+
+function applyTemplate(tpl) {
+  const vars = [...new Set([...((tpl.subject || "") + "\n" + (tpl.body || "")).matchAll(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g)].map((m) => m[1]))];
+  const insert = (vals) => {
+    const fill = (s) => (s || "").replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g,
+      (m, k) => (vals[k] != null && vals[k] !== "" ? vals[k] : m));
+    const c = S.compose;
+    if (!c) return;
+    if (tpl.subject && !c.subject.trim()) {
+      c.subject = fill(tpl.subject);
+      const inp = $(".compose .subject-input");
+      if (inp) inp.value = c.subject;
+    }
+    let html;
+    if (tpl.html) {
+      // Sanitize template HTML before substituting user-entered variables as plain text nodes
+      const doc = new DOMParser().parseFromString(tpl.body || "", "text/html");
+      const body = K.sanitizeBody(doc.body);
+      const w = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) n.nodeValue = fill(n.nodeValue);
+      html = body.innerHTML;
+    } else {
+      const box = document.createElement("div");
+      for (const ln of fill(tpl.body || "").split("\n")) {
+        const p = document.createElement("p");
+        if (ln) p.textContent = ln; else p.append(document.createElement("br"));
+        box.append(p);
+      }
+      html = box.innerHTML;
+    }
+    if (edFocus()) {
+      document.execCommand("insertHTML", false, html);
+      edChanged();
+    } else {
+      c.html = (c.html || "") + html;
+      const ed = $(".compose .editor");
+      if (ed) ed.innerHTML = c.html;
+      touched();
+    }
+  };
+  if (!vars.length) return insert({});
+  const inputs = {};
+  const form = el("div", { class: "form" }, ...vars.map((k) => {
+    const i = el("input", { type: "text", placeholder: k });
+    inputs[k] = i;
+    return el("label", {}, el("span", { class: "lab" }, k), i);
+  }));
+  const go = () => {
+    const vals = {};
+    for (const k of vars) vals[k] = inputs[k].value;
+    closeLayer();
+    insert(vals);
+  };
+  form.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
+  sheet(el("div", {}, el("h2", {}, t("tpl_fill")), form,
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")), el("button", { class: "btn primary", onclick: go }, t("ok")))));
+  requestAnimationFrame(() => inputs[vars[0]]?.focus());
+}
+
+async function switchAccount(id) {
+  if (S.compose && !(await leaveCompose())) return;
+  try {
+    const b = await api("switch_account", { id });
+    PREFS = b.prefs || PREFS;
+    setLocale(PREFS);
+    start(b);
+  } catch (e) { fail(e); }
+}
+
+function addAccountSheet() {
+  const v = { name: "", user: "", password: "", imap_host: "", imap_port: 993, smtp_host: "", smtp_port: 465 };
+  let err = "", busy = false, guessed = "";
+  const errEl = el("div");
+  const inp = (k, type = "text", attrs = {}) => {
+    const i = el("input", { type, value: v[k] ?? "", spellcheck: "false", autocomplete: "off", ...attrs });
+    i.addEventListener("input", () => { v[k] = i.value; });
+    return i;
+  };
+  const email = inp("user", "email");
+  const ihost = inp("imap_host"), iport = inp("imap_port", "number");
+  const shost = inp("smtp_host"), sport = inp("smtp_port", "number");
+  email.addEventListener("change", async () => {
+    if (!v.user.includes("@") || guessed === v.user) return;
+    guessed = v.user;
+    try {
+      const g = await api("guess_servers", { user: v.user });
+      Object.assign(v, g);
+      ihost.value = v.imap_host || ""; shost.value = v.smtp_host || ""; sport.value = v.smtp_port || 465;
+    } catch { /* manual */ }
+  });
+  const saveBtn = el("button", { class: "btn primary", onclick: go }, t("sign_in"));
+  async function go() {
+    if (busy) return;
+    if (!v.imap_host && v.user.includes("@")) {
+      try { Object.assign(v, await api("guess_servers", { user: v.user })); } catch { /* */ }
+    }
+    busy = true; saveBtn.disabled = true; err = ""; errEl.replaceChildren();
+    try {
+      const r = await api("test", v);
+      const b = await api("add_account", { ...v, folders: r.folders });
+      closeLayer();
+      start(b);
+      toast(t("saved"));
+    } catch (e) {
+      err = e.message;
+      errEl.replaceChildren(el("div", { class: "msg-err", html: icon("triangle-alert") + esc(err) }));
+    } finally { busy = false; saveBtn.disabled = false; }
+  }
+  const lab = (txt, ...kids) => el("label", {}, el("span", { class: "lab" }, txt), ...kids);
+  const box = sheet(el("div", {}, el("h2", {}, t("add_account")),
+    el("div", { class: "form" }, lab(t("name"), inp("name")), lab(t("email"), email), lab(t("password"), inp("password", "password")),
+      lab(t("incoming"), el("div", { class: "two" }, ihost, iport)),
+      lab(t("outgoing"), el("div", { class: "two" }, shost, sport)), errEl),
+    el("div", { class: "sheet-acts" }, el("button", { class: "btn", onclick: closeLayer }, t("cancel")), saveBtn)));
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !K.isIME(e)) { e.preventDefault(); go(); } });
+  requestAnimationFrame(() => email.focus());
+}
+
+function openCommandPalette() {
+  if ($(".cmd-pal")) return closeLayer();
+  const cmds = [
+    { icon: "square-pen", label: t("compose"), key: "C", run: () => openCompose({ mode: "new" }) },
+    { icon: "search", label: t("search"), key: "/", run: openSearch },
+    { icon: "refresh-cw", label: t("sync_now"), key: MOD + "R", run: syncNow },
+    { icon: "settings", label: t("settings"), key: MOD + ",", run: openSettings },
+    { icon: "file-text", label: t("templates"), run: () => openSettings({ tab: "templates" }) },
+    { icon: "keyboard", label: t("shortcuts"), key: MOD + "/", run: shortcutsSheet },
+    { icon: "folder-plus", label: t("new_folder"), run: () => newFolder() },
+    { icon: "sun", label: t("theme_light"), run: () => { applyTheme("light"); savePref({ theme: "light" }); } },
+    { icon: "moon", label: t("theme_dark"), run: () => { applyTheme("dark"); savePref({ theme: "dark" }); } },
+    { icon: "monitor", label: t("theme_system"), run: () => { applyTheme("system"); savePref({ theme: "system" }); } },
+  ];
+  if (S.thread) {
+    const id = S.focus || S.sel, mv = moveId();
+    cmds.unshift(
+      { icon: "reply", label: t("reply"), key: "R", run: () => openCompose({ mode: "reply", id }) },
+      { icon: "forward", label: t("forward"), key: "F", run: () => openCompose({ mode: "forward", id }) },
+      { icon: "alarm-clock", label: t("snooze"), key: "H", run: () => snoozeMenu(null, mv, "snooze") },
+      { icon: "bell-off", label: t("mute_thread"), key: "M", run: () => muteThread(mv) },
+      { icon: "printer", label: t("print_mail"), key: MOD + "P", run: () => printThread() },
+    );
+  }
+  for (const f of S.boot?.folders || []) {
+    cmds.push({ icon: f.other ? "folder-open" : FOLDER_ICON[f.key] || "folder-open", label: folderName(f.key), hint: t("my_folders"), run: () => openFolder(f.key) });
+  }
+  for (const a of S.boot?.accounts || []) {
+    if (!a.active && !S.boot.demo) cmds.push({ icon: "circle-user-round", label: `${t("switch_account")}: ${a.label || a.user}`, run: () => switchAccount(a.id) });
+  }
+  const input = el("input", { type: "text", placeholder: t("cmd_ph"), spellcheck: "false", autocomplete: "off" });
+  const list = el("div", { class: "cmd-list" });
+  let hits = cmds, on = 0;
+  const draw = () => {
+    const q = input.value.trim().toLowerCase();
+    hits = q ? cmds.filter((c) => (c.label + " " + (c.hint || "")).toLowerCase().includes(q)) : cmds;
+    on = Math.min(on, Math.max(0, hits.length - 1));
+    list.replaceChildren();
+    if (!hits.length) { list.append(el("div", { class: "cmd-empty" }, t("no_matches"))); return; }
+    hits.slice(0, 30).forEach((c, i) => {
+      list.append(el("button", {
+        class: "cmd-item" + (i === on ? " on" : ""),
+        onclick: () => { closeLayer(); c.run(); },
+        html: icon(c.icon, "small") + `<span class="label">${esc(c.label)}</span>` +
+          (c.hint ? `<span class="hint">${esc(c.hint)}</span>` : "") + (c.key ? `<kbd>${esc(c.key)}</kbd>` : ""),
+      }));
+    });
+  };
+  input.addEventListener("input", () => { on = 0; draw(); });
+  input.addEventListener("keydown", (e) => {
+    if (K.isIME(e)) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!hits.length) return;
+      on = (on + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length;
+      draw();
+      $(".cmd-item.on", list)?.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter" && hits[on]) {
+      e.preventDefault();
+      closeLayer();
+      hits[on].run();
+    } else if (e.key === "Escape") { e.preventDefault(); closeLayer(); }
+  });
+  draw();
+  sheet(el("div", { class: "cmd-pal" }, el("div", { class: "cmd-find", html: icon("command", "small") }, input), list));
+  requestAnimationFrame(() => input.focus());
+}
+
+function showReminders(items) {
+  const fresh = (items || []).filter((x) => x.n > S.remN);
+  if (!fresh.length) return;
+  S.remN = Math.max(...fresh.map((x) => x.n));
+  const now = Date.now() / 1000;
+  for (const x of fresh.filter((r) => now - r.at < 300)) {
+    const label = x.kind === "followup" ? t("reminder_due", x.subject || t("no_subject")) : t("snooze_back", x.subject || t("no_subject"));
+    toast(label, { id: "rem-" + x.n, ms: 10000, action: { label: t("open"), run: () => openMail(x.id) } });
+  }
+}
+
 function typing(e) {
   const n = e.target;
   return n && (n.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName));
@@ -3898,6 +4418,8 @@ function onKey(e) {
   const mod = isMod(e);
   // Sync now; the web view would otherwise reload the whole page and drop what is open, a compose too
   if ((mod && !e.altKey && e.key.toLowerCase() === "r") || e.key === "F5") { e.preventDefault(); syncNow(); return; }
+  if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "p") { e.preventDefault(); openCommandPalette(); return; }
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "p" && S.thread && !S.compose) { e.preventDefault(); printThread(); return; }
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openSearch(); return; }
   if (mod && e.key === ",") { e.preventDefault(); openSettings(); return; }
   if (mod && e.key === "/") { e.preventDefault(); if ($(".keys-sheet")) closeLayer(); else shortcutsSheet(); return; }
@@ -3944,6 +4466,8 @@ function onKey(e) {
   else if (k === "e") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "archive") moveMail([mv], "archive"); }
   else if (k === "#" || k === "Delete" || k === "Backspace") { e.preventDefault(); const mv = moveId(); if (S.thread.rows.find((x) => x.id === mv)?.folder !== "trash") moveMail([mv], "trash"); }
   else if (k === "v") { e.preventDefault(); moveKey([moveId()]); }
+  else if (k === "h") { e.preventDefault(); snoozeMenu($('#tools .icon-btn[data-key="H"]:not(:disabled)'), moveId(), "snooze"); }
+  else if (k === "m") { e.preventDefault(); muteThread(moveId()); }
   else if (k === "u") { e.preventDefault(); toggleUnread(); }
   else if (k === "s") { e.preventDefault(); toggleFlag(); }
   else if (k === "Escape" && S.query) { $("#search").value = ""; onSearch(true); }
@@ -4092,6 +4616,7 @@ window.ragdollPoll = () => refreshCounts();
 function applyStatus(st) {
   S.boot.folders = st.folders;
   S.update = st.update;
+  updateNote(st.update_note);
   const wasSyncing = S.syncing;
   S.syncing = st.syncing;
   renderNav();
@@ -4101,6 +4626,7 @@ function applyStatus(st) {
   else if (wasSyncing !== S.syncing && !S.rows.length) renderRows();
   showNews(st.news);
   showAsks(st.asks);
+  showReminders(st.reminders_due);
 }
 
 // ---- a problem with the mailbox: a small card floating at the foot of the list (it never pushes the list),
@@ -4183,10 +4709,46 @@ function drawProblem() {
   col.classList.add("has-banner");
   col.style.setProperty("--banner-h", b.offsetHeight + "px");
 }
-// Homebrew and a clone update from a terminal; the app from the download page (#76)
+// Homebrew, winget and a clone update from a terminal; the app from the download page updates
+// itself: download, then Restart (#76). Any other copy opens the download page.
 function offerUpdate(up) {
   if (up.command) toast(t("run_cmd", up.command), { ms: 10000, action: { label: t("copy"), run: () => copyText(up.command) } });
+  else if (up.install) installUpdate();
   else api("open_url", { url: up.url }).catch(fail);
+}
+async function installUpdate() {
+  const u = S.update;
+  if (!u || u.step === "downloading" || u.step === "restarting") return;
+  if (u.step === "ready") return restartUpdate();
+  u.step = "downloading";
+  drawUpdate();
+  const timer = setInterval(refreshCounts, 700);
+  try {
+    const r = await api("install_update");
+    S.update = r.update;
+    toast(t("upd_ready", "v" + u.version), { id: "upd", ms: 0, action: { label: t("upd_restart_btn"), run: restartUpdate } });
+  } catch (e) {
+    if (S.update) delete S.update.step;
+    fail(e);
+  } finally {
+    clearInterval(timer);
+    drawUpdate();
+  }
+}
+async function restartUpdate() {
+  try {
+    await api("restart_update");
+    if (S.update) S.update.step = "restarting";
+    drawUpdate();
+  } catch (e) { fail(e); }
+}
+// after a restart for an update: say once how it went
+function updateNote(n) {
+  if (!n || S.updNote) return;
+  S.updNote = true;
+  api("update_note_seen").catch(() => {});
+  if (n.ok) toast(t("upd_done", "v" + n.to), { id: "upd", ms: 6000 });
+  else toast(t("upd_failed", "v" + n.to, "v" + n.from) + (n.error ? " " + tr(n.error) : ""), { id: "upd", error: true, ms: 15000 });
 }
 $("#update").addEventListener("click", () => { if (S.update) offerUpdate(S.update); });
 async function checkUpdates() {
@@ -4195,7 +4757,7 @@ async function checkUpdates() {
   try { r = await api("check_update"); } catch (e) { for (const n of $$('.toast[data-id="upd"]', $("#toasts"))) n.replaceWith(); return fail(e); }
   S.update = r.update;
   renderNav();
-  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t("upd_get"), run: () => offerUpdate(r.update) } });
+  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t(r.update.install ? "upd_install" : "upd_get"), run: () => offerUpdate(r.update) } });
   else toast(t("upd_latest", "v" + r.version), { id: "upd" });
 }
 
@@ -4216,6 +4778,7 @@ else window.addEventListener("pywebviewready", nativeWindow);
 function start(boot) {
   S.boot = boot;
   S.newsN = Math.max(0, ...(boot.news || []).map((x) => x.n));
+  S.remN = Math.max(0, ...(boot.reminders_due || []).map((x) => x.n));
   S.asksN = 0;        // a mail asked for before the app was open is still shown
   applyTheme(boot.theme);
   $("#app").hidden = false;
