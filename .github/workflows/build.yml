@@ -89,7 +89,10 @@ jobs:
         shell: pwsh
         run: |
           $ver = (python -c "import ragdoll; print(ragdoll.__version__)").Trim()
-          iscc "/DAppVersion=$ver" packaging/windows/ragdoll-mail.iss
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$ver" packaging/windows/ragdoll-mail.iss
           Copy-Item dist/ragdoll-mail-windows-setup.exe ragdoll-mail-windows-setup.exe
       - name: Add to the release
         if: startsWith(github.ref, 'refs/tags/v')

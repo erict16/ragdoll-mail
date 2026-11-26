@@ -44,7 +44,6 @@ CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 ChangesEnvironment=yes
-RedirectionGuard=no
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
 
