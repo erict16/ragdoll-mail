@@ -25,6 +25,7 @@ import collections
 import queue
 import mimetypes
 import os
+import plistlib
 import re
 import secrets
 import shutil
@@ -41,6 +42,7 @@ import traceback
 import urllib.parse
 import urllib.request
 import webbrowser
+import zipfile
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -56,7 +58,8 @@ __version__ = R.__version__
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(getattr(sys, "_MEIPASS", HERE), "app")
 FROZEN = bool(getattr(sys, "frozen", False))
-RELEASES_API = "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
+# RAGDOLL_RELEASES_API: a stand-in release for testing the in-app update on this computer
+RELEASES_API = os.environ.get("RAGDOLL_RELEASES_API") or "https://api.github.com/repos/erict16/ragdoll-mail/releases/latest"
 APP_NAME = "Ragdoll Mail"   # what people see: window title, Dock, menu bar; the repo and files keep ragdoll-mail
 RELEASES_PAGE = "https://github.com/erict16/ragdoll-mail/releases/latest"
 UPDATE_EVERY = 12 * 3600       # the app asks for a new release this often while it stays open (#76)
@@ -71,6 +74,297 @@ def brew_cask():
         return False
     return any(os.path.isdir(os.path.join(root, "Caskroom", "ragdoll-mail"))
                for root in ("/opt/homebrew", "/usr/local"))
+
+
+# ------------------------------------------------------------------ updating the app itself (#76)
+# The app from the download page downloads the new release, checks it, and hands over to a small
+# helper that waits for the app to quit, swaps the files, starts the new version and puts the old
+# one back if that fails. The old version stays in <data_dir>/previous.
+
+UPDATE_ASSET = {"darwin": "ragdoll-mail-mac.dmg", "win32": "ragdoll-mail-windows.zip"}
+WINGET_UPGRADE = "winget upgrade erict16.RagdollMail"
+APP_EXE = "Ragdoll Mail.exe"
+APP_BUNDLE = "Ragdoll Mail.app"
+HELPER_WAIT = 15            # seconds the new version must keep running, or the old one comes back
+INSTALL_FAIL_MSG = "Can't download the update. Check your connection and try again."
+INSTALL_BAD_MSG = "The download is damaged. Try again later."
+INSTALL_BUSY_MSG = "Wait until the mail on its way has gone, then restart."
+INSTALL_MOVE_MSG = "Move Ragdoll Mail to your Applications folder first, then update."
+INSTALL_PLACE_MSG = "Ragdoll Mail can't replace itself in %s. Download the new version from the website."
+
+WIN_HELPER = r"""param([string]$Pids, [string]$Target, [string]$New, [string]$Backup, [string]$Result,
+      [string]$Start, [int]$Wait = 15)
+# Ragdoll Mail's update helper (#76): waits for the app to quit, swaps in the new files and starts
+# the new version. On any failure the old files go back and the old version starts again.
+$ErrorActionPreference = 'Stop'
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
+function Save-Why([string]$why) { try { Set-Content -LiteralPath ($Result + '.error') -Value $why -Encoding UTF8 } catch {} }
+foreach ($p in ($Pids -split ',')) {
+  if (-not $p) { continue }
+  try { Wait-Process -Id ([int]$p) -Timeout 120 -ErrorAction Stop } catch {}
+  if (Get-Process -Id ([int]$p) -ErrorAction SilentlyContinue) { Save-Why 'Ragdoll Mail did not quit.'; exit 1 }
+}
+$moved = @()
+function Undo-Swap {
+  foreach ($m in $moved) {
+    try {
+      $t = Join-Path $Target $m
+      if (Test-Path -LiteralPath $t) { Remove-Item -LiteralPath $t -Force }
+      $b = Join-Path $Backup $m
+      if (Test-Path -LiteralPath $b) { Move-Item -LiteralPath $b -Destination $t -Force }
+    } catch {}
+  }
+}
+$exe = Join-Path $Target $Start
+try {
+  New-Item -ItemType Directory -Force -Path $Backup | Out-Null
+  foreach ($f in @(Get-ChildItem -LiteralPath $New -File)) {
+    $t = Join-Path $Target $f.Name
+    $ok = $false
+    for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+      try {
+        if (Test-Path -LiteralPath $t) { Move-Item -LiteralPath $t -Destination (Join-Path $Backup $f.Name) -Force }
+        $ok = $true
+      } catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $ok) { throw ('{0} is in use. Close it and update again.' -f $f.Name) }
+    $moved += $f.Name
+    Move-Item -LiteralPath $f.FullName -Destination $t -Force
+  }
+} catch {
+  Undo-Swap
+  Save-Why ([string]$_.Exception.Message)
+  Start-Process -FilePath $exe
+  exit 1
+}
+$p = Start-Process -FilePath $exe -PassThru
+if ($p.WaitForExit($Wait * 1000)) {
+  Start-Sleep -Seconds 1
+  Undo-Swap
+  Save-Why 'The new version did not start.'
+  Start-Process -FilePath $exe
+  exit 1
+}
+"""
+
+MAC_HELPER = r"""#!/bin/sh
+# Ragdoll Mail's update helper (#76): waits for the app to quit, swaps in the new app and opens it.
+# On any failure the old app goes back and opens again.
+pids=$1 target=$2 new=$3 backup=$4 result=$5 wait=${6:-15} launch=${7:-open}
+export PYINSTALLER_RESET_ENVIRONMENT=1
+why() { printf '%s\n' "$1" > "$result.error"; }
+for p in $(echo "$pids" | tr ',' ' '); do
+  n=0
+  while kill -0 "$p" 2>/dev/null; do
+    n=$((n + 1))
+    if [ "$n" -gt 600 ]; then why "Ragdoll Mail did not quit."; exit 1; fi
+    sleep 0.2
+  done
+done
+rm -rf "$backup"
+mkdir -p "$(dirname "$backup")"
+if ! mv "$target" "$backup"; then why "Can't move the old app aside."; $launch "$target"; exit 1; fi
+if ! mv "$new" "$target"; then
+  rm -rf "$target"; mv "$backup" "$target"; why "Can't put the new app in place."; $launch "$target"; exit 1
+fi
+$launch "$target"
+sleep "$wait"
+if ! pgrep -f "$target/Contents/MacOS/" >/dev/null 2>&1; then
+  rm -rf "$target"; mv "$backup" "$target"; why "The new version did not start."; $launch "$target"; exit 1
+fi
+"""
+
+
+def winget_install():
+    """The Windows app was put in place by winget: it updates with winget."""
+    return sys.platform == "win32" and "/winget/packages/" in sys.executable.replace("\\", "/").lower()
+
+
+def app_target():
+    """What an update replaces: the .app bundle on a Mac, the folder with the .exe on Windows.
+    None when this copy does not update itself (not the built app, Homebrew, winget, Linux)."""
+    if not FROZEN or brew_cask() or winget_install():
+        return None
+    exe = os.path.abspath(sys.executable)
+    if sys.platform == "darwin":
+        app = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+        return app if app.endswith(".app") else None
+    if sys.platform == "win32":
+        return os.path.dirname(exe)
+    return None
+
+
+def install_blocker(target):
+    """Why this copy can't replace itself (words for the page), or None."""
+    if sys.platform == "darwin" and ("/AppTranslocation/" in target or target.startswith("/Volumes/")):
+        return INSTALL_MOVE_MSG
+    where = os.path.dirname(target) if sys.platform == "darwin" else target
+    try:            # os.access says yes on Windows to folders it won't let you write in
+        fd, probe = tempfile.mkstemp(prefix=".ragdoll-update-", dir=where)
+        os.close(fd)
+        os.remove(probe)
+    except OSError:
+        return INSTALL_PLACE_MSG % where
+    return None
+
+
+def pick_asset(release, platform=None):
+    """The release's file for this system: {url, size, digest} or None."""
+    name = UPDATE_ASSET.get(platform or sys.platform)
+    for x in release.get("assets") or []:
+        if name and x.get("name") == name and x.get("browser_download_url"):
+            return {"name": name, "url": x["browser_download_url"], "size": int(x.get("size") or 0),
+                    "digest": x.get("digest") or ""}
+    return None
+
+
+def download(asset, dest, progress=None):
+    """Download the asset to dest and check it all arrived: the size GitHub gives, the length the
+    server sent, and the SHA-256 when the release lists one. Raises ApiError."""
+    req = urllib.request.Request(asset["url"], headers={"User-Agent": "ragdoll-mail",
+                                                        "Accept": "application/octet-stream"})
+    h = hashlib.sha256()
+    got = 0
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=R.tls_context()) as f, open(dest, "wb") as out:
+            length = int(f.headers.get("Content-Length") or 0)
+            total = asset["size"] or length
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                h.update(chunk)
+                got += len(chunk)
+                if progress:
+                    progress(got, total)
+    except (OSError, ValueError) as e:
+        fail(INSTALL_FAIL_MSG, str(e))
+    want = asset.get("digest") or ""
+    if (asset["size"] and got != asset["size"]) or (length and got != length):
+        fail(INSTALL_FAIL_MSG, "got %d bytes of %d" % (got, asset["size"] or length))
+    if want.startswith("sha256:") and h.hexdigest() != want.split(":", 1)[1].lower():
+        fail(INSTALL_BAD_MSG, "sha256 %s, the release says %s" % (h.hexdigest(), want))
+
+
+def stage_windows(zpath, new_dir):
+    """Unpack the Windows zip into new_dir: plain file names only, and the app must be in it."""
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            if z.testzip() is not None:
+                fail(INSTALL_BAD_MSG, "a file in the zip is damaged")
+            names = [i for i in z.infolist() if not i.is_dir()]
+            if APP_EXE not in [i.filename for i in names]:
+                fail(INSTALL_BAD_MSG, "%s is not in the zip" % APP_EXE)
+            for i in names:
+                if i.filename != os.path.basename(i.filename.replace("\\", "/")) or i.filename.startswith("."):
+                    fail(INSTALL_BAD_MSG, "unexpected file in the zip: %s" % i.filename)
+                with z.open(i) as src, open(os.path.join(new_dir, i.filename), "wb") as out:
+                    shutil.copyfileobj(src, out)
+    except (OSError, zipfile.BadZipFile) as e:
+        fail(INSTALL_BAD_MSG, str(e))
+    for n in os.listdir(new_dir):
+        if n.lower().endswith(".exe"):
+            with open(os.path.join(new_dir, n), "rb") as f:
+                if f.read(2) != b"MZ":
+                    fail(INSTALL_BAD_MSG, "%s is not a program" % n)
+
+
+def stage_mac(dmg, new_dir, version):
+    """Copy the app out of the .dmg into new_dir. hdiutil checks the image's own checksums as it
+    mounts it; the copy loses the download's quarantine, as the app is not signed by Apple."""
+    mnt = tempfile.mkdtemp(prefix="ragdoll-dmg-")
+    run = lambda *c: subprocess.run(c, capture_output=True, text=True, timeout=300)  # noqa: E731
+    try:
+        r = run("hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, dmg)
+        if r.returncode:
+            fail(INSTALL_BAD_MSG, (r.stderr or r.stdout).strip())
+        try:
+            src = os.path.join(mnt, APP_BUNDLE)
+            try:
+                with open(os.path.join(src, "Contents", "Info.plist"), "rb") as f:
+                    v = plistlib.load(f).get("CFBundleShortVersionString")
+            except (OSError, ValueError) as e:
+                fail(INSTALL_BAD_MSG, "no app in the image: %s" % e)
+            if v != version:
+                fail(INSTALL_BAD_MSG, "the image holds version %s, not %s" % (v, version))
+            r = run("ditto", src, os.path.join(new_dir, APP_BUNDLE))
+            if r.returncode:
+                fail(INSTALL_FAIL_MSG, (r.stderr or r.stdout).strip())
+        finally:
+            run("hdiutil", "detach", mnt, "-force")
+    finally:
+        with contextlib.suppress(OSError):
+            os.rmdir(mnt)
+    run("xattr", "-dr", "com.apple.quarantine", os.path.join(new_dir, APP_BUNDLE))
+
+
+def app_pids():
+    """This process and, in the one-file Windows build, the launcher that started it: both hold the .exe."""
+    pids = [os.getpid()]
+    if sys.platform == "win32" and FROZEN:
+        with contextlib.suppress(OSError):
+            pids.append(os.getppid())
+    return pids
+
+
+def start_helper(platform, work, target, version_from, version_to, wait=HELPER_WAIT, launch=None, pids=None):
+    """Write the helper and its result file, and start it detached. It waits for the app to quit."""
+    home = os.path.dirname(work)
+    result = os.path.join(home, "update-result.json")
+    with contextlib.suppress(OSError):
+        os.remove(result + ".error")
+    with open(result, "w", encoding="utf-8") as f:
+        json.dump({"from": version_from, "to": version_to, "at": int(time.time())}, f)
+    backup = os.path.join(home, "previous")
+    pids = ",".join(str(p) for p in (pids or app_pids()))
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    if platform == "win32":
+        script = os.path.join(work, "update-helper.ps1")
+        with open(script, "w", encoding="utf-8-sig") as f:
+            f.write(WIN_HELPER)
+        if os.path.isdir(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+        cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+               "-WindowStyle", "Hidden", "-File", script, "-Pids", pids, "-Target", target,
+               "-New", os.path.join(work, "new"), "-Backup", backup, "-Result", result,
+               "-Start", launch or APP_EXE, "-Wait", str(wait)]
+        flags = 0x08000000 | 0x00000200       # no window, its own process group
+        try:
+            return subprocess.Popen(cmd, env=env, creationflags=flags | 0x01000000, close_fds=True,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:                         # breakaway from the job is not allowed here
+            return subprocess.Popen(cmd, env=env, creationflags=flags, close_fds=True,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    script = os.path.join(work, "update-helper.sh")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(MAC_HELPER)
+    cmd = ["/bin/sh", script, pids, target, os.path.join(work, "new", APP_BUNDLE),
+           os.path.join(backup, APP_BUNDLE), result, str(wait)] + ([launch] if launch else [])
+    return subprocess.Popen(cmd, env=env, start_new_session=True, close_fds=True,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def update_result(home, version):
+    """What the last update did, read once at start: {"to", "from", "ok", "error"} or None."""
+    path = os.path.join(home, "update-result.json")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            r = json.load(f)
+    except (OSError, ValueError):
+        return None
+    why = ""
+    with contextlib.suppress(OSError):
+        with open(path + ".error", encoding="utf-8-sig") as f:
+            why = f.read().strip()
+    for p in (path, path + ".error"):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+    if not isinstance(r, dict) or time.time() - (r.get("at") or 0) > 7 * 86400:
+        return None
+    ok = r.get("to") == version
+    return {"to": r.get("to"), "from": r.get("from"), "ok": ok,
+            "error": "" if ok else (why or "The new version did not start.")}
 FOLDER_KEYS = ("inbox", "drafts", "sent", "archive", "trash", "junk")
 LIST_KEYS = FOLDER_KEYS + ("flagged", "scheduled")      # the names the app's own lists go by
 VIEW_FLAGS = ("\\noselect", "\\nonexistent", "\\all", "\\flagged", "\\important")   # not a folder to show
@@ -1901,6 +2195,10 @@ class Backend:
         self.contacts = (0, {})
         self.update = None
         self.update_at = 0.0
+        self.update_asset = None                # the release file this copy would install (#76)
+        self.update_lock = threading.Lock()
+        self.update_staged = None               # (its folder, what it replaces) once downloaded
+        self.update_note = None                 # what the last update did, for the page to say once
         self.server_folders = None
         self.found = list(self.demo_set["folders"]) if demo else []     # [(folder on the server, its flags)]
         self.extra_at = 0                       # when Junk and the other folders were last synced
@@ -1956,6 +2254,7 @@ class Backend:
                 r = self.q("select v from meta where k='last_sync'")
                 self.sync["last"] = int(r[0]["v"]) if r else None
             threading.Thread(target=self.tidy_loop, daemon=True).start()
+            self.update_note = update_result(R.CFG.home, __version__)
             threading.Thread(target=self.update_loop, daemon=True).start()
             self.start_sync()
         threading.Thread(target=self.sched_loop, daemon=True).start()
@@ -2747,6 +3046,15 @@ class Backend:
                     up = {"version": v, "url": d.get("html_url") or RELEASES_PAGE}
                     if brew_cask():
                         up["command"] = BREW_UPGRADE
+                    elif winget_install():
+                        up["command"] = WINGET_UPGRADE
+                    asset = pick_asset(d)
+                    if asset and app_target():
+                        up["install"] = True
+                        self.update_asset = dict(asset, version=v)
+                    now = self.update or {}
+                    if now.get("version") == v and now.get("step"):
+                        up = now                # downloading or ready: keep its progress
                     self.update = up
                 elif v:
                     self.update = None
@@ -2794,6 +3102,60 @@ class Backend:
         if self.demo:
             return {"update": None, "version": __version__}
         return {"update": self.check_update(manual=True), "version": __version__}
+
+    def api_install_update(self, a):
+        """Update in the app (#76): download the new release and make it ready. Blocks until it is;
+        the page follows the progress in status. Nothing of the running app changes yet."""
+        target, asset = app_target(), self.update_asset
+        if self.demo or not target or not asset or not (self.update or {}).get("install"):
+            fail("This copy of Ragdoll Mail can't update itself. Download the new version from the website.")
+        why = install_blocker(target)
+        if why:
+            fail(why)
+        if not self.update_lock.acquire(blocking=False):
+            fail("The update is already downloading.")
+        up = self.update
+        try:
+            work = os.path.join(R.CFG.home, "update")
+            shutil.rmtree(work, ignore_errors=True)
+            os.makedirs(os.path.join(work, "new"))
+            up.update(step="downloading", done=0, total=asset["size"])
+            file = os.path.join(work, asset["name"])
+            download(asset, file, lambda got, total: up.update(done=got, total=total))
+            if sys.platform == "win32":
+                stage_windows(file, os.path.join(work, "new"))
+            else:
+                stage_mac(file, os.path.join(work, "new"), asset["version"])
+            with contextlib.suppress(OSError):
+                os.remove(file)
+            self.update_staged = (work, target)
+            up["step"] = "ready"
+        except BaseException:
+            for k in ("step", "done", "total"):
+                up.pop(k, None)
+            raise
+        finally:
+            self.update_lock.release()
+        return {"update": self.update}
+
+    def api_restart_update(self, a):
+        """The downloaded update goes in: the helper starts, and the app quits for it."""
+        up = self.update or {}
+        if up.get("step") != "ready":
+            fail("The update isn't ready yet.")
+        if any(self.send_state()):
+            fail(INSTALL_BUSY_MSG)
+        try:
+            start_helper(sys.platform, *self.update_staged, __version__, up["version"])
+        except OSError as e:
+            fail("Can't start the update. Ragdoll Mail is unchanged.", str(e))
+        up["step"] = "restarting"
+        threading.Thread(target=quit_app, daemon=True).start()
+        return {}
+
+    def api_update_note_seen(self, a):
+        self.update_note = None
+        return {}
 
     # ---- api: app state
 
@@ -2872,7 +3234,7 @@ class Backend:
             self.web_notice_at = time.time()
         return {"rev": self.rev, "syncing": self.sync["running"], "error": self.sync["error"],
                 "last": self.sync["last"], "folders": self.folder_counts(), "update": self.update,
-                "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
+                "update_note": self.update_note, "news": self.news, "asks": self.asks, "bodies": self.bodies, **self.status_fields()}
 
     def api_sync(self, a):
         if not self.demo:
@@ -5668,6 +6030,17 @@ WINDOW = SimpleNamespace(w=None, hwnd=0, tokens=[], backend=None, quit_ok=False,
 def close_window():
     with contextlib.suppress(Exception):
         WINDOW.w.destroy()
+
+
+def quit_app():
+    """Quit for the update helper: close the window (or, without one, stop the server's wait)."""
+    time.sleep(0.3)                     # the page gets its answer first
+    WINDOW.quit_ok = True
+    if WINDOW.w is not None:
+        close_window()
+    else:
+        import _thread
+        _thread.interrupt_main()
 
 
 def page_call(js):

@@ -413,6 +413,7 @@ const layerOpen = () => !!$("#layer > :not(.out)");
 
 let navSig = "", navKeys = null;
 function renderNav() {
+  drawUpdate();
   const nav = $("#nav");
   const own = ownFolders();
   const folders = [...S.boot.folders.filter((f) => !f.other), ...own];
@@ -463,9 +464,19 @@ function renderNav() {
   applyFold();
   const who_ = S.boot.demo ? t("demo") : S.boot.user, acct = $("#account");
   acct.dataset.tip = who_; acct.setAttribute("aria-label", who_);
-  const up = $("#update");
-  up.hidden = !S.update;
-  if (S.update) up.innerHTML = icon("download") + `<span>${esc(t("update_to", "v" + S.update.version))}</span>`;
+}
+// the sidebar's update button: Update to v…, then the download's progress, then Restart (#76)
+function drawUpdate() {
+  const up = $("#update"), u = S.update;
+  up.hidden = !u;
+  if (!u) return;
+  const pct = u.total ? Math.min(99, Math.floor((100 * (u.done || 0)) / u.total)) + "%" : "";
+  const [ic, text] = u.step === "downloading" ? ["loader-circle", t("upd_downloading", pct)]
+    : u.step === "ready" ? ["refresh-cw", t("upd_restart")]
+    : u.step === "restarting" ? ["loader-circle", t("upd_restarting")]
+    : ["download", t("update_to", "v" + u.version)];
+  const html = icon(ic, ic === "loader-circle" ? "spin" : "") + `<span>${esc(text)}</span>`;
+  if (up.innerHTML !== html) up.innerHTML = html;
 }
 
 // the owner's own folders sit under a heading that folds them away; a folder with folders inside has
@@ -887,6 +898,11 @@ function moveFolderMenu(anchor, f) {
 // a sentence from the server about folders, in the chosen language
 MSGS.push([/^This invitation can't be answered from here\./, "err_rsvp_here"]);
 MSGS.push([/^Can't check for updates right now\./, "err_upd"]);
+MSGS.push([/^Can't download the update\./, "err_upd_dl"], [/^The download is damaged\./, "err_upd_bad"],
+  [/^Wait until the mail on its way has gone/, "err_upd_busy"], [/^Move Ragdoll Mail to your Applications folder/, "err_upd_move"],
+  [/^Ragdoll Mail can't replace itself in (.*)\. Download/, "err_upd_place"], [/^This copy of Ragdoll Mail can't update itself\./, "err_upd_self"],
+  [/^The update is already downloading\./, "err_upd_dling"], [/^The update isn't ready yet\./, "err_upd_dling"],
+  [/^Can't start the update\./, "err_upd_start"], [/^The new version did not start\./, "err_upd_crash"], [/^(.*) is in use\. Close it and update again\./, "err_upd_inuse"]);
 MSGS.push([/^A folder can't go inside itself\./, "err_folder_self"], [/^A folder can't go inside (.*)\.$/, "err_folder_into"]);
 
 const syncNow = () => api("sync").then(() => toast(t("syncing"), { id: "sync" })).catch(fail);
@@ -4092,6 +4108,7 @@ window.ragdollPoll = () => refreshCounts();
 function applyStatus(st) {
   S.boot.folders = st.folders;
   S.update = st.update;
+  updateNote(st.update_note);
   const wasSyncing = S.syncing;
   S.syncing = st.syncing;
   renderNav();
@@ -4183,10 +4200,46 @@ function drawProblem() {
   col.classList.add("has-banner");
   col.style.setProperty("--banner-h", b.offsetHeight + "px");
 }
-// Homebrew and a clone update from a terminal; the app from the download page (#76)
+// Homebrew, winget and a clone update from a terminal; the app from the download page updates
+// itself: download, then Restart (#76). Any other copy opens the download page.
 function offerUpdate(up) {
   if (up.command) toast(t("run_cmd", up.command), { ms: 10000, action: { label: t("copy"), run: () => copyText(up.command) } });
+  else if (up.install) installUpdate();
   else api("open_url", { url: up.url }).catch(fail);
+}
+async function installUpdate() {
+  const u = S.update;
+  if (!u || u.step === "downloading" || u.step === "restarting") return;
+  if (u.step === "ready") return restartUpdate();
+  u.step = "downloading";
+  drawUpdate();
+  const timer = setInterval(refreshCounts, 700);
+  try {
+    const r = await api("install_update");
+    S.update = r.update;
+    toast(t("upd_ready", "v" + u.version), { id: "upd", ms: 0, action: { label: t("upd_restart_btn"), run: restartUpdate } });
+  } catch (e) {
+    if (S.update) delete S.update.step;
+    fail(e);
+  } finally {
+    clearInterval(timer);
+    drawUpdate();
+  }
+}
+async function restartUpdate() {
+  try {
+    await api("restart_update");
+    if (S.update) S.update.step = "restarting";
+    drawUpdate();
+  } catch (e) { fail(e); }
+}
+// after a restart for an update: say once how it went
+function updateNote(n) {
+  if (!n || S.updNote) return;
+  S.updNote = true;
+  api("update_note_seen").catch(() => {});
+  if (n.ok) toast(t("upd_done", "v" + n.to), { id: "upd", ms: 6000 });
+  else toast(t("upd_failed", "v" + n.to, "v" + n.from) + (n.error ? " " + tr(n.error) : ""), { id: "upd", error: true, ms: 15000 });
 }
 $("#update").addEventListener("click", () => { if (S.update) offerUpdate(S.update); });
 async function checkUpdates() {
@@ -4195,7 +4248,7 @@ async function checkUpdates() {
   try { r = await api("check_update"); } catch (e) { for (const n of $$('.toast[data-id="upd"]', $("#toasts"))) n.replaceWith(); return fail(e); }
   S.update = r.update;
   renderNav();
-  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t("upd_get"), run: () => offerUpdate(r.update) } });
+  if (r.update) toast(t("upd_found", "v" + r.update.version), { id: "upd", ms: 10000, action: { label: t(r.update.install ? "upd_install" : "upd_get"), run: () => offerUpdate(r.update) } });
   else toast(t("upd_latest", "v" + r.version), { id: "upd" });
 }
 
