@@ -20,7 +20,6 @@ import html.parser as htmlparser
 import imaplib
 import ipaddress
 import json
-import locale
 import collections
 import queue
 import mimetypes
@@ -1720,17 +1719,7 @@ def demo_lang(want=None):
     """The demo mailbox's language: the one asked for, else Chinese on a Chinese system, else English."""
     if want in DEMO_SETS:
         return want
-    names = [os.environ.get(k, "") for k in ("LC_ALL", "LC_MESSAGES", "LANG")]
-    if sys.platform == "darwin":
-        with contextlib.suppress(Exception):
-            names.append(subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True,
-                                        text=True, timeout=2).stdout)
-    elif os.name == "nt":
-        with contextlib.suppress(Exception):
-            import ctypes
-            names.append(locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), ""))
-    first = next((n for n in names if n.strip()), "")
-    return "zh" if re.search(r"\bzh", first.replace('"', " ").replace("(", " ")) else "en"
+    return R.system_lang()
 
 
 def demo_attendees(people):
@@ -2891,6 +2880,16 @@ class Backend:
             except (OSError, ValueError):
                 return {}
         return {}
+
+    def quote_lang(self):
+        """The language a reply's quote header is in: the app's (Settings), else the demo mailbox's, else the
+        computer's (R.quote_lang turns it into "zh" or "en")."""
+        lang = self.prefs().get("lang")
+        if lang in LANGS and lang != "system":
+            return lang
+        if self.demo:
+            return "zh" if self.demo_set["me"] == ME_ZH else "en"
+        return "system"
 
     def api_prefs(self, a):
         # one change at a time, each on top of the one before: two at once lost the language (#61)
@@ -4287,7 +4286,7 @@ class Backend:
             orig = R.to_msg(self.raw(a["id"]))
             out["orig"] = a["id"]
             self.orig_mids[a["id"]] = R.hdr(orig, "Message-ID").strip()
-            q = R.quote_block(orig)
+            q = R.quote_block(orig, self.quote_lang())
             out["quote"] = page_html(q, cid_map(orig))
             if mode == "forward":
                 out["subject"] = R.forward_subject(R.hdr(orig, "Subject"))
@@ -4312,7 +4311,7 @@ class Backend:
                         orig, i = self.find_orig(dict(state, replace=a["id"]))
                         if orig is not None:
                             out["orig"] = i
-                            out["quote"] = page_html(R.quote_block(orig), cid_map(orig))
+                            out["quote"] = page_html(R.quote_block(orig, self.quote_lang()), cid_map(orig))
                         else:       # the original is gone: the quote the draft already has
                             out["quote"] = page_html(R.quote_of(R.bodies(msg)[1]), cid_map(msg))
                 want_atts = state.get("atts") or []
@@ -4418,7 +4417,8 @@ class Backend:
         images = images + sig_images
         msg = R.build_message(body, to, cc, subject, orig, "reply" if mode in ("reply", "replyall") else None,
                               bcc, atts, sig, font=self.body_font(body),
-                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old)
+                              quote_html=R.quote_of(R.bodies(old)[1]) if old is not None else "", quote_src=old,
+                              lang=self.quote_lang())
         if a.get("orig") and orig is None:
             # the original is gone: the threading the last save had is kept, so the reply stays in its thread
             mid = a.get("orig_mid") or self.orig_mids.get(a["orig"]) or ""
